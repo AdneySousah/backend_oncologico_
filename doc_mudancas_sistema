@@ -1,0 +1,27 @@
+
+quando clicar em realizar avaliação, invez de abrir direto abrir um modal perguntando se a pessoa aceita os termos e consentimentos para 
+realizar a navegação, e só depois de aceitar abrir a avaliação, caso ele aceite se recusar, voltar para a tela de entrevistas medicas, e não abrir a avaliação~
+e exibir na tabela paciente recusou os temos de consentimento.
+
+
+criar tabela termo e termo_aceite
+
+termo com o termo de consentimento, e termo_aceite com o id do paciente, id do termo e se aceitou ou recusou
+
+
+apos clicar em enviar resposta
+
+mudar, tirar o modal e colocar duas perguntas iniciais para a pessoa que ta sendo entrevistada
+
+primeira perguntas
+
+qual nota voce da para o medico que fez o atendimento de 0 a 10
+
+
+
+segunda pergunta
+qual nota voce da para o local onde voce fez os seus exames de 0 a 10
+
+
+criar tabela de nps para as duas questões usando o padrão de nps, ou seja, 0 a 6 é detrator, 7 e 8 é neutro e 9 e 10 é promotor, e exibir isso na tela de entrevistas medicas, para o medico e para o local de atendimento
+
