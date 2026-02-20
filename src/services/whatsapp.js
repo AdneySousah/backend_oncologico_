@@ -5,9 +5,11 @@ import qrcode from 'qrcode-terminal';
 // 1. Instanciamos o client no escopo global do arquivo
 const client = new Client({
     authStrategy: new LocalAuth(),
-    puppeteer: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }
+    puppeteer: { 
+        executablePath: '/usr/bin/chromium', // Adicione esta linha
+        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
+    }
 });
-
 // 2. Configuramos os eventos
 client.on('qr', (qr) => {
     console.log('Escaneie o QR Code abaixo com o seu WhatsApp:');
