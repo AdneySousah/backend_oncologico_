@@ -131,7 +131,7 @@ class PacientesController {
     }
 
 
-   async index(req, res) {
+    async index(req, res) {
         // Adicionamos 'status_active' nos parâmetros de query
         const { nome, cpf, operadora_id, status_active } = req.query;
 
@@ -162,21 +162,21 @@ class PacientesController {
         // Se vier 'false', pega estritamente os inativos (false)
         if (status_active === 'false') {
             where.is_active = false;
-        } 
+        }
         // Se vier 'ambos' ou 'todos', a gente NÃO ADICIONA NENHUM FILTRO (traz todos)
         else if (status_active === 'ambos' || status_active === 'todos') {
             // Não faz nada, a query não filtra por is_active
-        } 
+        }
         // CASO PADRÃO: Se vier 'true' ou NÃO VIER NADA (undefined), traz apenas os ATIVOS
         // Usamos { [Op.not]: false } para garantir que pacientes antigos (onde is_active é null) também venham
         else {
-            where.is_active = { [Op.not]: false }; 
+            where.is_active = { [Op.not]: false };
         }
 
         try {
             // 4. BUSCA NO BANCO
             const pacientes = await Pacientes.findAll({
-                where, 
+                where,
                 include: [
                     {
                         model: Operadora,
@@ -423,22 +423,26 @@ class PacientesController {
 
     // --- NOVO MÉTODO PARA ALIMENTAR O SELECT DO FRONTEND ---
     async getOperadorasFiltro(req, res) {
-        // Usa a sua mesma trava, mas sem passar ID específico
-        const permission = await getOperadoraFilter(req.userId);
+        try { // <-- TRY NO TOPO
+            // 1. Verifica se o middleware injetou o userId
+            if (!req.userId) {
+                return res.status(401).json({ error: 'Usuário não identificado. Verifique o token.' });
+            }
 
-        if (!permission.authorized) {
-            if (permission.emptyResult) return res.json([]);
-            return res.status(permission.status).json({ error: permission.error });
-        }
+            // 2. Busca as permissões
+            const permission = await getOperadoraFilter(req.userId);
 
-        let whereClause = {};
-        if (permission.whereClause.operadora_id) {
-            whereClause.id = permission.whereClause.operadora_id; // Ajusta de operadora_id para id
-        }
+            if (!permission.authorized) {
+                if (permission.emptyResult) return res.json([]);
+                return res.status(permission.status).json({ error: permission.error });
+            }
 
-        try {
-            // Se for Clínica/Admin, whereClause é {}, e traz todas.
-            // Se não for, traz apenas as permitidas na cláusula.
+            let whereClause = {};
+            if (permission.whereClause && permission.whereClause.operadora_id) {
+                whereClause.id = permission.whereClause.operadora_id;
+            }
+
+            // 3. Busca no banco
             const operadoras = await Operadora.findAll({
                 where: whereClause,
                 attributes: ['id', 'nome'],
@@ -446,8 +450,11 @@ class PacientesController {
             });
 
             return res.json(operadoras);
+
         } catch (err) {
-            return res.status(500).json({ error: 'Erro ao buscar operadoras para o filtro' });
+            // Isso aqui vai salvar a sua vida no debug do Docker
+            console.error("Erro na rota operadoras-filtro:", err);
+            return res.status(500).json({ error: 'Erro interno ao buscar operadoras para o filtro' });
         }
     }
 
@@ -464,12 +471,12 @@ class PacientesController {
 
             // Se for nulo no banco, consideramos que o padrão era true.
             // Inverte o valor atual.
-            const statusAtual = paciente.is_active !== false; 
+            const statusAtual = paciente.is_active !== false;
             await paciente.update({ is_active: !statusAtual });
 
-            return res.json({ 
+            return res.json({
                 message: `Paciente ${!statusAtual ? 'ativado' : 'inativado'} com sucesso!`,
-                is_active: !statusAtual 
+                is_active: !statusAtual
             });
         } catch (err) {
             return res.status(500).json({ error: 'Erro ao alterar status do paciente', details: err.message });
