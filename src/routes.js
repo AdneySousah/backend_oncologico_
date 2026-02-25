@@ -89,7 +89,7 @@ router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexo
 router.post('/pacientes/validate', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.validateImport);
 router.post('/pacientes/import', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.importExcel);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
-router.get('/pacientes/operadoras-filtro',  PacientesController.getOperadorasFiltro);
+router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
 router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
 
 

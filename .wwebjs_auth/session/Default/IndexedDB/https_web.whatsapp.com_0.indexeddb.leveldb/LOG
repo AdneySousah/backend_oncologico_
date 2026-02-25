@@ -1,12 +1,46 @@
-2026/02/25-11:13:17.365 6408 Reusing MANIFEST C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/02/25-11:13:17.365 6408 Recovering log #2386
-2026/02/25-11:13:17.380 6408 Reusing old log C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/002386.log 
-2026/02/25-11:13:17.381 6408 Delete type=2 #2253
-2026/02/25-11:13:17.381 6408 Delete type=2 #2254
-2026/02/25-11:13:17.381 6408 Delete type=2 #2255
-2026/02/25-11:13:17.381 6408 Delete type=2 #2256
-2026/02/25-11:13:17.381 6408 Delete type=2 #2342
-2026/02/25-11:13:17.381 6408 Delete type=2 #2343
-2026/02/25-11:13:17.381 6408 Delete type=2 #2344
-2026/02/25-11:13:17.381 6408 Delete type=2 #2384
-2026/02/25-11:13:17.381 6408 Delete type=2 #2389
+2026/02/25-15:46:07.788 4f04 Reusing MANIFEST C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/02/25-15:46:07.788 4f04 Recovering log #2409
+2026/02/25-15:46:07.850 4f04 Reusing old log C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/002409.log 
+2026/02/25-15:46:10.277 24c8 Level-0 table #2434: started
+2026/02/25-15:46:10.324 24c8 Level-0 table #2434: 1220952 bytes OK
+2026/02/25-15:46:10.326 24c8 Delete type=0 #2409
+2026/02/25-15:46:10.403 6898 Compacting 1@0 + 0@1 files
+2026/02/25-15:46:10.433 6898 Generated table #2435@0: 25525 keys, 522968 bytes
+2026/02/25-15:46:10.435 6898 Generated table #2436@0: 97 keys, 28167 bytes
+2026/02/25-15:46:10.436 6898 Compacted 1@0 + 0@1 files => 551135 bytes
+2026/02/25-15:46:10.437 6898 compacted to: files[ 0 2 24 0 0 0 0 ]
+2026/02/25-15:46:10.652 24c8 Compacting 1@1 + 9@2 files
+2026/02/25-15:46:10.689 24c8 Generated table #2437@1: 10438 keys, 2133312 bytes
+2026/02/25-15:46:10.730 24c8 Generated table #2438@1: 12568 keys, 2136768 bytes
+2026/02/25-15:46:10.819 24c8 Generated table #2439@1: 114493 keys, 2267217 bytes
+2026/02/25-15:46:10.903 24c8 Generated table #2440@1: 99858 keys, 2250666 bytes
+2026/02/25-15:46:10.985 24c8 Generated table #2441@1: 100395 keys, 2249965 bytes
+2026/02/25-15:46:11.067 24c8 Generated table #2442@1: 100264 keys, 2250401 bytes
+2026/02/25-15:46:11.140 24c8 Generated table #2443@1: 88460 keys, 2235987 bytes
+2026/02/25-15:46:11.207 24c8 Generated table #2444@1: 69601 keys, 2248365 bytes
+2026/02/25-15:46:11.235 24c8 Generated table #2445@1: 10894 keys, 2157535 bytes
+2026/02/25-15:46:11.238 24c8 Generated table #2446@1: 173 keys, 138350 bytes
+2026/02/25-15:46:11.238 24c8 Compacted 1@1 + 9@2 files => 20068566 bytes
+2026/02/25-15:46:11.239 24c8 compacted to: files[ 0 1 25 0 0 0 0 ]
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2422
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2423
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2424
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2425
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2426
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2427
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2428
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2429
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2430
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2434
+2026/02/25-15:46:11.240 24c8 Delete type=2 #2435
+2026/02/25-15:46:11.318 24c8 Compacting 1@1 + 8@2 files
+2026/02/25-15:46:11.353 24c8 Generated table #2447@1: 2667 keys, 2152132 bytes
+2026/02/25-15:46:11.391 24c8 Generated table #2448@1: 2853 keys, 2154639 bytes
+2026/02/25-15:46:11.430 24c8 Generated table #2449@1: 3278 keys, 2150453 bytes
+2026/02/25-15:46:11.464 24c8 Generated table #2450@1: 2868 keys, 2154370 bytes
+2026/02/25-15:46:11.531 24c8 Generated table #2451@1: 29762 keys, 2199332 bytes
+2026/02/25-15:46:11.624 24c8 Generated table #2452@1: 30553 keys, 2259958 bytes
+2026/02/25-15:46:11.722 24c8 Generated table #2453@1: 31566 keys, 2252106 bytes
+2026/02/25-15:46:11.789 24c8 Generated table #2454@1: 27682 keys, 1876941 bytes
+2026/02/25-15:46:11.789 24c8 Compacted 1@1 + 8@2 files => 17199931 bytes
+2026/02/25-15:46:11.790 24c8 compacted to: files[ 0 0 25 0 0 0 0 ]

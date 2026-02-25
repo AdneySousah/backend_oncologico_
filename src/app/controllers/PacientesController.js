@@ -423,7 +423,7 @@ class PacientesController {
 
     // --- NOVO MÉTODO PARA ALIMENTAR O SELECT DO FRONTEND ---
     async getOperadorasFiltro(req, res) {
-        try { // <-- TRY NO TOPO
+        try {
             // 1. Verifica se o middleware injetou o userId
             if (!req.userId) {
                 return res.status(401).json({ error: 'Usuário não identificado. Verifique o token.' });

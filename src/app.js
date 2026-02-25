@@ -12,11 +12,11 @@ const __dirname = dirname(__filename);
 
 
 const app = express();
-app.use(cors({
-    origin: 'https://frontend-oncologico.vercel.app', // URL do seu front no Vercel
+app.use(cors(/* {
+    origin: 'https://frontend-oncologico.vercel.app', 
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
-}));
+} */));
 app.use(express.json());
 app.use('/files', express.static(resolve(__dirname, '..', 'uploads', 'anexos')));
 // Adicione esta linha logo abaixo do seu express.static atual
