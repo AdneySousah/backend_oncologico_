@@ -8,6 +8,8 @@ services:
       POSTGRES_DB: dev-onco-db
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   app:
     build: .
@@ -15,5 +17,12 @@ services:
       - "3002:3002"
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/dev-onco-db
+      PORT: 3002
     depends_on:
       - db
+    volumes:
+      - ./.wwebjs_auth:/app/.wwebjs_auth # Salva a sessão do WhatsApp na VPS
+      - ./.wwebjs_cache:/app/.wwebjs_cache
+
+volumes:
+  postgres_data:
