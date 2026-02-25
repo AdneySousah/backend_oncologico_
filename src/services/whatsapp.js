@@ -3,15 +3,15 @@ const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 
 // 1. Instanciamos o client no escopo global do arquivo
- const client = new Client({
+/*  const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { 
         executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
         args: ['--no-sandbox', '--disable-setuid-sandbox'] 
     }
-}); 
+});  */
 
-/* const client = new Client({
+ const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { 
         // No Docker, não passamos o caminho do Windows. 
@@ -27,7 +27,7 @@ import qrcode from 'qrcode-terminal';
         ] 
     }
 });
- */
+
 // 2. Configuramos os eventos
 client.on('qr', (qr) => {
     console.log('Escaneie o QR Code abaixo com o seu WhatsApp:');
