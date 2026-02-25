@@ -1,5 +1,8 @@
 import User from '../models/User.js';
-import Operadora from '../models/Operadora.js'; // Importante para os relacionamentos
+import Operadora from '../models/Operadora.js';
+import Perfil from '../models/Perfil.js';
+import OncologyProfessional from '../models/OncologyProfessional.js';
+import Especiality from '../models/Especiality.js'; // Garantir que está importado para o include
 import * as Yup from 'yup';
 import bcrypt from 'bcrypt';
 
@@ -12,7 +15,13 @@ class UserController {
       password: Yup.string().required().min(6),
       is_profissional: Yup.boolean(),
       is_admin: Yup.boolean(),
-      operadoras: Yup.array().of(Yup.number()), // Espera um array de IDs [1, 2, 3]
+      perfil_id: Yup.number().required('O perfil de acesso é obrigatório'),
+      operadoras: Yup.array().of(Yup.number()),
+      professional_data: Yup.object().shape({
+        registry_type: Yup.string(),
+        registry_number: Yup.string(),
+        especiality_id: Yup.number().nullable()
+      }).nullable()
     });
 
     try {
@@ -24,10 +33,9 @@ class UserController {
       });
     }
 
-    const { name, email, password, is_profissional, is_admin, operadoras } = req.body;
+    const { name, email, password, is_profissional, is_admin, operadoras, perfil_id, professional_data } = req.body;
 
     const userExists = await User.findOne({ where: { email } });
-
     if (userExists) {
       return res.status(400).json({ error: 'User already exists.' });
     }
@@ -35,29 +43,32 @@ class UserController {
     const password_hash = await bcrypt.hash(password, 8);
 
     const user = await User.create({ 
-      name, 
-      email, 
-      password_hash, 
-      active: true, 
-      is_profissional, 
-      is_admin 
+      name, email, password_hash, active: true, is_profissional, is_admin, perfil_id 
     });
 
-    // Se vieram IDs de operadoras na requisição, fazemos o vínculo aqui
     if (operadoras && operadoras.length > 0) {
-      // Método mágico criado pelo belongsToMany do Sequelize
       await user.setOperadoras(operadoras); 
     }
 
-    // Recarrega o usuário para incluir as operadoras na resposta de criação
+    if (is_profissional && professional_data && professional_data.registry_number) {
+      await OncologyProfessional.create({
+        user_id: user.id,
+        registry_type: professional_data.registry_type,
+        registry_number: professional_data.registry_number,
+        especiality_id: professional_data.especiality_id
+      });
+    }
+
+    // Recarrega o usuário para resposta (AGORA TRAZENDO O especiality_id)
     await user.reload({
-      attributes: ['id', 'name', 'email', 'is_profissional', 'is_admin'],
+      attributes: ['id', 'name', 'email', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
-        {
-          model: Operadora,
-          as: 'operadoras',
-          attributes: ['id', 'nome', 'cnpj'],
-          through: { attributes: [] } // Esconde os dados da tabela intermediária na resposta
+        { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
+        { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
+        { 
+          model: OncologyProfessional, 
+          as: 'professional', 
+          attributes: ['registry_type', 'registry_number', 'especiality_id'] // <-- CORREÇÃO AQUI
         }
       ]
     });
@@ -69,13 +80,15 @@ class UserController {
   async index(req, res) {
     const users = await User.findAll({
       where: { active: true },
-      attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin'],
+      attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
-        {
-          model: Operadora,
-          as: 'operadoras',
-          attributes: ['id', 'nome', 'cnpj'], // Traz os dados da operadora vinculada
-          through: { attributes: [] } 
+        { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
+        { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
+        { 
+          model: OncologyProfessional, 
+          as: 'professional',
+          attributes: ['id', 'registry_type', 'registry_number', 'especiality_id'], // <-- CORREÇÃO AQUI
+          include: [{ model: Especiality, as: 'speciality', attributes: ['id', 'name'] }]
         }
       ]
     });
@@ -85,7 +98,7 @@ class UserController {
 
   // UPDATE
   async update(req, res) {
-    const { email, oldPassword, operadoras } = req.body;
+    const { email, oldPassword, operadoras, is_profissional, professional_data, perfil_id } = req.body;
 
     const user = await User.findByPk(req.params.id);
 
@@ -104,23 +117,46 @@ class UserController {
       return res.status(401).json({ error: 'Password does not match' });
     }
 
-    // Atualiza os dados básicos do usuário
-    await user.update(req.body);
+    // Atualiza os dados básicos
+    await user.update({
+        name: req.body.name,
+        email: req.body.email,
+        is_admin: req.body.is_admin,
+        is_profissional: is_profissional,
+        perfil_id: perfil_id
+    });
 
-    // Se enviou um novo array de operadoras, substitui os vínculos antigos pelos novos
     if (operadoras) {
       await user.setOperadoras(operadoras);
     }
 
-    // Recarrega o usuário com os novos dados e relacionamentos para retornar
+    if (is_profissional && professional_data) {
+      const profProfile = await OncologyProfessional.findOne({ where: { user_id: user.id } });
+      
+      if (profProfile) {
+        await profProfile.update(professional_data);
+      } else {
+        await OncologyProfessional.create({
+          user_id: user.id,
+          ...professional_data
+        });
+      }
+    } else if (!is_profissional) {
+        // Opcional: Se ele deixar de ser profissional, podemos deletar o registro profissional dele
+        await OncologyProfessional.destroy({ where: { user_id: user.id }});
+    }
+
+    // Recarrega o usuário completo (AGORA TRAZENDO O especiality_id)
     await user.reload({
-      attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin'],
+      attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
-        {
-          model: Operadora,
-          as: 'operadoras',
-          attributes: ['id', 'nome', 'cnpj'],
-          through: { attributes: [] }
+        { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
+        { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
+        { 
+            model: OncologyProfessional, 
+            as: 'professional', 
+            attributes: ['id', 'registry_type', 'registry_number', 'especiality_id'], // <-- CORREÇÃO AQUI
+            include: [{ model: Especiality, as: 'speciality', attributes: ['name'] }] 
         }
       ]
     });
@@ -128,21 +164,15 @@ class UserController {
     return res.json(user);
   }
 
-  // DELETE (Logicamente - Desativar)
+  // DELETE
   async delete(req, res) {
     const user = await User.findByPk(req.params.id);
-
-    if (!user) {
-      return res.status(400).json({ error: 'User not found' });
-    }
-
+    if (!user) return res.status(400).json({ error: 'User not found' });
     await user.update({ active: false });
-
     return res.json({ message: 'User deactivated successfully' });
   }
 
-
-  // Adicione este método dentro da classe UserController
+  // CHANGE PASSWORD
   async changeFirstPassword(req, res) {
     const schema = Yup.object({
       oldPassword: Yup.string().required('A senha atual é obrigatória'),
@@ -152,7 +182,6 @@ class UserController {
 
     try {
       await schema.validate(req.body, { abortEarly: false });
-      console.log('Validação bem-sucedida:', req.body); // Log para verificar os dados recebidos
     } catch (err) {
       return res.status(400).json({
         error: 'Falha na validação',
@@ -161,37 +190,28 @@ class UserController {
     }
 
     const { oldPassword, newPassword } = req.body;
-
-    // Adicione este log para verificar os valores recebidos
-
-    // req.userId vem do middleware de autenticação JWT que você já deve ter configurado nas rotas
     const user = await User.findByPk(req.userId);
 
     if (!user) {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
 
-    // Verifica se a senha antiga está correta
     if (!(await user.checkPassword(oldPassword))) {
       return res.status(401).json({ error: 'A senha atual está incorreta.' });
     }
 
-    // Verifica se a nova senha é igual à antiga (não permitimos)
     if (await user.checkPassword(newPassword)) {
       return res.status(400).json({ error: 'A nova senha não pode ser igual à senha atual.' });
     }
 
-    // Atualiza a senha e remove a flag de novo usuário
     const password_hash = await bcrypt.hash(newPassword, 8);
     
-    try{
-    await user.update({
-      password_hash,
-      is_new_user: false
-    });
-    }
-    catch(err){
-      
+    try {
+      await user.update({
+        password_hash,
+        is_new_user: false
+      });
+    } catch(err) {
       return res.status(500).json({ error: 'Ocorreu um erro ao atualizar a senha. Por favor, tente novamente.' });
     }
 

@@ -76,6 +76,19 @@ class TermoController {
             return res.status(500).json({ error: 'Erro ao checar status' });
         }
     }
+
+    async verifyResponse(req, res) {
+        const {id} = req.params
+        try {
+            const paciente = await Pacientes.findByPk(id, { attributes: ['id', 'status_termo'] });
+            if (!paciente) {
+                return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+            return res.json({ paciente});
+        } catch (error) {
+            return res.status(500).json({ error: 'Erro ao checar status' });
+        }
+    }
 }
 
 export default new TermoController();

@@ -6,17 +6,8 @@ import qrcode from 'qrcode-terminal';
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: { 
-        // Tentamos o caminho padrão, se falhar, o Puppeteer tenta o automático
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser' || '/usr/bin/chromium',
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Adicione isso para evitar erros de memória
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process'
-        ] 
+        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        args: ['--no-sandbox', '--disable-setuid-sandbox'] 
     }
 });
 // 2. Configuramos os eventos

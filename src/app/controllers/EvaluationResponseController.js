@@ -7,11 +7,9 @@ import EvaluationQuestion from '../models/EvaluationQuestion.js';
 import Pacientes from '../models/Pacientes.js';
 import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import Medico from '../models/Medico.js';
-import User from '../models/User.js';
 import Operadora from '../models/Operadora.js';
-import { Op } from 'sequelize';
-
 import { getOperadoraFilter } from '../../utils/permissionUtils.js'; 
+
 
 class EvaluationResponseController {
 
@@ -120,9 +118,18 @@ class EvaluationResponseController {
         include: [
           { 
             model: Pacientes, 
+  
             as: 'paciente',
             where: includePacienteWhere, // <--- APLICA A TRAVA AQUI
-            required: true 
+            required: true ,
+            include:[
+              {
+                model: Operadora,
+                as: 'operadoras',
+                
+              }
+            ]
+
           },
           { model: Medico, as: 'medico', attributes: ['id', 'nome', 'crm'] }, 
           {

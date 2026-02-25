@@ -26,6 +26,11 @@ import ComorbidadesController from "./app/controllers/ComorbidadesController.js"
 import MedicamentosController from "./app/controllers/MedicamentosController.js";
 import TermoController from './app/controllers/TermoController.js';
 import PerfilController from "./app/controllers/PerfilController.js";
+import MonitoramentoMedicamentoController from "./app/controllers/MonitoramentoMedicamentoController.js";
+import ReacaoAdversaController from "./app/controllers/ReacaoAdversaController.js";
+import DashboardController from "./app/controllers/DashboardController.js";
+
+
 
 const router = Router();
 
@@ -37,6 +42,7 @@ const uploadEntrevistaAnexos = multer(multerConfigEntrevistaAnexos);
 router.post('/session', SessionController.store)
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
+router.get('/pacientes/:id', TermoController.verifyResponse);
 
 // ==========================================
 // 1ª CAMADA DE SEGURANÇA: EXIGE LOGIN VÁLIDO
@@ -83,6 +89,8 @@ router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexo
 router.post('/pacientes/validate', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.validateImport);
 router.post('/pacientes/import', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.importExcel);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
+router.get('/pacientes/operadoras-filtro', PacientesController.getOperadorasFiltro);
+router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
 
 
 // --- ROTAS DE PRESTADORES MÉDICOS (HOSPITAIS) ---
@@ -141,5 +149,20 @@ router.get('/medicamentos', checkPermission('medicamentos', 'acessar'), Medicame
 // --- ROTAS DE TERMOS ---
 router.post('/termos/send', checkPermission('termos', 'editar'), TermoController.sendLink);
 router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), TermoController.checkStatus);
+
+
+
+// Rotas de monitoramento
+router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.store);
+router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
+router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
+router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline)
+
+/* Rotas de ficha ram */
+router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.store);
+router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), ReacaoAdversaController.index);
+
+
+router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
 
 export default router;

@@ -13,23 +13,21 @@ import EntrevistaMedicaAnexos from '../models/EntrevistaMedicaAnexos.js';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 
 class EntrevistaMedicaController {
-    
-    // --- FUNÇÃO STORE ALTERADA ---
+
     async store(req, res) {
+        // 1. Converte as strings do FormData de volta para Objetos/Arrays DENTRO do req.body
         if (typeof req.body.comorbidade === 'string') {
             req.body.comorbidade = JSON.parse(req.body.comorbidade);
         }
         if (typeof req.body.exame === 'string') {
             req.body.exame = JSON.parse(req.body.exame);
         }
-        
-        // Agora recebemos um ARRAY de medicamentos, não mais um objeto único "medicamento_uso"
-        let listaMedicamentosIds = [];
-        if (req.body.medicamentos_selecionados) {
-             listaMedicamentosIds = typeof req.body.medicamentos_selecionados === 'string' 
-                ? JSON.parse(req.body.medicamentos_selecionados) 
-                : req.body.medicamentos_selecionados;
+        if (typeof req.body.medicamentos_selecionados === 'string') {
+            req.body.medicamentos_selecionados = JSON.parse(req.body.medicamentos_selecionados);
         }
+
+        // 2. Extrai a lista para usar lá embaixo no setMedicamentos
+        const listaMedicamentosIds = req.body.medicamentos_selecionados || [];
 
         const schema = Yup.object({
             medico_id: Yup.number().required(),
@@ -40,8 +38,7 @@ class EntrevistaMedicaController {
             prestador_medico_id: Yup.number().required(),
             comorbidade: Yup.object().required(),
             exame: Yup.object().required(),
-            // Valida se o que chegou é um array. Pode estar vazio se o paciente não tomar remédios.
-            medicamentos_selecionados: Yup.array().of(Yup.number()).nullable() 
+            medicamentos_selecionados: Yup.array().of(Yup.number()).nullable()
         });
 
         try {
@@ -99,11 +96,11 @@ class EntrevistaMedicaController {
 
     // --- FUNÇÃO INDEX ALTERADA ---
     async index(req, res) {
-        const operadoraQueryId = req.query.operadora_id; 
+        const operadoraQueryId = req.query.operadora_id;
         const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
 
         if (!permission.authorized) {
-            if (permission.emptyResult) return res.json([]); 
+            if (permission.emptyResult) return res.json([]);
             return res.status(permission.status).json({ error: permission.error });
         }
 
@@ -115,8 +112,8 @@ class EntrevistaMedicaController {
                     { model: Medico, as: 'medico', attributes: ['id', 'nome', 'crm'] },
                     { model: Diagnostico, as: 'diagnostico_cid' },
                     { model: Exames, as: 'exames', include: ['prestador_medico'] },
-                    { 
-                        model: InfosComorbidade, 
+                    {
+                        model: InfosComorbidade,
                         as: 'infos_comorbidade',
                         include: [{ model: Comorbidades, as: 'comorbidade_mestre', attributes: ['nome'] }]
                     },
@@ -128,11 +125,14 @@ class EntrevistaMedicaController {
                         through: { attributes: [] } // Evita trazer os dados da tabela intermediária (entrevista_medicamentos) suja no JSON
                     },
                     { model: PrestadorMedico, as: 'prestador_medico' },
-                    { 
-                        model: Pacientes, 
+                    {
+                        model: Pacientes,
                         as: 'paciente',
-                        where: includePacienteWhere, 
-                        required: true 
+                        where: {
+                            ...includePacienteWhere, // Mantém os filtros de operadora que vieram da permissão
+                            is_active: true          // Adiciona a regra de que o paciente deve estar ativo
+                        },
+                        required: true               // Como está true, faz um INNER JOIN (não traz a entrevista se o paciente não passar no filtro)
                     },
                     {
                         model: EntrevistaMedicaAnexos,
@@ -168,24 +168,28 @@ class EntrevistaMedicaController {
                     { model: Medico, as: 'medico', attributes: ['id', 'nome', 'crm'] },
                     { model: Diagnostico, as: 'diagnostico_cid' },
                     { model: Exames, as: 'exames', include: ['prestador_medico'] },
-                    { 
-                        model: InfosComorbidade, 
+                    {
+                        model: InfosComorbidade,
                         as: 'infos_comorbidade',
                         include: [{ model: Comorbidades, as: 'comorbidade_mestre', attributes: ['nome'] }]
                     },
+
                     // NOVA FORMA DE INCLUIR OS MEDICAMENTOS AQUI TAMBÉM
                     {
                         model: Medicamentos,
-                        as: 'medicamentos', 
+                        as: 'medicamentos',
                         attributes: ['id', 'nome', 'nome_comercial', 'principio_ativo', 'dosagem', 'tipo_dosagem'],
-                        through: { attributes: [] } 
+                        through: { attributes: [] }
                     },
                     { model: PrestadorMedico, as: 'prestador_medico' },
-                    { 
-                        model: Pacientes, 
+                    {
+                        model: Pacientes,
                         as: 'paciente',
-                        where: includePacienteWhere, 
-                        required: true
+                        where: {
+                            ...includePacienteWhere, // Mantém os filtros de operadora que vieram da permissão
+                            is_active: true          // Adiciona a regra de que o paciente deve estar ativo
+                        },
+                        required: true               // Como está true, faz um INNER JOIN (não traz a entrevista se o paciente não passar no filtro)
                     },
                     {
                         model: EntrevistaMedicaAnexos,

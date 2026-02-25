@@ -1,14 +1,19 @@
 import * as Yup from 'yup';
 import { Op } from 'sequelize';
-import getAdress from '../../utils/getAdress.js';
 import PrestadorMedico from '../models/PrestadorMedico.js';
+
 
 class PrestadorMedicoController {
     async store(req, res) {
+        // Atualizamos o schema para garantir que o front enviou os dados do endereço
         const schema = Yup.object({
             nome: Yup.string().required(),
             cnpj: Yup.string().required(),
             cep: Yup.string().required(),
+            logradouro: Yup.string().required(),
+            bairro: Yup.string().required(),
+            cidade: Yup.string().required(),
+            estado: Yup.string().required(),
             tipo: Yup.string().oneOf(['hospital', 'clinica', 'laboratorio']).required(),
         });
 
@@ -18,26 +23,18 @@ class PrestadorMedicoController {
             return res.status(400).json({ error: err.errors });
         }
 
-        const { nome, cnpj, cep, tipo } = req.body;
-        const consultaEndereco = await getAdress(cep);
-
-        if (!consultaEndereco || consultaEndereco.length === 0 || consultaEndereco[0].erro) {
-            return res.status(400).json({ error: 'CEP inválido ou não encontrado' });
-        }
-
-        const endereco = consultaEndereco[0];
-        
+        // Criamos o prestador passando os dados que já vieram validados do frontend
         const prestadorMedico = await PrestadorMedico.create({
-            nome,
-            cnpj,
-            cep,
-            logradouro: endereco.logradouro,
+            nome: req.body.nome,
+            cnpj: req.body.cnpj,
+            cep: req.body.cep,
+            logradouro: req.body.logradouro,
             numero: req.body.numero || 'S/N',
             complemento: req.body.complemento || '',
-            bairro: endereco.bairro,
-            cidade: endereco.localidade,
-            estado: endereco.uf,
-            tipo,
+            bairro: req.body.bairro,
+            cidade: req.body.cidade,
+            estado: req.body.estado,
+            tipo: req.body.tipo,
         });
 
         return res.status(201).json(prestadorMedico);
@@ -58,7 +55,6 @@ class PrestadorMedicoController {
         return res.json(prestadoresMedicos);
     }
 
-    // --- NOVA FUNÇÃO UPDATE ---
     async update(req, res) {
         const { id } = req.params;
         const prestador = await PrestadorMedico.findByPk(id);
@@ -67,19 +63,10 @@ class PrestadorMedicoController {
             return res.status(404).json({ error: 'Prestador não encontrado' });
         }
 
-        // Se o CEP mudar, atualiza o endereço automaticamente
-        if (req.body.cep && req.body.cep !== prestador.cep) {
-            const consulta = await getAdress(req.body.cep);
-            if (consulta && !consulta[0].erro) {
-                const end = consulta[0];
-                req.body.logradouro = end.logradouro;
-                req.body.bairro = end.bairro;
-                req.body.cidade = end.localidade;
-                req.body.estado = end.uf;
-            }
-        }
-
+        // Como o frontend agora se encarrega de buscar o novo CEP e enviar
+        // o logradouro, bairro, etc atualizados no req.body, só precisamos dar um update direto:
         await prestador.update(req.body);
+        
         return res.json(prestador);
     }
 }
