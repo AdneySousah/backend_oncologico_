@@ -27,8 +27,7 @@ class PacientesController {
 
     // --- STORE (MANUAL) COMPLETO ---
     async store(req, res) {
-        // Como o frontend agora envia FormData (por causa dos arquivos), 
-        // tudo chega como string. Precisamos converter os tipos antes de validar.
+        // Conversão dos tipos vindos do FormData (String para Boolean/Number)
         req.body.possui_cuidador = req.body.possui_cuidador === 'true';
         req.body.fez_entrevista = req.body.fez_entrevista === 'true';
         req.body.operadora_id = Number(req.body.operadora_id);
@@ -46,7 +45,6 @@ class PacientesController {
             operadora_id: Yup.number().required(),
             cpf: Yup.string().required(),
             fez_entrevista: Yup.boolean().default(false),
-            // Campos de endereço
             cep: Yup.string().required(),
             logradouro: Yup.string().required(),
             numero: Yup.string().required(),
@@ -62,54 +60,62 @@ class PacientesController {
             return res.status(400).json({ error: err.errors });
         }
 
+        // Validações de duplicação
         const isCPF = await Pacientes.findOne({ where: { cpf: req.body.cpf.replace(/\D/g, '') } });
-        if (isCPF) {
-            return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
-        }
+        if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
 
         const isCelular = await Pacientes.findOne({ where: { celular: req.body.celular.replace(/\D/g, '') } });
-        if (isCelular) {
-            return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
-        }
+        if (isCelular) return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
 
-        const istelefone = await Pacientes.findOne({ where: { telefone: req.body.telefone.replace(/\D/g, '') } });
-        if (istelefone) {
-            return res.status(400).json({ error: 'Telefone já cadastrado para outro paciente.' });
+        // Telefone é opcional, só valida se a pessoa enviou algo
+        if (req.body.telefone) {
+            const istelefone = await Pacientes.findOne({ where: { telefone: req.body.telefone.replace(/\D/g, '') } });
+            if (istelefone) return res.status(400).json({ error: 'Telefone já cadastrado para outro paciente.' });
         }
 
         try {
             // 1. Cria o paciente principal
             const paciente = await Pacientes.create(req.body);
 
-            // 2. Salva os anexos (se houver arquivos enviados)
+            // 2. Salva os anexos (se houver arquivos enviados no Multer)
             if (req.files && req.files.length > 0) {
-                // req.body.anexos_nomes pode vir como string (se for 1 arquivo) 
-                // ou array de strings (se forem 2 ou mais).
                 let nomesAnexos = req.body.anexos_nomes || [];
+                
+                // Se vier apenas 1 arquivo, o FormData manda como string. Transformamos em Array.
                 if (!Array.isArray(nomesAnexos)) {
                     nomesAnexos = [nomesAnexos];
                 }
 
-                // Monta o array de objetos para salvar no banco de uma vez
+                // Monta a estrutura exigida pelo banco
                 const anexosData = req.files.map((file, index) => ({
                     paciente_id: paciente.id,
                     nome: nomesAnexos[index] || 'Sem Nome',
-                    file_path: file.filename, // Nome gerado pelo uuid no multer
-                    original_name: file.originalname
+                    file_path: file.filename, // O UUID gerado pelo multer
+                    original_name: file.originalname // O nome do arquivo no PC do usuário
                 }));
 
                 await PacientesAnexos.bulkCreate(anexosData);
             }
 
-            return res.status(201).json(paciente);
+            // 3. Busca o paciente recém-criado JÁ COM OS ANEXOS para devolver ao React
+            const pacienteCriado = await Pacientes.findByPk(paciente.id, {
+                include: [
+                    {
+                        model: PacientesAnexos,
+                        as: 'anexos',
+                        attributes: ['id', 'nome', 'file_path', 'original_name']
+                    }
+                ]
+            });
+
+            return res.status(201).json(pacienteCriado);
+            
         } catch (err) {
-            console.error(err);
+            console.error("Erro no cadastro de paciente:", err);
             return res.status(500).json({ error: 'Erro ao cadastrar paciente', details: err.message });
         }
     }
 
-
-    // --- UPDATE ---
     async update(req, res) {
         const { id } = req.params;
 
@@ -120,13 +126,66 @@ class PacientesController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            const isCPF = await Pacientes.findOne({ where: { cpf: req.body.cpf.replace(/\D/g, ''), id: { [Op.ne]: id } } });
+            // Validação de CPF único (da sua primeira versão do update)
+            if (req.body.cpf) {
+                const isCPF = await Pacientes.findOne({ 
+                    where: { cpf: req.body.cpf.replace(/\D/g, ''), id: { [Op.ne]: id } } 
+                });
+                if (isCPF) {
+                    return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
+                }
+            }
 
+            // Lógica de atualização de endereço pelo CEP (da sua segunda versão do update)
+            if (req.body.cep && req.body.cep !== paciente.cep) {
+                const consulta = await getAdress(req.body.cep);
+
+                if (consulta && !consulta[0].erro) {
+                    const end = consulta[0];
+                    req.body.logradouro = end.logradouro;
+                    req.body.bairro = end.bairro;
+                    req.body.cidade = end.localidade;
+                    req.body.estado = end.uf;
+                }
+            }
+
+            // Atualiza os dados de texto do paciente
             await paciente.update(req.body);
 
-            return res.json(paciente);
+            // ---> AQUI ESTÁ A CORREÇÃO: SALVAR OS ANEXOS NA EDIÇÃO <---
+            if (req.files && req.files.length > 0) {
+                let nomesAnexos = req.body.anexos_nomes || [];
+                if (!Array.isArray(nomesAnexos)) {
+                    nomesAnexos = [nomesAnexos];
+                }
+
+                const anexosData = req.files.map((file, index) => ({
+                    paciente_id: paciente.id,
+                    nome: nomesAnexos[index] || 'Sem Nome',
+                    file_path: file.filename,
+                    original_name: file.originalname
+                }));
+
+                // Insere os registros na tabela PacientesAnexos
+                await PacientesAnexos.bulkCreate(anexosData);
+            }
+
+            // Como você adicionou anexos novos, é bom buscar o paciente novamente 
+            // incluindo a relação para devolver pro Frontend atualizado
+            const pacienteAtualizado = await Pacientes.findByPk(id, {
+                include: [
+                    {
+                        model: PacientesAnexos,
+                        as: 'anexos',
+                        attributes: ['id', 'nome', 'file_path', 'original_name']
+                    }
+                ]
+            });
+
+            return res.json(pacienteAtualizado);
         } catch (err) {
-            return res.status(500).json({ error: 'Erro ao atualizar paciente' });
+            console.error("Erro no update:", err);
+            return res.status(500).json({ error: err.message || 'Erro ao atualizar paciente' });
         }
     }
 
@@ -199,41 +258,7 @@ class PacientesController {
         }
     }
 
-    async update(req, res) {
-        const { id } = req.params;
-
-
-        try {
-            const paciente = await Pacientes.findByPk(id);
-
-            if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
-            }
-
-
-            // Se o CEP mudar, você pode opcionalmente re-consultar o getAdress
-            if (req.body.cep && req.body.cep !== paciente.cep) {
-                const consulta = await getAdress(req.body.cep);
-
-                if (consulta && !consulta[0].erro) {
-                    const end = consulta[0];
-                    req.body.logradouro = end.logradouro;
-                    req.body.bairro = end.bairro;
-                    req.body.cidade = end.localidade;
-                    req.body.estado = end.uf;
-                }
-            }
-
-
-
-            await paciente.update(req.body);
-
-            return res.json(paciente);
-        } catch (err) {
-            return res.status(500).json({ error: err.message || 'Erro ao atualizar paciente' });
-        }
-    }
-
+    
 
     // --- IMPORT EXCEL ---
     async importExcel(req, res) {

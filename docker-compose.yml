@@ -1,18 +1,21 @@
 services:
   db:
     image: postgres:15
+    container_name: onco-db  # Nome fixo para o container
     restart: always
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: dev-onco-db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
   app:
     build: .
+    image: backend-onco-app  # <--- ISSO RESOLVE O ERRO DE FORMATO
+    container_name: onco-app # Nome fixo para o container
     ports:
       - "3002:3002"
     environment:
@@ -21,7 +24,9 @@ services:
     depends_on:
       - db
     volumes:
-      - ./.wwebjs_auth:/app/.wwebjs_auth # Salva a sessão do WhatsApp na VPS
+      - .:/app
+      - /app/node_modules
+      - ./.wwebjs_auth:/app/.wwebjs_auth
       - ./.wwebjs_cache:/app/.wwebjs_cache
 
 volumes:
