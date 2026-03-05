@@ -8,16 +8,14 @@ import { Op } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import * as Yup from 'yup';
 
-// --- NOVA FUNÇÃO AUXILIAR ---
-// Calcula o próximo dia útil pulando finais de semana
 const obterProximoDiaUtil = (dataBase) => {
   const proximoDia = addDays(dataBase, 1);
-  const diaDaSemana = proximoDia.getDay(); // 0 = Domingo, 6 = Sábado
+  const diaDaSemana = proximoDia.getDay(); 
 
-  if (diaDaSemana === 6) { // Caiu no Sábado, adiciona 2 dias (Segunda)
+  if (diaDaSemana === 6) { 
     return addDays(proximoDia, 2);
   }
-  if (diaDaSemana === 0) { // Caiu no Domingo, adiciona 1 dia (Segunda)
+  if (diaDaSemana === 0) { 
     return addDays(proximoDia, 1);
   }
   
@@ -26,7 +24,6 @@ const obterProximoDiaUtil = (dataBase) => {
 
 class MonitoramentoMedicamentoController {
   
-  // 1. Recebe os dados do Modal do Front-end e cria os agendamentos
   async store(req, res) {
     const schema = Yup.object().shape({
       paciente_id: Yup.number().integer().required('O ID do paciente é obrigatório.'),
@@ -54,13 +51,11 @@ class MonitoramentoMedicamentoController {
       for (let item of medicamentos_confirmados) {
         const medicamento = await Medicamentos.findByPk(item.medicamento_id);
         
-        if (!medicamento || !medicamento.qtd_capsula) {
-          continue; 
-        }
+        if (!medicamento || !medicamento.qtd_capsula) continue; 
 
         const diasDuracao = Math.floor(medicamento.qtd_capsula / item.posologia_diaria);
         const dataFimCaixa = addDays(new Date(), diasDuracao);
-        const dataProximoContato = subDays(dataFimCaixa, 5); 
+        const dataProximoContato = subDays(dataFimCaixa, 10); 
 
         const novoMonitoramento = await MonitoramentoMedicamento.create({
           paciente_id,
@@ -82,56 +77,105 @@ class MonitoramentoMedicamentoController {
     }
   }
 
-  // 2. Lista os pacientes que precisam de ligação hoje (ou atrasados)
   async index(req, res) {
     try {
-      const operadoraQueryId = req.query.operadora_id;
-      const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
+      const { operadora_id, page = 1, limit = 20, search = '' } = req.query;
+      const offset = (page - 1) * limit;
+
+      const permission = await getOperadoraFilter(req.userId, operadora_id);
 
       if (!permission.authorized) {
-        if (permission.emptyResult) return res.json([]);
+        if (permission.emptyResult) return res.json({ data: [], total: 0, totalPages: 0, currentPage: 1 });
         return res.status(permission.status).json({ error: permission.error });
       }
 
-      const includePacienteWhere = permission.whereClause;
+      // LÓGICA DE BUSCA CORRIGIDA: Quebra o texto por espaços e exige que todos os pedaços existam no nome ou sobrenome
+      let pacienteWhere = { ...permission.whereClause };
+      if (search) {
+        const termosPesquisa = search.trim().split(/\s+/); // Pega "Ana Costa" e vira ["Ana", "Costa"]
+        
+        const condicoesBusca = termosPesquisa.map(termo => ({
+          [Op.or]: [
+            { nome: { [Op.iLike]: `%${termo}%` } },
+            { sobrenome: { [Op.iLike]: `%${termo}%` } }
+          ]
+        }));
 
-      const pendentes = await MonitoramentoMedicamento.findAll({
-        where: { status: { [Op.ne]: 'CANCELADO' } },
+        pacienteWhere = {
+          ...pacienteWhere,
+          [Op.and]: condicoesBusca // Junta as regras obrigando a ter 'Ana' E 'Costa'
+        };
+      }
+
+      const { count, rows: pendentesPagina } = await MonitoramentoMedicamento.findAndCountAll({
+        where: { status: 'PENDENTE' },
         include: [
           { 
             model: Pacientes, 
             as: 'paciente', 
             attributes: ['id', 'nome', 'sobrenome', 'operadora_id'],
-            where: includePacienteWhere, 
+            where: pacienteWhere, 
             required: true,
-            include: [
-              { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }
-            ]
+            include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
+          }
+        ],
+        order: [['data_proximo_contato', 'ASC']],
+        limit: parseInt(limit),
+        offset: parseInt(offset)
+      });
+
+      if (pendentesPagina.length === 0) {
+        return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
+      }
+
+      const uniquePairs = [];
+      const map = new Set();
+      for (const p of pendentesPagina) {
+         const key = `${p.paciente_id}_${p.medicamento_id}`;
+         if (!map.has(key)) {
+             map.add(key);
+             uniquePairs.push({ paciente_id: p.paciente_id, medicamento_id: p.medicamento_id });
+         }
+      }
+
+      const allRecordsForPage = await MonitoramentoMedicamento.findAll({
+        where: {
+          [Op.or]: uniquePairs,
+          status: { [Op.ne]: 'CANCELADO' }
+        },
+        include: [
+          { 
+            model: Pacientes, 
+            as: 'paciente', 
+            attributes: ['id', 'nome', 'sobrenome', 'operadora_id'],
+            include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
           },
           { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
           { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
-        ],
-        order: [['data_proximo_contato', 'ASC']]
+        ]
       });
 
-      return res.json(pendentes);
+      return res.json({
+        data: allRecordsForPage,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: parseInt(page)
+      });
+
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: 'Erro ao buscar monitoramentos.', details: error.message });
     }
   }
 
-  // 3. Registra as respostas do paciente na ligação e gera o próximo ciclo
   async update(req, res) {
     const schema = Yup.object().shape({
       contato_efetivo: Yup.boolean().nullable(),
-      adesao_tratamento: Yup.boolean().nullable(),
       nivel_adesao: Yup.string().oneOf(['COMPLETAMENTE', 'PARCIALMENTE', 'NAO_ADERE']).nullable(),
-      tomando_corretamente: Yup.boolean().nullable(),
       qtd_informada_caixa: Yup.number().integer().nullable(),
       data_abertura_nova_caixa: Yup.date().nullable(),
       is_reacao: Yup.boolean().nullable(), 
-      reacao_adversa_id: Yup.number().integer().nullable()
+      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable() 
     });
 
     try {
@@ -143,13 +187,11 @@ class MonitoramentoMedicamentoController {
     const { id } = req.params;
     const { 
       contato_efetivo,
-      adesao_tratamento,
       nivel_adesao,
-      tomando_corretamente, 
       qtd_informada_caixa, 
       data_abertura_nova_caixa,
       is_reacao, 
-      reacao_adversa_id
+      reacoes_adversas
     } = req.body;
 
     try {
@@ -161,40 +203,38 @@ class MonitoramentoMedicamentoController {
         return res.status(404).json({ error: 'Monitoramento não encontrado.' });
       }
 
-      // Atualiza o registro atual informando o que aconteceu na ligação
       await monitoramentoAtual.update({
         contato_efetivo,
-        adesao_tratamento,
-        nivel_adesao: adesao_tratamento === false ? 'NAO_ADERE' : nivel_adesao,
-        tomando_corretamente,
+        nivel_adesao: contato_efetivo === false ? 'NAO_ADERE' : nivel_adesao,
         qtd_informada_caixa,
         data_abertura_nova_caixa,
         is_reacao,
-        reacao_adversa_id: is_reacao ? reacao_adversa_id : null, 
         status: 'CONCLUIDO'
       });
 
-      // --- NOVA LÓGICA: SE O CONTATO NÃO FOI EFETIVO ---
+      if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
+        await monitoramentoAtual.setReacoesAdversas(reacoes_adversas);
+      } else {
+        await monitoramentoAtual.setReacoesAdversas([]); 
+      }
+
       if (contato_efetivo === false) {
         const proximaData = obterProximoDiaUtil(new Date());
 
-        // Cria um clone do monitoramento atual, empurrando para o próximo dia útil
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
           entrevista_profissional_id: monitoramentoAtual.entrevista_profissional_id,
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: monitoramentoAtual.posologia_diaria,
-          data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa, // Mantém a mesma previsão
-          data_proximo_contato: proximaData, // Data empurrada pra frente
+          data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa,
+          data_proximo_contato: proximaData,
           status: 'PENDENTE'
         });
 
         return res.json({ message: 'Contato sem sucesso. Reagendado para o próximo dia útil.' });
       }
-      // -------------------------------------------------
 
-      // --- LÓGICA EXISTENTE: SE O CONTATO FOI BEM SUCEDIDO (contato_efetivo === true) ---
       if (data_abertura_nova_caixa) {
         const dataAbertura = parseISO(data_abertura_nova_caixa);
         const posologia = monitoramentoAtual.posologia_diaria;
@@ -202,7 +242,7 @@ class MonitoramentoMedicamentoController {
 
         const diasDuracaoNovo = Math.floor(qtdCapsulas / posologia);
         const novaDataFimCaixa = addDays(dataAbertura, diasDuracaoNovo);
-        const novaDataContato = subDays(novaDataFimCaixa, 5);
+        const novaDataContato = subDays(novaDataFimCaixa, 10);
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,

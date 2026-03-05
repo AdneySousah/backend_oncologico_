@@ -29,6 +29,7 @@ import PerfilController from "./app/controllers/PerfilController.js";
 import MonitoramentoMedicamentoController from "./app/controllers/MonitoramentoMedicamentoController.js";
 import ReacaoAdversaController from "./app/controllers/ReacaoAdversaController.js";
 import DashboardController from "./app/controllers/DashboardController.js";
+import TentativaContatoController from "./app/controllers/TentativaContatoController.js";
 
 
 
@@ -47,13 +48,13 @@ router.get('/pacientes/:id', TermoController.verifyResponse);
 // ==========================================
 // 1ª CAMADA DE SEGURANÇA: EXIGE LOGIN VÁLIDO
 // ==========================================
-
+router.post('/users'/* , checkPermission('usuarios', 'editar') */, UserController.store);
 router.use(authMiddleware)
 
 
 // --- ROTAS DE USUÁRIOS E PERFIS ---
 router.put('/users/first-access', UserController.changeFirstPassword)
-router.post('/users', checkPermission('usuarios', 'editar'), UserController.store);
+
 router.get('/users', checkPermission('usuarios', 'acessar'), UserController.index);
 router.put('/users/:id', checkPermission('usuarios', 'editar'), UserController.update);
 router.delete('/users/:id', checkPermission('usuarios', 'excluir'), UserController.delete);
@@ -126,6 +127,7 @@ router.get('/evaluations/templates', checkPermission('avaliacoes', 'acessar'), E
 router.post('/evaluations/responses', checkPermission('avaliacoes', 'editar'), EvaluationResponseController.store);
 router.get('/evaluations/responses', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
 router.get('/evaluations/templates/pending/:entrevista_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForInterview);
+router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.update);
 
 // --- TIMELINE DE AVALIAÇÕES ---
 router.get('/avaliacoes', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
@@ -164,5 +166,8 @@ router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), Reac
 
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
+
+router.post('/tentativas-contato', TentativaContatoController.store);
+router.get('/tentativas-contato', TentativaContatoController.index);
 
 export default router;

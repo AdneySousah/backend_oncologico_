@@ -48,7 +48,7 @@ RUN npm install
 
 COPY . .
 
-# Expõe a porta que o seu app usa (ajuste se for 3002)
+
 EXPOSE 3002
 
 CMD ["npm", "start"]

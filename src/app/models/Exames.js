@@ -10,7 +10,6 @@ class Exames extends Model{
             tipo_exame: Sequelize.ENUM('sangue', 'imagem', 'biópsia', 'outro'),
             resultado_exame: Sequelize.STRING,
             data_exame_realizado: Sequelize.DATEONLY,
-            data_exame_resultado: Sequelize.DATEONLY
         }, {
             sequelize,
             tableName: 'exames'

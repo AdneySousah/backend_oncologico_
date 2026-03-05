@@ -1,37 +1,96 @@
-2026/02/26-09:57:36.148 696c Reusing MANIFEST C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
-2026/02/26-09:57:36.149 696c Recovering log #2533
-2026/02/26-09:57:36.211 696c Reusing old log C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/002533.log 
-2026/02/26-09:57:42.702 14fc Level-0 table #2564: started
-2026/02/26-09:57:42.901 14fc Level-0 table #2564: 1211930 bytes OK
-2026/02/26-09:57:42.939 14fc Delete type=0 #2533
-2026/02/26-09:57:43.032 14fc Compacting 1@0 + 0@1 files
-2026/02/26-09:57:43.148 14fc Generated table #2565@0: 26318 keys, 527925 bytes
-2026/02/26-09:57:43.151 14fc Generated table #2566@0: 45 keys, 4668 bytes
-2026/02/26-09:57:43.154 14fc Generated table #2567@0: 397 keys, 22105 bytes
-2026/02/26-09:57:43.154 14fc Compacted 1@0 + 0@1 files => 554698 bytes
-2026/02/26-09:57:43.183 14fc compacted to: files[ 0 3 24 0 0 0 0 ]
-2026/02/26-09:57:43.184 14fc Compacting 1@1 + 10@2 files
-2026/02/26-09:57:43.484 14fc Generated table #2568@1: 10510 keys, 2133533 bytes
-2026/02/26-09:57:43.796 14fc Generated table #2569@1: 12588 keys, 2138643 bytes
-2026/02/26-09:57:44.273 14fc Generated table #2570@1: 114227 keys, 2267933 bytes
-2026/02/26-09:57:44.684 14fc Generated table #2571@1: 99805 keys, 2250631 bytes
-2026/02/26-09:57:45.161 14fc Generated table #2572@1: 100449 keys, 2249982 bytes
-2026/02/26-09:57:45.531 14fc Generated table #2573@1: 100243 keys, 2250861 bytes
-2026/02/26-09:57:45.888 14fc Generated table #2574@1: 88857 keys, 2236041 bytes
-2026/02/26-09:57:46.248 14fc Generated table #2575@1: 80604 keys, 2263532 bytes
-2026/02/26-09:57:46.630 14fc Generated table #2576@1: 19654 keys, 2172121 bytes
-2026/02/26-09:57:46.962 14fc Generated table #2577@1: 2220 keys, 1979507 bytes
-2026/02/26-09:57:46.962 14fc Compacted 1@1 + 10@2 files => 21942784 bytes
-2026/02/26-09:57:46.963 14fc compacted to: files[ 0 2 24 0 0 0 0 ]
-2026/02/26-09:57:46.964 14fc Delete type=2 #2538
-2026/02/26-09:57:46.964 14fc Delete type=2 #2539
-2026/02/26-09:57:46.964 14fc Delete type=2 #2540
-2026/02/26-09:57:46.964 14fc Delete type=2 #2541
-2026/02/26-09:57:46.964 14fc Delete type=2 #2542
-2026/02/26-09:57:46.964 14fc Delete type=2 #2543
-2026/02/26-09:57:46.964 14fc Delete type=2 #2544
-2026/02/26-09:57:46.964 14fc Delete type=2 #2545
-2026/02/26-09:57:46.964 14fc Delete type=2 #2546
-2026/02/26-09:57:46.964 14fc Delete type=2 #2547
-2026/02/26-09:57:46.964 14fc Delete type=2 #2564
-2026/02/26-09:57:46.965 14fc Delete type=2 #2565
+2026/03/05-10:01:34.512 3fd8 Reusing MANIFEST C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/03/05-10:01:34.517 3fd8 Recovering log #6209
+2026/03/05-10:01:34.519 3fd8 Reusing old log C:\Users\assantos\Desktop\projetos\oncologico\projectweb\backend\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/006209.log 
+2026/03/05-10:01:35.804 447c Compacting 1@0 + 0@1 files
+2026/03/05-10:01:35.816 447c Generated table #6212@0: 15940 keys, 135715 bytes
+2026/03/05-10:01:35.827 447c Generated table #6213@0: 11375 keys, 328518 bytes
+2026/03/05-10:01:35.828 447c Generated table #6214@0: 31 keys, 8863 bytes
+2026/03/05-10:01:35.832 447c Generated table #6215@0: 800 keys, 62668 bytes
+2026/03/05-10:01:35.832 447c Compacted 1@0 + 0@1 files => 535764 bytes
+2026/03/05-10:01:35.833 447c compacted to: files[ 0 4 41 0 0 0 0 ]
+2026/03/05-10:01:35.833 447c Delete type=2 #6210
+2026/03/05-10:01:36.603 447c Compacting 1@1 + 5@2 files
+2026/03/05-10:01:36.706 447c Generated table #6216@1: 31573 keys, 2252621 bytes
+2026/03/05-10:01:36.810 447c Generated table #6217@1: 31366 keys, 2252918 bytes
+2026/03/05-10:01:36.920 447c Generated table #6218@1: 31252 keys, 2251526 bytes
+2026/03/05-10:01:36.985 447c Generated table #6219@1: 17560 keys, 2181206 bytes
+2026/03/05-10:01:37.003 447c Generated table #6220@1: 7111 keys, 842689 bytes
+2026/03/05-10:01:37.003 447c Compacted 1@1 + 5@2 files => 9780960 bytes
+2026/03/05-10:01:37.004 447c compacted to: files[ 0 3 41 0 0 0 0 ]
+2026/03/05-10:01:37.005 447c Delete type=2 #6148
+2026/03/05-10:01:37.005 447c Delete type=2 #6195
+2026/03/05-10:01:37.005 447c Delete type=2 #6196
+2026/03/05-10:01:37.005 447c Delete type=2 #6197
+2026/03/05-10:01:37.005 447c Delete type=2 #6198
+2026/03/05-10:01:37.005 447c Delete type=2 #6215
+2026/03/05-10:01:37.158 447c Compacting 1@1 + 9@2 files
+2026/03/05-10:01:37.277 447c Generated table #6221@1: 89570 keys, 2238626 bytes
+2026/03/05-10:01:37.365 447c Generated table #6222@1: 95515 keys, 2248894 bytes
+2026/03/05-10:01:37.455 447c Generated table #6223@1: 98175 keys, 2249648 bytes
+2026/03/05-10:01:37.563 447c Generated table #6224@1: 83994 keys, 2308956 bytes
+2026/03/05-10:01:37.683 447c Generated table #6225@1: 24030 keys, 2183869 bytes
+2026/03/05-10:01:37.785 447c Generated table #6226@1: 1382 keys, 2132690 bytes
+2026/03/05-10:01:37.850 447c Generated table #6227@1: 2810 keys, 2154056 bytes
+2026/03/05-10:01:37.896 447c Generated table #6228@1: 2692 keys, 2149352 bytes
+2026/03/05-10:01:37.901 447c Generated table #6229@1: 111 keys, 173730 bytes
+2026/03/05-10:01:37.901 447c Compacted 1@1 + 9@2 files => 17839821 bytes
+2026/03/05-10:01:37.902 447c compacted to: files[ 0 2 41 0 0 0 0 ]
+2026/03/05-10:01:37.902 447c Delete type=2 #6145
+2026/03/05-10:01:37.902 447c Delete type=2 #6178
+2026/03/05-10:01:37.902 447c Delete type=2 #6179
+2026/03/05-10:01:37.902 447c Delete type=2 #6180
+2026/03/05-10:01:37.903 447c Delete type=2 #6181
+2026/03/05-10:01:37.903 447c Delete type=2 #6182
+2026/03/05-10:01:37.903 447c Delete type=2 #6183
+2026/03/05-10:01:37.903 447c Delete type=2 #6184
+2026/03/05-10:01:37.903 447c Delete type=2 #6185
+2026/03/05-10:01:37.903 447c Delete type=2 #6213
+2026/03/05-10:01:42.889 447c Compacting 1@1 + 10@2 files
+2026/03/05-10:01:42.927 447c Generated table #6230@1: 2779 keys, 2147295 bytes
+2026/03/05-10:01:42.967 447c Generated table #6231@1: 3010 keys, 2153547 bytes
+2026/03/05-10:01:43.011 447c Generated table #6232@1: 2972 keys, 2149487 bytes
+2026/03/05-10:01:43.051 447c Generated table #6233@1: 3224 keys, 2151207 bytes
+2026/03/05-10:01:43.091 447c Generated table #6234@1: 3741 keys, 2150528 bytes
+2026/03/05-10:01:43.124 447c Generated table #6235@1: 3001 keys, 2152953 bytes
+2026/03/05-10:01:43.156 447c Generated table #6236@1: 2874 keys, 2155288 bytes
+2026/03/05-10:01:43.209 447c Generated table #6237@1: 22948 keys, 2177915 bytes
+2026/03/05-10:01:43.325 447c Generated table #6238@1: 38728 keys, 2244588 bytes
+2026/03/05-10:01:43.432 447c Generated table #6239@1: 30359 keys, 2257942 bytes
+2026/03/05-10:01:43.434 447c Generated table #6240@1: 213 keys, 16063 bytes
+2026/03/05-10:01:43.434 447c Compacted 1@1 + 10@2 files => 21756813 bytes
+2026/03/05-10:01:43.435 447c compacted to: files[ 0 1 42 0 0 0 0 ]
+2026/03/05-10:06:40.821 447c Compacting 1@1 + 10@2 files
+2026/03/05-10:06:40.853 447c Generated table #6241@1: 6978 keys, 2126688 bytes
+2026/03/05-10:06:40.915 447c Generated table #6242@1: 7993 keys, 2129890 bytes
+2026/03/05-10:06:40.965 447c Generated table #6243@1: 12644 keys, 2138213 bytes
+2026/03/05-10:06:41.064 447c Generated table #6244@1: 101929 keys, 2252739 bytes
+2026/03/05-10:06:41.173 447c Generated table #6245@1: 101333 keys, 2251054 bytes
+2026/03/05-10:06:41.272 447c Generated table #6246@1: 99750 keys, 2250925 bytes
+2026/03/05-10:06:41.353 447c Generated table #6247@1: 101622 keys, 2250662 bytes
+2026/03/05-10:06:41.455 447c Generated table #6248@1: 101602 keys, 2252723 bytes
+2026/03/05-10:06:41.557 447c Generated table #6249@1: 100368 keys, 2251430 bytes
+2026/03/05-10:06:41.654 447c Generated table #6250@1: 91616 keys, 2027297 bytes
+2026/03/05-10:06:41.654 447c Compacted 1@1 + 10@2 files => 21931621 bytes
+2026/03/05-10:06:41.654 447c compacted to: files[ 0 0 42 0 0 0 0 ]
+2026/03/05-10:06:41.655 447c Delete type=2 #6152
+2026/03/05-10:06:41.655 447c Delete type=2 #6186
+2026/03/05-10:06:41.655 447c Delete type=2 #6187
+2026/03/05-10:06:41.655 447c Delete type=2 #6188
+2026/03/05-10:06:41.655 447c Delete type=2 #6189
+2026/03/05-10:06:41.655 447c Delete type=2 #6190
+2026/03/05-10:06:41.655 447c Delete type=2 #6191
+2026/03/05-10:06:41.655 447c Delete type=2 #6192
+2026/03/05-10:06:41.655 447c Delete type=2 #6193
+2026/03/05-10:06:41.655 447c Delete type=2 #6194
+2026/03/05-10:06:41.655 447c Delete type=2 #6199
+2026/03/05-10:06:41.655 447c Delete type=2 #6200
+2026/03/05-10:06:41.655 447c Delete type=2 #6201
+2026/03/05-10:06:41.656 447c Delete type=2 #6202
+2026/03/05-10:06:41.656 447c Delete type=2 #6203
+2026/03/05-10:06:41.656 447c Delete type=2 #6204
+2026/03/05-10:06:41.656 447c Delete type=2 #6205
+2026/03/05-10:06:41.656 447c Delete type=2 #6206
+2026/03/05-10:06:41.656 447c Delete type=2 #6207
+2026/03/05-10:06:41.656 447c Delete type=2 #6208
+2026/03/05-10:06:41.656 447c Delete type=2 #6212
+2026/03/05-10:06:41.656 447c Delete type=2 #6214

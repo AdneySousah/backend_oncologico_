@@ -2,3 +2,5 @@
 .env
 .wwebjs_auth/
 .wwebjs_cache/
+*.xlsx
+.env

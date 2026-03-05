@@ -38,7 +38,8 @@ class EntrevistaMedicaController {
             prestador_medico_id: Yup.number().required(),
             comorbidade: Yup.object().required(),
             exame: Yup.object().required(),
-            medicamentos_selecionados: Yup.array().of(Yup.number()).nullable()
+            medicamentos_selecionados: Yup.array().of(Yup.number()).nullable(),
+            observacao_medicacao: Yup.string().nullable()
         });
 
         try {

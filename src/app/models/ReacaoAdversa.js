@@ -5,7 +5,6 @@ class ReacaoAdversa extends Model {
     super.init(
       {
         name: Sequelize.STRING,
-  
       },
       {
         sequelize,
@@ -17,10 +16,13 @@ class ReacaoAdversa extends Model {
   }
 
   static associate(models) {
-    this.hasMany(models.MonitoramentoMedicamento, { foreignKey: 'reacao_adversa_id', as: 'monitoramentos' });
+    // Agora é um relacionamento de muitos para muitos
+    this.belongsToMany(models.MonitoramentoMedicamento, { 
+      through: 'monitoramento_reacoes_adversas',
+      foreignKey: 'reacao_adversa_id', 
+      as: 'monitoramentos' 
+    });
   }
-
-
 }
 
 export default ReacaoAdversa;

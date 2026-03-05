@@ -23,12 +23,13 @@ export async function getOperadoraFilter(userId, operadoraQueryId = null) {
         }
 
         const allowedOperadorasIds = user.operadoras.map(op => op.id);
-        const temAcessoGlobal = user.operadoras.some(op => op.nome.toLowerCase().trim() === 'clinica');
-
+        const temAcessoGlobal = user.operadoras.some(op => op.nome.toLowerCase().trim() === 'Clinica de Infusão Oncologica');
+        console.log()
         let whereClause = {};
 
         // Se for admin ou tiver a "Clinica" (Acesso Global)
         if (user.is_admin || temAcessoGlobal) {
+            console.log('Usuário com acesso global. Permissões completas concedidas.');
             if (operadoraQueryId) {
                 whereClause.operadora_id = operadoraQueryId;
             }

@@ -7,12 +7,10 @@ class MonitoramentoMedicamento extends Model {
       data_calculada_fim_caixa: Sequelize.DATEONLY,
       data_proximo_contato: Sequelize.DATEONLY,
       status: Sequelize.ENUM('PENDENTE', 'CONCLUIDO', 'CANCELADO'),
-      tomando_corretamente: Sequelize.BOOLEAN,
       qtd_informada_caixa: Sequelize.INTEGER,
       data_abertura_nova_caixa: Sequelize.DATEONLY,
       is_reacao: Sequelize.BOOLEAN,
       contato_efetivo: Sequelize.BOOLEAN,
-      adesao_tratamento: Sequelize.BOOLEAN,
       nivel_adesao: Sequelize.STRING,
     }, {
       sequelize,
@@ -27,7 +25,12 @@ class MonitoramentoMedicamento extends Model {
     this.belongsTo(models.PatientEvaluation, { foreignKey: 'patient_evaluation_id', as: 'avaliacao' });
     this.belongsTo(models.Medicamentos, { foreignKey: 'medicamento_id', as: 'medicamento' });
 
-    this.belongsTo(models.ReacaoAdversa, { foreignKey: 'reacao_adversa_id', as: 'reacaoAdversa' });
+    // Novo relacionamento N:N
+    this.belongsToMany(models.ReacaoAdversa, { 
+      through: 'monitoramento_reacoes_adversas',
+      foreignKey: 'monitoramento_id', 
+      as: 'reacoesAdversas' 
+    });
   }
 }
 

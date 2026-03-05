@@ -39,11 +39,7 @@ class ExamesController {
                 otherwise: (schema) => schema.notRequired()
             }),
 
-            data_exame_resultado: Yup.date().when('possui_exame', {
-                is: true,
-                then: (schema) => schema.required('A data do resultado do exame é obrigatória'),
-                otherwise: (schema) => schema.notRequired()
-            })
+           
         });
 
         try {

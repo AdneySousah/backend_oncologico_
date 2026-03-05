@@ -7,7 +7,8 @@ class EntrevistaMedica extends Model {
             data_contato: Sequelize.DATEONLY,
             observacoes: Sequelize.TEXT,
             data_proximo_contato: Sequelize.DATEONLY,
-            turno_contato: Sequelize.ENUM('Manhã', 'Tarde', 'Noite'),
+            observacao_medicacao: Sequelize.TEXT,
+           
 
         }, {
             sequelize,
