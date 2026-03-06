@@ -12,8 +12,9 @@ class EvaluationBuilderController {
       description: Yup.string(),
       questions: Yup.array().of(
         Yup.object().shape({
+          categoria: Yup.string().nullable(), // NOVO
           enunciado: Yup.string().required(),
-          tipo: Yup.mixed().oneOf(['texto', 'multipla_escolha']).required(),
+          tipo: Yup.mixed().oneOf(['texto', 'multipla_escolha', 'orientacao']).required(), // NOVO TIPO
           options: Yup.array().of(
             Yup.object().shape({
               label: Yup.string().required(),
@@ -59,11 +60,9 @@ class EvaluationBuilderController {
     }
   }
 
-  // MÉTODO NOVO: Atualiza o Template com Travas de Segurança
   async update(req, res) {
     const { id } = req.params;
 
-    // Trava 2: Verificar se já existe histórico de respostas
     const historicoCount = await PatientEvaluation.count({ where: { template_id: id } });
     
     if (historicoCount > 0) {
@@ -72,14 +71,14 @@ class EvaluationBuilderController {
       });
     }
 
-    // Mesmo schema de validação do Store
     const schema = Yup.object().shape({
       title: Yup.string().required(),
       description: Yup.string().nullable(),
       questions: Yup.array().of(
         Yup.object().shape({
+          categoria: Yup.string().nullable(), // NOVO
           enunciado: Yup.string().required(),
-          tipo: Yup.mixed().oneOf(['texto', 'multipla_escolha']).required(),
+          tipo: Yup.mixed().oneOf(['texto', 'multipla_escolha', 'orientacao']).required(), // NOVO TIPO
           options: Yup.array().of(
             Yup.object().shape({
               label: Yup.string().required(),
@@ -107,14 +106,11 @@ class EvaluationBuilderController {
       return res.status(404).json({ error: 'Template não encontrado' });
     }
 
-    // Iniciamos uma transação para garantir que, se falhar no meio, nada seja salvo
     const transaction = await EvaluationTemplate.sequelize.transaction();
 
     try {
-      // 1. Atualiza dados básicos do template
       await template.update({ title, description }, { transaction });
 
-      // 2. Busca e deleta as opções e perguntas antigas de forma limpa
       const oldQuestions = await EvaluationQuestion.findAll({ where: { template_id: id }, transaction });
       const oldQuestionIds = oldQuestions.map(q => q.id);
       
@@ -123,10 +119,10 @@ class EvaluationBuilderController {
           await EvaluationQuestion.destroy({ where: { template_id: id }, transaction });
       }
 
-      // 3. Recria as perguntas e opções com base no novo payload
       for (const q of questions) {
           const novaPergunta = await EvaluationQuestion.create({
               template_id: id,
+              categoria: q.categoria || null, // NOVO
               enunciado: q.enunciado,
               tipo: q.tipo
           }, { transaction });
@@ -141,28 +137,28 @@ class EvaluationBuilderController {
           }
       }
 
-      // Confirma as alterações no banco
       await transaction.commit();
-
       return res.json({ message: 'Template atualizado com sucesso!' });
     } catch (error) {
-      // Se der erro, desfaz tudo
       await transaction.rollback();
-      console.error(error);
       return res.status(500).json({ error: 'Erro ao atualizar template', details: error.message });
     }
   }
 
+  // index, toggleStatus e getPendingForPatient continuam iguais...
   async index(req, res) {
     const templates = await EvaluationTemplate.findAll({
       include: [{
         model: EvaluationQuestion,
         as: 'questions',
         include: [{ model: EvaluationOption, as: 'options' }]
-      }]
+      }],
+      order: [
+        ['createdAt', 'DESC'],
+        [{ model: EvaluationQuestion, as: 'questions' }, 'id', 'ASC'] // Ordena perguntas pela ordem de criação
+      ]
     });
 
-    // Anexamos a informação se ele é editável ou não para facilitar a vida do Frontend
     const templatesFormatados = [];
     for (const t of templates) {
       const data = t.toJSON();
@@ -188,12 +184,11 @@ class EvaluationBuilderController {
     return res.json(template);
   }
 
-  async getPendingForInterview(req, res) {
-    const { entrevista_id } = req.params;
-
+  async getPendingForPatient(req, res) {
+    const { paciente_id } = req.params;
     try {
       const respondidos = await PatientEvaluation.findAll({
-        where: { entrevista_profissional_id: entrevista_id },
+        where: { paciente_id: paciente_id }, 
         attributes: ['template_id']
       });
       
@@ -215,8 +210,7 @@ class EvaluationBuilderController {
 
       return res.json(templatesPendentes);
     } catch (error) {
-      console.error("Erro no getPendingForInterview:", error); 
-      return res.status(500).json({ error: 'Erro ao buscar templates pendentes', details: error.message });
+      return res.status(500).json({ error: 'Erro ao buscar templates pendentes' });
     }
   }
 }

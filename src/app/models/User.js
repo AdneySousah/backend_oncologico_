@@ -1,5 +1,5 @@
 import Sequelize, { Model } from 'sequelize';
-import bcrypt from 'bcrypt'; // Importe o bcrypt se ainda não tiver
+import bcrypt from 'bcrypt';
 
 class User extends Model {
   static init(sequelize) {
@@ -11,7 +11,9 @@ class User extends Model {
         active: Sequelize.BOOLEAN,
         is_profissional: Sequelize.BOOLEAN,
         is_admin: Sequelize.BOOLEAN,
-        is_new_user: Sequelize.BOOLEAN, // ADICIONADO AQUI
+        is_new_user: Sequelize.BOOLEAN,
+        reset_password_token: Sequelize.STRING, // ADICIONADO
+        reset_password_expires: Sequelize.DATE, // ADICIONADO
       },
       {
         sequelize,
@@ -22,7 +24,6 @@ class User extends Model {
     return this;
   }
 
-  // Método auxiliar para verificar a senha (útil para a troca de senha)
   checkPassword(password) {
     return bcrypt.compare(password, this.password_hash);
   }
@@ -34,14 +35,8 @@ class User extends Model {
       as: 'operadoras', 
     });
     this.belongsTo(models.Perfil, { foreignKey: 'perfil_id', as: 'perfil' });
-    this.hasOne(models.OncologyProfessional, { foreignKey: 'user_id', as: 'professional' }); // Relacionamento com Profissional
+    this.hasOne(models.OncologyProfessional, { foreignKey: 'user_id', as: 'professional' });
   }
-
-
-    
-
-
-
 }
 
 export default User;

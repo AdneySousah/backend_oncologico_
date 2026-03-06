@@ -2,13 +2,12 @@ import * as Yup from 'yup';
 import PatientEvaluation from '../models/PatientEvaluation.js';
 import EvaluationAnswer from '../models/EvaluationAnswer.js';
 import EvaluationOption from '../models/EvaluationOption.js';
-import EntrevistaMedica from '../models/EntrevistaMedica.js';
 import EvaluationQuestion from '../models/EvaluationQuestion.js';
 import Pacientes from '../models/Pacientes.js';
 import EvaluationTemplate from '../models/EvaluationTemplate.js';
-import Medico from '../models/Medico.js';
+import Medicamentos from '../models/Medicamentos.js';
 import Operadora from '../models/Operadora.js';
-import { getOperadoraFilter } from '../../utils/permissionUtils.js'; 
+import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 
 
 class EvaluationResponseController {
@@ -24,7 +23,7 @@ class EvaluationResponseController {
           text_answer: Yup.string().nullable()
         })
       ).required(),
-      entrevista_profissional_id: Yup.number().nullable(), 
+      entrevista_profissional_id: Yup.number().nullable(),
       data_proxima_consulta: Yup.date().nullable(),
       consulta: Yup.string().nullable(),
       observacoes: Yup.string().nullable(),
@@ -66,7 +65,7 @@ class EvaluationResponseController {
         question_id: resp.question_id,
         option_selected_id: resp.option_selected_id,
         text_answer: resp.text_answer,
-        computed_score: currentScore 
+        computed_score: currentScore
       });
     }
 
@@ -94,48 +93,41 @@ class EvaluationResponseController {
   }
 
   async index(req, res) {
-    // 1. CHAMA O UTILITÁRIO DE PERMISSÃO
-    const operadoraQueryId = req.query.operadora_id; // Pega se existir filtro na URL
+    const operadoraQueryId = req.query.operadora_id;
     const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
 
-    // 2. VERIFICA SE DEU ERRO OU SE RETORNA VAZIO
     if (!permission.authorized) {
-        // Se o erro for de usuário sem operadora (emptyResult), retorna array vazio suavemente
-        if (permission.emptyResult) return res.json([]); 
-        
-        // Caso contrário, devolve o erro e o status gerados no utilitário
-        return res.status(permission.status).json({ error: permission.error });
+      if (permission.emptyResult) return res.json([]);
+      return res.status(permission.status).json({ error: permission.error });
     }
 
-    // 3. RECUPERA A TRAVA GERADA
     const includePacienteWhere = permission.whereClause;
 
     try {
       const totalTemplatesAtivos = await EvaluationTemplate.count({ where: { is_active: true } });
 
-      const entrevistas = await EntrevistaMedica.findAll({
-        order: [['data_contato', 'DESC']],
+      const pacientes = await Pacientes.findAll({
+        where: { ...includePacienteWhere, is_active: true },
+        // 2. ORDENAÇÃO ATUALIZADA: Pega o model incluído e ordena pelo price DESC
+        order: [
+          [{ model: Medicamentos, as: 'medicamento' }, 'price', 'DESC'], 
+          ['createdAt', 'DESC'] // Desempate pela data de criação
+        ],
         include: [
-          { 
-            model: Pacientes, 
-  
-            as: 'paciente',
-            where: includePacienteWhere, // <--- APLICA A TRAVA AQUI
-            required: true ,
-            include:[
-              {
-                model: Operadora,
-                as: 'operadoras',
-                
-              }
-            ]
-
+          {
+            model: Operadora,
+            as: 'operadoras',
           },
-          { model: Medico, as: 'medico', attributes: ['id', 'nome', 'crm'] }, 
+          // 3. INCLUDE NOVO: Traz o medicamento atrelado para pegar o price
+          {
+            model: Medicamentos,
+            as: 'medicamento',
+            attributes: ['id', 'nome', 'price']
+          },
           {
             model: PatientEvaluation,
-            as: 'avaliacoes', 
-            required: false, 
+            as: 'avaliacoes',
+            required: false,
             include: [
               { model: EvaluationTemplate, as: 'template', attributes: ['title'] },
               {
@@ -151,9 +143,8 @@ class EvaluationResponseController {
         ]
       });
 
-      // Formatação (mantida igual)
-      const formattedEntrevistas = entrevistas.map(ent => {
-        const data = ent.toJSON();
+      const formattedPacientes = pacientes.map(pac => {
+        const data = pac.toJSON();
         const qtdRespondidos = data.avaliacoes ? data.avaliacoes.length : 0;
 
         let status = 'Pendente';
@@ -164,15 +155,20 @@ class EvaluationResponseController {
         data.status_avaliacao = status;
         data.total_templates_ativos = totalTemplatesAtivos;
         data.templates_respondidos = qtdRespondidos;
-        
+
+        // 4. NOVA REGRA FRONTEND: 
+        // Removemos a busca pela data_proximo_contato antiga.
+        // Já deixamos o "price" na raiz do objeto para facilitar a montagem da tabela no Frontend.
+        data.price = data.medicamento ? data.medicamento.price : 0;
+
         return data;
       });
 
-      return res.json(formattedEntrevistas);
+      return res.json(formattedPacientes);
 
     } catch (error) {
       console.log("Erro no index de EvaluationResponse:", error);
-      return res.status(500).json({ error: "Erro ao buscar entrevistas" });
+      return res.status(500).json({ error: "Erro ao buscar pacientes e avaliações" });
     }
   }
 }

@@ -13,6 +13,7 @@ class Medicamentos extends Model {
             descricao: Sequelize.STRING,
             qtd_capsula: Sequelize.INTEGER,
             nome_comercial: Sequelize.STRING,
+            price: Sequelize.DECIMAL(10, 2),
         }, {
             sequelize,
             tableName: 'medicamentos',
@@ -21,13 +22,15 @@ class Medicamentos extends Model {
     }
 
     static associate(models) {
-        // Relação reversa Muitos-para-Muitos
         this.belongsToMany(models.EntrevistaMedica, {
             through: models.EntrevistaMedicamento,
             foreignKey: 'medicamento_id',
             otherKey: 'entrevista_profissional_id',
             as: 'entrevistas'
         });
+        
+        // Relacionamento com Paciente
+        this.hasMany(models.Pacientes, { foreignKey: 'medicamento_id', as: 'pacientes' });
     }
 }
 

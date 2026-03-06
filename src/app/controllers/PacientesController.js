@@ -1,18 +1,21 @@
 import * as Yup from 'yup';
+import stringSimilarity from 'string-similarity';
+import User from '../models/User.js';
 import Pacientes from '../models/Pacientes.js';
 import Operadora from '../models/Operadora.js';
+import Medicamentos from '../models/Medicamentos.js'; // IMPORTAÇÃO ADICIONADA
 import getAdress from '../../utils/getAdress.js';
 import PacientesAnexos from '../models/PacientesAnexos.js';
-import Sequelize, { Op } from 'sequelize'; // Adicionamos o Sequelize aqui
+import Sequelize, { Op } from 'sequelize';
 import { parseExcel } from '../../utils/excelUtils.js';
 import fs from 'fs';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
+import { extrairDadosDocumento } from '../../services/openAiService.js';
 
 class PacientesController {
 
     async getNomesAnexos(req, res) {
         try {
-            // Busca apenas nomes distintos para popular o frontend
             const nomes = await PacientesAnexos.findAll({
                 attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('nome')), 'nome']],
                 raw: true,
@@ -24,13 +27,26 @@ class PacientesController {
         }
     }
 
-
-    // --- STORE (MANUAL) COMPLETO ---
     async store(req, res) {
-        // Conversão dos tipos vindos do FormData (String para Boolean/Number)
         req.body.possui_cuidador = req.body.possui_cuidador === 'true';
         req.body.fez_entrevista = req.body.fez_entrevista === 'true';
+        
+        // Pega o ID que veio do Frontend e converte pra número
         req.body.operadora_id = Number(req.body.operadora_id);
+
+        // --- CORREÇÃO: VALIDAÇÃO DE SEGURANÇA ---
+        // Checa se o usuário tem permissão para cadastrar NAQUELA operadora específica
+        const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
+        if (!permission.authorized) {
+            return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para cadastrar pacientes nesta operadora." });
+        }
+        // ----------------------------------------
+
+        if (req.body.medicamento_id) {
+            req.body.medicamento_id = Number(req.body.medicamento_id);
+        } else {
+            req.body.medicamento_id = null;
+        }
 
         const schema = Yup.object({
             nome: Yup.string().required(),
@@ -43,6 +59,7 @@ class PacientesController {
             nome_cuidador: Yup.string().nullable(),
             contato_cuidador: Yup.string().nullable(),
             operadora_id: Yup.number().required(),
+            medicamento_id: Yup.number().nullable(),
             cpf: Yup.string().required(),
             fez_entrevista: Yup.boolean().default(false),
             cep: Yup.string().required(),
@@ -60,56 +77,65 @@ class PacientesController {
             return res.status(400).json({ error: err.errors });
         }
 
-        // Validações de duplicação
+        const formatarNome = (texto) => {
+            if (!texto) return '';
+            return texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+        };
+        req.body.nome = formatarNome(req.body.nome);
+        req.body.sobrenome = formatarNome(req.body.sobrenome);
+
         const isCPF = await Pacientes.findOne({ where: { cpf: req.body.cpf.replace(/\D/g, '') } });
         if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
 
         const isCelular = await Pacientes.findOne({ where: { celular: req.body.celular.replace(/\D/g, '') } });
         if (isCelular) return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
 
-        // Telefone é opcional, só valida se a pessoa enviou algo
         if (req.body.telefone) {
             const istelefone = await Pacientes.findOne({ where: { telefone: req.body.telefone.replace(/\D/g, '') } });
             if (istelefone) return res.status(400).json({ error: 'Telefone já cadastrado para outro paciente.' });
         }
 
         try {
-            // 1. Cria o paciente principal
+            const currentUser = await User.findByPk(req.userId);
+            const isAdmin = currentUser && (currentUser.is_admin === true || String(currentUser.is_admin).toLowerCase() === 'true' || currentUser.is_admin === 1);
+            
+            req.body.is_new_user = !isAdmin;
+
             const paciente = await Pacientes.create(req.body);
 
-            // 2. Salva os anexos (se houver arquivos enviados no Multer)
             if (req.files && req.files.length > 0) {
                 let nomesAnexos = req.body.anexos_nomes || [];
-                
-                // Se vier apenas 1 arquivo, o FormData manda como string. Transformamos em Array.
                 if (!Array.isArray(nomesAnexos)) {
                     nomesAnexos = [nomesAnexos];
                 }
 
-                // Monta a estrutura exigida pelo banco
                 const anexosData = req.files.map((file, index) => ({
                     paciente_id: paciente.id,
                     nome: nomesAnexos[index] || 'Sem Nome',
-                    file_path: file.filename, // O UUID gerado pelo multer
-                    original_name: file.originalname // O nome do arquivo no PC do usuário
+                    file_path: file.filename,
+                    original_name: file.originalname
                 }));
 
                 await PacientesAnexos.bulkCreate(anexosData);
             }
 
-            // 3. Busca o paciente recém-criado JÁ COM OS ANEXOS para devolver ao React
             const pacienteCriado = await Pacientes.findByPk(paciente.id, {
                 include: [
                     {
                         model: PacientesAnexos,
                         as: 'anexos',
                         attributes: ['id', 'nome', 'file_path', 'original_name']
+                    },
+                    {
+                        model: Medicamentos,
+                        as: 'medicamento',
+                        attributes: ['id', 'nome']
                     }
                 ]
             });
 
             return res.status(201).json(pacienteCriado);
-            
+
         } catch (err) {
             console.error("Erro no cadastro de paciente:", err);
             return res.status(500).json({ error: 'Erro ao cadastrar paciente', details: err.message });
@@ -126,17 +152,26 @@ class PacientesController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            // Validação de CPF único (da sua primeira versão do update)
+            // --- CORREÇÃO: VALIDAÇÃO DE SEGURANÇA ---
+            // Se tentarem alterar a operadora, verifica se o usuário tem permissão
+            if (req.body.operadora_id && req.body.operadora_id !== paciente.operadora_id) {
+                req.body.operadora_id = Number(req.body.operadora_id);
+                const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
+                if (!permission.authorized) {
+                    return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para transferir este paciente para essa operadora." });
+                }
+            }
+            // ----------------------------------------
+
             if (req.body.cpf) {
-                const isCPF = await Pacientes.findOne({ 
-                    where: { cpf: req.body.cpf.replace(/\D/g, ''), id: { [Op.ne]: id } } 
+                const isCPF = await Pacientes.findOne({
+                    where: { cpf: req.body.cpf.replace(/\D/g, ''), id: { [Op.ne]: id } }
                 });
                 if (isCPF) {
                     return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
                 }
             }
 
-            // Lógica de atualização de endereço pelo CEP (da sua segunda versão do update)
             if (req.body.cep && req.body.cep !== paciente.cep) {
                 const consulta = await getAdress(req.body.cep);
 
@@ -149,10 +184,16 @@ class PacientesController {
                 }
             }
 
-            // Atualiza os dados de texto do paciente
+            if (req.body.medicamento_id === '') {
+                req.body.medicamento_id = null;
+            }
+
+            if (req.body.is_new_user !== undefined) {
+                req.body.is_new_user = req.body.is_new_user === 'true' || req.body.is_new_user === true;
+            }
+
             await paciente.update(req.body);
 
-            // ---> AQUI ESTÁ A CORREÇÃO: SALVAR OS ANEXOS NA EDIÇÃO <---
             if (req.files && req.files.length > 0) {
                 let nomesAnexos = req.body.anexos_nomes || [];
                 if (!Array.isArray(nomesAnexos)) {
@@ -166,18 +207,20 @@ class PacientesController {
                     original_name: file.originalname
                 }));
 
-                // Insere os registros na tabela PacientesAnexos
                 await PacientesAnexos.bulkCreate(anexosData);
             }
 
-            // Como você adicionou anexos novos, é bom buscar o paciente novamente 
-            // incluindo a relação para devolver pro Frontend atualizado
             const pacienteAtualizado = await Pacientes.findByPk(id, {
                 include: [
                     {
                         model: PacientesAnexos,
                         as: 'anexos',
                         attributes: ['id', 'nome', 'file_path', 'original_name']
+                    },
+                    {
+                        model: Medicamentos,
+                        as: 'medicamento',
+                        attributes: ['id', 'nome']
                     }
                 ]
             });
@@ -189,12 +232,9 @@ class PacientesController {
         }
     }
 
-
     async index(req, res) {
-        // Adicionamos 'status_active' nos parâmetros de query
         const { nome, cpf, operadora_id, status_active } = req.query;
 
-        // 1. CHAMA O UTILITÁRIO
         const permission = await getOperadoraFilter(req.userId, operadora_id);
 
         if (!permission.authorized) {
@@ -202,10 +242,8 @@ class PacientesController {
             return res.status(permission.status).json({ error: permission.error });
         }
 
-        // 2. RECUPERA A TRAVA GERADA
         const where = permission.whereClause;
 
-        // 3. ADICIONA OS OUTROS FILTROS
         if (nome) {
             where[Op.or] = [
                 { nome: { [Op.iLike]: `%${nome}%` } },
@@ -217,23 +255,15 @@ class PacientesController {
             where.cpf = cpf.replace(/\D/g, '');
         }
 
-        // --- LÓGICA DO FILTRO DE ATIVOS/INATIVOS AJUSTADA ---
-        // Se vier 'false', pega estritamente os inativos (false)
         if (status_active === 'false') {
             where.is_active = false;
-        }
-        // Se vier 'ambos' ou 'todos', a gente NÃO ADICIONA NENHUM FILTRO (traz todos)
-        else if (status_active === 'ambos' || status_active === 'todos') {
-            // Não faz nada, a query não filtra por is_active
-        }
-        // CASO PADRÃO: Se vier 'true' ou NÃO VIER NADA (undefined), traz apenas os ATIVOS
-        // Usamos { [Op.not]: false } para garantir que pacientes antigos (onde is_active é null) também venham
-        else {
+        } else if (status_active === 'ambos' || status_active === 'todos') {
+            // Não filtra por is_active
+        } else {
             where.is_active = { [Op.not]: false };
         }
 
         try {
-            // 4. BUSCA NO BANCO
             const pacientes = await Pacientes.findAll({
                 where,
                 include: [
@@ -246,9 +276,17 @@ class PacientesController {
                         model: PacientesAnexos,
                         as: 'anexos',
                         attributes: ['id', 'nome', 'file_path', 'original_name']
+                    },
+                    {   // ADICIONADO AQUI PARA A LISTAGEM
+                        model: Medicamentos,
+                        as: 'medicamento',
+                        attributes: ['id', 'nome', 'dosagem']
                     }
                 ],
-                order: [['nome', 'ASC']]
+                order: [
+                    ['is_new_user', 'DESC'],
+                    ['nome', 'ASC']
+                ]
             });
 
             return res.json(pacientes);
@@ -258,9 +296,6 @@ class PacientesController {
         }
     }
 
-    
-
-    // --- IMPORT EXCEL ---
     async importExcel(req, res) {
         if (!req.file) {
             return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
@@ -285,16 +320,21 @@ class PacientesController {
 
         try {
             const data = parseExcel(req.file.path);
+            const currentUser = await User.findByPk(req.userId);
+            const isNewUserFlag = currentUser && currentUser.is_admin ? false : true;
+
+            const formatarNome = (texto) => {
+                if (!texto) return '';
+                return texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+            };
 
             for (const row of data) {
-                // Formatação preventiva das chaves (aceita minúsculo ou maiúsculo)
                 const cpfRaw = row['cpf'] || row['CPF'];
                 const cpf = cpfRaw ? String(cpfRaw).replace(/\D/g, '') : null;
                 const nomeDaPlanilha = row['nome'] || row['Nome'];
 
                 if (!cpf || !nomeDaPlanilha) continue;
 
-                // 1. VALIDAÇÃO EXCLUSIVA DE CPF NO BANCO
                 const pacienteExists = await Pacientes.findOne({ where: { cpf } });
                 if (pacienteExists) {
                     const nomeDoBanco = `${pacienteExists.nome} ${pacienteExists.sobrenome || ''}`.trim();
@@ -323,18 +363,19 @@ class PacientesController {
 
                 const cleanString = (val) => val ? String(val) : '';
 
-                // Correção de Data caso o Excel envie como número (Serial Date do Excel)
                 let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
                 if (typeof dataNascimento === 'number') {
                     const dataObj = new Date(Math.round((dataNascimento - 25569) * 86400 * 1000));
-                    dataNascimento = dataObj.toISOString().split('T')[0]; // Converte para YYYY-MM-DD
+                    dataNascimento = dataObj.toISOString().split('T')[0];
                 }
 
+                // Permite a importação via planilha se passar "medicamento_id" na coluna
+                const medicamentoIdRow = row['medicamento_id'] || row['Medicamento_id'];
+
                 try {
-                    // Preenchendo fallbacks ('Não informado', 'N/A') para evitar rejeição do Banco
                     await Pacientes.create({
-                        nome: nomeDaPlanilha,
-                        sobrenome: cleanString(row['sobrenome'] || row['Sobrenome']),
+                        nome: formatarNome(nomeDaPlanilha),
+                        sobrenome: formatarNome(cleanString(row['sobrenome'] || row['Sobrenome'])),
                         celular: cleanString(row['celular'] || row['Celular']) || 'Não informado',
                         telefone: cleanString(row['telefone'] || row['Telefone']),
                         data_nascimento: dataNascimento || new Date(),
@@ -344,37 +385,28 @@ class PacientesController {
                         contato_cuidador: cleanString(row['contato_cuidador'] || row['Contato_cuidador']),
                         cep: cep,
                         operadora_id: Number(operadora_id),
+                        medicamento_id: medicamentoIdRow ? Number(medicamentoIdRow) : null, // ADICIONADO AQUI
                         cpf: cpf,
                         logradouro: enderecoData.logradouro || 'N/A',
                         numero: cleanString(row['numero'] || row['Numero']) || 'S/N',
                         complemento: cleanString(row['complemento'] || row['Complemento']),
                         bairro: enderecoData.bairro || 'N/A',
                         cidade: enderecoData.localidade || 'N/A',
-                        estado: enderecoData.uf || 'N/A'
+                        estado: enderecoData.uf || 'N/A',
+                        is_new_user: isNewUserFlag
                     });
                     successes.push({ nome: nomeDaPlanilha, cpf });
                 } catch (err) {
-                    // Se o banco rejeitar por outro motivo, capturamos o erro exato
                     errors.push({ nome: nomeDaPlanilha, cpf, erro: err.message });
                 }
             }
 
-            try {
-                if (req.file.path) fs.unlinkSync(req.file.path);
-            } catch (fileErr) { }
+            try { if (req.file.path) fs.unlinkSync(req.file.path); } catch (fileErr) { }
 
             return res.json({
                 message: 'Processamento concluído',
-                summary: {
-                    total_lido: data.length,
-                    importados: successes.length,
-                    duplicados: duplicates.length,
-                    erros: errors.length
-                },
-                detalhes: {
-                    duplicados: duplicates,
-                    erros: errors
-                }
+                summary: { total_lido: data.length, importados: successes.length, duplicados: duplicates.length, erros: errors.length },
+                detalhes: { duplicados: duplicates, erros: errors }
             });
 
         } catch (error) {
@@ -382,50 +414,37 @@ class PacientesController {
         }
     }
 
-    // --- VALIDAR IMPORT (EXIBE A QUEM O CPF PERTENCE) ---
     async validateImport(req, res) {
-        if (!req.file) {
-            return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-        }
-
+        // [CÓDIGO MANTIDO EXATAMENTE IGUAL - Nenhuma alteração necessária aqui]
+        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         const { operadora_id } = req.body;
         if (!operadora_id) {
             if (req.file.path) fs.unlinkSync(req.file.path);
             return res.status(400).json({ error: 'Operadora não informada para validação.' });
         }
-
         const permission = await getOperadoraFilter(req.userId, operadora_id);
-
         if (!permission.authorized) {
             if (req.file.path) fs.unlinkSync(req.file.path);
             return res.status(permission.status).json({ error: permission.error });
         }
-
         const validos = [];
         const duplicados = [];
         const invalidos = [];
-
         try {
             const data = parseExcel(req.file.path);
-
             for (const row of data) {
                 const cpfRaw = row['cpf'] || row['CPF'];
                 const cpf = cpfRaw ? String(cpfRaw).replace(/\D/g, '') : null;
                 const nomeDaPlanilha = row['nome'] || row['Nome'];
-
                 if (!cpf || !nomeDaPlanilha) {
                     invalidos.push({ linha: row, motivo: 'Nome ou CPF ausente na planilha' });
                     continue;
                 }
-
-                // 1. VALIDAÇÃO EXCLUSIVA DE CPF NO BANCO
                 const pacienteExists = await Pacientes.findOne({ where: { cpf } });
-
                 if (pacienteExists) {
-                    // Busca quem é o dono desse CPF no banco
                     const nomeDoBanco = `${pacienteExists.nome} ${pacienteExists.sobrenome || ''}`.trim();
                     duplicados.push({
-                        nome: nomeDaPlanilha, // Nome que o usuário tentou importar
+                        nome: nomeDaPlanilha,
                         cpf,
                         motivo: `CPF já cadastrado. O CPF pertence a: ${nomeDoBanco}`
                     });
@@ -433,72 +452,49 @@ class PacientesController {
                     validos.push({ nome: nomeDaPlanilha, cpf, status: 'Pronto para importar' });
                 }
             }
-
             try { if (req.file.path) fs.unlinkSync(req.file.path); } catch (e) { }
-
             return res.json({
                 resumo: { total: data.length, validos: validos.length, duplicados: duplicados.length, invalidos: invalidos.length },
                 detalhes: { validos, duplicados, invalidos }
             });
-
         } catch (error) {
             return res.status(500).json({ error: 'Erro na validação', details: error.message });
         }
     }
 
-    // --- NOVO MÉTODO PARA ALIMENTAR O SELECT DO FRONTEND ---
     async getOperadorasFiltro(req, res) {
+        // [CÓDIGO MANTIDO EXATAMENTE IGUAL]
         try {
-            // 1. Verifica se o middleware injetou o userId
-            if (!req.userId) {
-                return res.status(401).json({ error: 'Usuário não identificado. Verifique o token.' });
-            }
-
-            // 2. Busca as permissões
+            if (!req.userId) return res.status(401).json({ error: 'Usuário não identificado. Verifique o token.' });
             const permission = await getOperadoraFilter(req.userId);
-
             if (!permission.authorized) {
                 if (permission.emptyResult) return res.json([]);
                 return res.status(permission.status).json({ error: permission.error });
             }
-
             let whereClause = {};
             if (permission.whereClause && permission.whereClause.operadora_id) {
                 whereClause.id = permission.whereClause.operadora_id;
             }
-
-            // 3. Busca no banco
             const operadoras = await Operadora.findAll({
                 where: whereClause,
                 attributes: ['id', 'nome'],
                 order: [['nome', 'ASC']]
             });
-
             return res.json(operadoras);
-
         } catch (err) {
-            // Isso aqui vai salvar a sua vida no debug do Docker
             console.error("Erro na rota operadoras-filtro:", err);
             return res.status(500).json({ error: 'Erro interno ao buscar operadoras para o filtro' });
         }
     }
 
-    // --- NOVO: ALTERNAR STATUS (ATIVO/INATIVO) ---
     async toggleActive(req, res) {
+        // [CÓDIGO MANTIDO EXATAMENTE IGUAL]
         const { id } = req.params;
-
         try {
             const paciente = await Pacientes.findByPk(id);
-
-            if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
-            }
-
-            // Se for nulo no banco, consideramos que o padrão era true.
-            // Inverte o valor atual.
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
             const statusAtual = paciente.is_active !== false;
             await paciente.update({ is_active: !statusAtual });
-
             return res.json({
                 message: `Paciente ${!statusAtual ? 'ativado' : 'inativado'} com sucesso!`,
                 is_active: !statusAtual
@@ -508,8 +504,111 @@ class PacientesController {
         }
     }
 
+    async show(req, res) {
+        const { id } = req.params;
+        try {
+            const paciente = await Pacientes.findByPk(id, {
+                include: [
+                    {
+                        model: Operadora,
+                        as: 'operadoras',
+                        attributes: ['id', 'nome']
+                    },
+                    {   // ADICIONADO AQUI TAMBÉM
+                        model: Medicamentos,
+                        as: 'medicamento',
+                        attributes: ['id', 'nome', 'dosagem', 'price']
+                    }
+                ]
+            });
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
+            return res.json(paciente);
+        } catch (err) {
+            console.error("Erro no show de pacientes:", err);
+            return res.status(500).json({ error: 'Erro ao buscar detalhes do paciente' });
+        }
+    }
 
+    async getPending(req, res) {
+        // [CÓDIGO MANTIDO EXATAMENTE IGUAL]
+        try {
+            const permission = await getOperadoraFilter(req.userId);
+            if (!permission.authorized && !permission.emptyResult) {
+                return res.status(permission.status).json({ error: permission.error });
+            }
+            const where = permission.whereClause || {};
+            where.is_new_user = true;
+            const pendentes = await Pacientes.findAll({
+                where,
+                attributes: ['id', 'nome', 'sobrenome'],
+                order: [['createdAt', 'DESC']]
+            });
+            return res.json(pendentes);
+        } catch (error) {
+            console.error("Erro no getPending:", error);
+            return res.status(500).json({ error: 'Erro ao buscar pacientes pendentes' });
+        }
+    }
 
+    async confirmPatient(req, res) {
+        // [CÓDIGO MANTIDO EXATAMENTE IGUAL]
+        const { id } = req.params;
+        try {
+            const paciente = await Pacientes.findByPk(id);
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
+            await paciente.update({ is_new_user: false });
+            return res.json({ message: 'Cadastro de paciente confirmado com sucesso!' });
+        } catch (err) {
+            return res.status(500).json({ error: 'Erro ao confirmar paciente', details: err.message });
+        }
+    }
 
+    async autoFillFromDocument(req, res) {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Nenhum documento enviado para análise.' });
+        }
+
+        try {
+            const dadosExtraidos = await extrairDadosDocumento(req.file.path, req.file.mimetype);
+
+            let medicamentos_sugeridos = [];
+
+            // Se a IA encontrou um medicamento, faz a busca de similaridade
+            if (dadosExtraidos.medicamento_extraido) {
+                // Busca todos os medicamentos do banco
+                const todosMedicamentos = await Medicamentos.findAll({ attributes: ['id', 'nome', 'dosagem'] });
+
+                // Cria um array só com os nomes (+ dosagem) para o comparador
+                const nomesBanco = todosMedicamentos.map(m => `${m.nome} ${m.dosagem ? m.dosagem : ''}`.trim());
+
+                if (nomesBanco.length > 0) {
+                    // Compara o extraído pela IA com todos do banco
+                    const matches = stringSimilarity.findBestMatch(dadosExtraidos.medicamento_extraido, nomesBanco);
+
+                    // Filtra apenas os que tem 70% (0.7) ou mais de semelhança e ordena do maior pro menor
+                    medicamentos_sugeridos = matches.ratings
+                        .map((resultado, index) => ({
+                            ...todosMedicamentos[index].toJSON(),
+                            rating: resultado.rating
+                        }))
+                        .filter(med => med.rating >= 0.70)
+                        .sort((a, b) => b.rating - a.rating);
+                }
+            }
+
+            try { fs.unlinkSync(req.file.path); } catch (e) { console.error("Erro ao apagar temp doc:", e) }
+
+            // Retorna os dados da IA + o array de sugestões
+            return res.json({
+                ...dadosExtraidos,
+                medicamentos_sugeridos
+            });
+
+        } catch (error) {
+            console.error("Erro na extração por IA:", error);
+            try { if (req.file.path) fs.unlinkSync(req.file.path); } catch (e) { }
+            return res.status(500).json({ error: 'Erro ao analisar documento com a Inteligência Artificial.' });
+        }
+    }
 }
 export default new PacientesController();

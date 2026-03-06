@@ -16,6 +16,7 @@ class MedicamentosController {
             descricao: Yup.string(),
             qtd_capsula: Yup.number(),
             nome_comercial: Yup.string(),
+            price: Yup.number().positive(),
         });
 
         try {
@@ -24,14 +25,14 @@ class MedicamentosController {
             return res.status(400).json({ error: 'Validation fails', messages: err.inner });
         }
 
-        const { nome,dosagem,tipo_dosagem,codigo_tuss,laboratorio,tipo_produto,principio_ativo,descricao,qtd_capsula,nome_comercial } = req.body;
+        const { nome,dosagem,tipo_dosagem,codigo_tuss,laboratorio,tipo_produto,principio_ativo,descricao,qtd_capsula,nome_comercial, price } = req.body;
 
         // Sugestão de ajuste no Backend (store)
         const medicamentoExists = await Medicamentos.findOne({ where: { nome } });
         if (medicamentoExists) {
             return res.status(400).json({ error: 'Medicamento já cadastrado.' });
         }
-        const novoMedicamento = await Medicamentos.create({ nome,dosagem,tipo_dosagem,codigo_tuss,laboratorio,tipo_produto,principio_ativo,descricao,qtd_capsula,nome_comercial });
+        const novoMedicamento = await Medicamentos.create({ nome,dosagem,tipo_dosagem,codigo_tuss,laboratorio,tipo_produto,principio_ativo,descricao,qtd_capsula,nome_comercial, price });
         return res.status(201).json(novoMedicamento);
     }
 

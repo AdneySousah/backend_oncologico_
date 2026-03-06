@@ -18,7 +18,6 @@ import PrestadorMedicoController from "./app/controllers/PrestadorMedicoControll
 import DiagnosticoController from "./app/controllers/DiagnosticoController.js";
 import ExamesController from "./app/controllers/ExamesController.js";
 import InfosComorbidadeController from "./app/controllers/InfosComorbidadeController.js";
-import EntrevistaMedicaController from "./app/controllers/EntrevistaMedicaController.js";
 import EvaluationBuilderController from "./app/controllers/EvaluationBuilderController.js";
 import EvaluationResponseController from './app/controllers/EvaluationResponseController.js';
 import MedicoController from "./app/controllers/MedicoController.js";
@@ -30,6 +29,7 @@ import MonitoramentoMedicamentoController from "./app/controllers/MonitoramentoM
 import ReacaoAdversaController from "./app/controllers/ReacaoAdversaController.js";
 import DashboardController from "./app/controllers/DashboardController.js";
 import TentativaContatoController from "./app/controllers/TentativaContatoController.js";
+import PasswordResetController from "./app/controllers/PasswordResetController.js";
 
 
 
@@ -41,9 +41,19 @@ const uploadEntrevistaAnexos = multer(multerConfigEntrevistaAnexos);
 
 
 router.post('/session', SessionController.store)
+router.get('/pacientes/pendentes', authMiddleware, PacientesController.getPending);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 router.get('/pacientes/:id', TermoController.verifyResponse);
+
+
+
+
+
+router.post('/forgot-password', PasswordResetController.forgotPassword);
+router.post('/verify-code', PasswordResetController.verifyCode);
+router.post('/reset-password', PasswordResetController.resetPassword);
+
 
 // ==========================================
 // 1ª CAMADA DE SEGURANÇA: EXIGE LOGIN VÁLIDO
@@ -86,12 +96,16 @@ router.put('/operadoras/:id', checkPermission('operadoras', 'editar'), Operadora
 // --- ROTAS DOS PACIENTES ---
 router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.store);
 router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
+router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
 router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
 router.post('/pacientes/validate', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.validateImport);
 router.post('/pacientes/import', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.importExcel);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
 router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
 router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
+router.patch('/pacientes/:id/confirmar', checkPermission('pacientes', 'editar'), PacientesController.confirmPatient);
+
+router.post('/pacientes/autofill', checkPermission('pacientes', 'editar'), upload.single('documento'), PacientesController.autoFillFromDocument);
 
 
 // --- ROTAS DE PRESTADORES MÉDICOS (HOSPITAIS) ---
@@ -114,19 +128,14 @@ router.post('/exames', checkPermission('exames', 'editar'), ExamesController.sto
 router.post('/infos-comorbidade', checkPermission('comorbidades', 'editar'), InfosComorbidadeController.store);
 
 
-// --- ROTAS DE ENTREVISTA MÉDICA ---
-router.post('/entrevistas-medicas', checkPermission('entrevistas_medicas', 'editar'), uploadEntrevistaAnexos.array('anexos_files'), EntrevistaMedicaController.store);
-router.get('/entrevistas-medicas', checkPermission('entrevistas_medicas', 'acessar'), EntrevistaMedicaController.index);
-router.get('/entrevistas-medicas/:id', checkPermission('entrevistas_medicas', 'acessar'), EntrevistaMedicaController.show);
-
-
 // --- ROTAS DE AVALIAÇÕES (QUESTIONÁRIOS) ---
 router.post('/evaluations/templates', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.store);
 router.patch('/evaluations/templates/:id/status', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.toggleStatus);
 router.get('/evaluations/templates', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.index);
 router.post('/evaluations/responses', checkPermission('avaliacoes', 'editar'), EvaluationResponseController.store);
 router.get('/evaluations/responses', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
-router.get('/evaluations/templates/pending/:entrevista_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForInterview);
+// Onde estava /pending/:entrevista_id, altere para:
+router.get('/evaluations/templates/pending/:paciente_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForPatient);
 router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.update);
 
 // --- TIMELINE DE AVALIAÇÕES ---
@@ -169,5 +178,7 @@ router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardContr
 
 router.post('/tentativas-contato', TentativaContatoController.store);
 router.get('/tentativas-contato', TentativaContatoController.index);
+
+
 
 export default router;

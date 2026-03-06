@@ -3,8 +3,9 @@ import Sequelize, { Model } from 'sequelize';
 class EvaluationQuestion extends Model {
   static init(sequelize) {
     super.init({
+      categoria: Sequelize.STRING, // NOVO CAMPO
       enunciado: Sequelize.TEXT,
-      tipo: Sequelize.ENUM('texto', 'multipla_escolha'),
+      tipo: Sequelize.ENUM('texto', 'multipla_escolha', 'orientacao'), // NOVO TIPO ADICIONADO
     }, {
       sequelize,
       tableName: 'evaluation_questions',

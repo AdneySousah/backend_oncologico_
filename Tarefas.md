@@ -69,10 +69,10 @@
 [x] 35. No momento do contato não efetivado (ao selecionar o nome do medico, deve ser criado a navegação somente com os dados atuais, que é o medico selecionado e as informações ja existentes do paciente). -> Fiz uma mudança, ele abre a entrevista pra adicionar porem sem as inforamçoes medicas
 
 [x] 36. Adiconar nome do medico no contato efetivado e autopreencher la no formulario da entrevista medica
-[ ] 37. Alerta para novos pacientes (inserir data de inserção) => operadora 
-[ ] 38. Inserir preço do medicamento junto a base de dados e dar prioridade de atendimento de acordo com maior preço de medicamento => independente da data
+[x] 37. Alerta para novos pacientes (inserir data de inserção) => operadora 
+[x] 38. Inserir preço do medicamento junto a base de dados e dar prioridade de atendimento de acordo com maior preço de medicamento => independente da data
 [ ] 39. inserir script no sistema de apresentação da navegação oncologica
 [ ] 40. Disparo do termo no whatsapp de autorização( whatsapp ou email)
 [ ] 41. Possivelmente será alterado questionario => receber o documento
-[ ] 42. Quanto mais alto score mais urgente
+[x] 42. Quanto mais alto score mais urgente
 

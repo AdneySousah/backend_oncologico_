@@ -27,7 +27,6 @@ class MonitoramentoMedicamentoController {
   async store(req, res) {
     const schema = Yup.object().shape({
       paciente_id: Yup.number().integer().required('O ID do paciente é obrigatório.'),
-      entrevista_profissional_id: Yup.number().integer().nullable(),
       patient_evaluation_id: Yup.number().integer().nullable(),
       medicamentos_confirmados: Yup.array().of(
         Yup.object().shape({
@@ -43,7 +42,7 @@ class MonitoramentoMedicamentoController {
       return res.status(400).json({ error: 'Falha na validação', messages: err.inner });
     }
 
-    const { paciente_id, entrevista_profissional_id, patient_evaluation_id, medicamentos_confirmados } = req.body;
+    const { paciente_id, patient_evaluation_id, medicamentos_confirmados } = req.body;
 
     try {
       const agendamentos = [];
@@ -59,7 +58,6 @@ class MonitoramentoMedicamentoController {
 
         const novoMonitoramento = await MonitoramentoMedicamento.create({
           paciente_id,
-          entrevista_profissional_id,
           patient_evaluation_id,
           medicamento_id: item.medicamento_id,
           posologia_diaria: item.posologia_diaria,
@@ -78,6 +76,7 @@ class MonitoramentoMedicamentoController {
   }
 
   async index(req, res) {
+    // ... MANTIDO IGUAL AO SEU CÓDIGO ORIGINAL ...
     try {
       const { operadora_id, page = 1, limit = 20, search = '' } = req.query;
       const offset = (page - 1) * limit;
@@ -89,10 +88,9 @@ class MonitoramentoMedicamentoController {
         return res.status(permission.status).json({ error: permission.error });
       }
 
-      // LÓGICA DE BUSCA CORRIGIDA: Quebra o texto por espaços e exige que todos os pedaços existam no nome ou sobrenome
       let pacienteWhere = { ...permission.whereClause };
       if (search) {
-        const termosPesquisa = search.trim().split(/\s+/); // Pega "Ana Costa" e vira ["Ana", "Costa"]
+        const termosPesquisa = search.trim().split(/\s+/); 
         
         const condicoesBusca = termosPesquisa.map(termo => ({
           [Op.or]: [
@@ -103,7 +101,7 @@ class MonitoramentoMedicamentoController {
 
         pacienteWhere = {
           ...pacienteWhere,
-          [Op.and]: condicoesBusca // Junta as regras obrigando a ter 'Ana' E 'Costa'
+          [Op.and]: condicoesBusca 
         };
       }
 
@@ -223,7 +221,6 @@ class MonitoramentoMedicamentoController {
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
-          entrevista_profissional_id: monitoramentoAtual.entrevista_profissional_id,
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: monitoramentoAtual.posologia_diaria,
@@ -246,7 +243,6 @@ class MonitoramentoMedicamentoController {
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
-          entrevista_profissional_id: monitoramentoAtual.entrevista_profissional_id,
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id, 
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: posologia,
@@ -263,6 +259,7 @@ class MonitoramentoMedicamentoController {
   }
 
   async timeline(req, res) {
+    // ... MANTIDO IGUAL AO SEU CÓDIGO ORIGINAL ...
     try {
         const operadoraQueryId = req.query.operadora_id;
         const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
