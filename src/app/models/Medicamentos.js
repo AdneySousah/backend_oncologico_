@@ -14,6 +14,7 @@ class Medicamentos extends Model {
             qtd_capsula: Sequelize.INTEGER,
             nome_comercial: Sequelize.STRING,
             price: Sequelize.DECIMAL(10, 2),
+            fornecedor: Sequelize.STRING
         }, {
             sequelize,
             tableName: 'medicamentos',

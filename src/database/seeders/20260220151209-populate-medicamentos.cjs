@@ -49,6 +49,7 @@ module.exports = {
           qtd_capsula: item.qtd_capsula ? parseInt(item.qtd_capsula) : 0,
           dosagem: valorDosagem,
           tipo_dosagem: unidadeDosagem,
+          fornecedor: item.fornecedor || null,
           created_at: new Date(),
           updated_at: new Date()
         };

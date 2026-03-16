@@ -217,6 +217,33 @@ class UserController {
 
     return res.status(200).json({ message: 'Senha atualizada com sucesso. Por favor, faça login novamente.' });
   }
+
+
+  // GET ME (Busca os dados do usuário logado)
+  async profile(req, res) {
+    try {
+      const user = await User.findByPk(req.userId, {
+        attributes: ['id', 'name', 'email', 'is_admin', 'is_profissional', 'perfil_id'],
+        include: [
+          { 
+            model: Operadora, 
+            as: 'operadoras', 
+            attributes: ['id', 'nome'], 
+            through: { attributes: [] } 
+          }
+        ]
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: 'Usuário não encontrado.' });
+      }
+
+      return res.json(user);
+    } catch (error) {
+      console.error("Erro ao buscar perfil do usuário:", error);
+      return res.status(500).json({ error: 'Erro interno ao buscar dados do usuário.' });
+    }
+  }
 }
 
 export default new UserController();

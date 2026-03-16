@@ -30,6 +30,7 @@ import ReacaoAdversaController from "./app/controllers/ReacaoAdversaController.j
 import DashboardController from "./app/controllers/DashboardController.js";
 import TentativaContatoController from "./app/controllers/TentativaContatoController.js";
 import PasswordResetController from "./app/controllers/PasswordResetController.js";
+import AuditLogController from "./app/controllers/AuditLogController.js";
 
 
 
@@ -64,7 +65,7 @@ router.use(authMiddleware)
 
 // --- ROTAS DE USUÁRIOS E PERFIS ---
 router.put('/users/first-access', UserController.changeFirstPassword)
-
+router.get('/users/me', UserController.profile);
 router.get('/users', checkPermission('usuarios', 'acessar'), UserController.index);
 router.put('/users/:id', checkPermission('usuarios', 'editar'), UserController.update);
 router.delete('/users/:id', checkPermission('usuarios', 'excluir'), UserController.delete);
@@ -178,6 +179,10 @@ router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardContr
 
 router.post('/tentativas-contato', TentativaContatoController.store);
 router.get('/tentativas-contato', TentativaContatoController.index);
+
+
+
+router.get('/audit-logs',checkPermission('audit-logs', 'acessar'), AuditLogController.index);
 
 
 

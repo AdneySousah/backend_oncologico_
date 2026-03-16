@@ -1,6 +1,6 @@
 FROM node:20
 
-# Instala dependências necessárias para o Chromium/Puppeteer rodar no Linux
+# 1. Instala dependências do Chromium/Puppeteer
 RUN apt-get update && apt-get install -y \
     gconf-service \
     libasound2 \
@@ -39,15 +39,29 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     xdg-utils \
     wget \
-    chromium
+    chromium \
+    # Limpa o cache do apt-get para deixar a imagem Docker mais leve
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Configura variáveis de ambiente para o Puppeteer
+# Isso diz ao npm install para não baixar uma versão extra do Chromium e usar a do sistema
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Configura o fuso horário (muito importante para sistemas médicos/agendamentos)
+ENV TZ=America/Sao_Paulo
 
 WORKDIR /app
 
+# 3. Copia apenas os arquivos de dependência primeiro
 COPY package*.json ./
+
+# 4. Instala as dependências
 RUN npm install
 
+# 5. Copia o resto do código
 COPY . .
-
 
 EXPOSE 3002
 

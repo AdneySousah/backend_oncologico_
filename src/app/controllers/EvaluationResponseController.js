@@ -8,6 +8,7 @@ import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import Medicamentos from '../models/Medicamentos.js';
 import Operadora from '../models/Operadora.js';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
+import AuditService from '../../services/AuditService.js';
 
 
 class EvaluationResponseController {
@@ -82,8 +83,24 @@ class EvaluationResponseController {
       });
 
       const finalAnswers = answersToCreate.map(a => ({ ...a, evaluation_id: evaluation.id }));
-
       await EvaluationAnswer.bulkCreate(finalAnswers);
+
+      // 1. Busca os dados do Paciente e do Template no banco
+      const paciente = await Pacientes.findByPk(paciente_id);
+      const template = await EvaluationTemplate.findByPk(template_id);
+
+      // 2. Monta as strings com os nomes (com fallback para o ID caso algo dê muito errado e venha null)
+      const nomePaciente = paciente ? `${paciente.nome} ${paciente.sobrenome}`.trim() : `ID ${paciente_id}`;
+      const nomeTemplate = template ? template.title : `ID ${template_id}`;
+
+      // 3. Salva o log com os nomes
+      await AuditService.log(
+        req.userId,
+        'Criação',
+        'Entrevista/Avaliação',
+        evaluation.id,
+        `Respondeu questionário "${nomeTemplate}" para o paciente ${nomePaciente}. Score: ${totalScore}`
+      );
 
       return res.json({ evaluation, answers: finalAnswers });
 
@@ -110,7 +127,7 @@ class EvaluationResponseController {
         where: { ...includePacienteWhere, is_active: true },
         // 2. ORDENAÇÃO ATUALIZADA: Pega o model incluído e ordena pelo price DESC
         order: [
-          [{ model: Medicamentos, as: 'medicamento' }, 'price', 'DESC'], 
+          [{ model: Medicamentos, as: 'medicamento' }, 'price', 'DESC'],
           ['createdAt', 'DESC'] // Desempate pela data de criação
         ],
         include: [

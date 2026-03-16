@@ -1,6 +1,7 @@
 import Pacientes from '../models/Pacientes.js';
 import User from '../models/User.js';
 import { enviarMensagemWhatsApp } from '../../services/whatsapp.js';
+import AuditService from '../../services/AuditService.js';
 
 class TermoController {
     // Disparado pelo usuário do sistema (Médico/Atendente)
@@ -33,7 +34,7 @@ class TermoController {
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar mensagem via WhatsApp' });
             }
-
+            await AuditService.log(req.userId, 'Envio', 'Termo WhatsApp', paciente.id, `Enviou link do termo via WhatsApp para o número ${numeroDestino}`);
             return res.json({ message: 'Link enviado com sucesso!' });
 
         } catch (error) {

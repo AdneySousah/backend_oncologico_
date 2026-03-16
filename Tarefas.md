@@ -72,7 +72,17 @@
 [x] 37. Alerta para novos pacientes (inserir data de inserção) => operadora 
 [x] 38. Inserir preço do medicamento junto a base de dados e dar prioridade de atendimento de acordo com maior preço de medicamento => independente da data
 [ ] 39. inserir script no sistema de apresentação da navegação oncologica
-[ ] 40. Disparo do termo no whatsapp de autorização( whatsapp ou email)
-[ ] 41. Possivelmente será alterado questionario => receber o documento
+[x] 40. Disparo do termo no whatsapp de autorização( whatsapp ou email)
+[x] 41. Possivelmente será alterado questionario => receber o documento
 [x] 42. Quanto mais alto score mais urgente
 
+
+
+de 0 a 10 o quanto indicaria o serviço 
+
+operadoras iniciais
+cemig saude
+copass saude
+fundaffemg
+fundação libertas
+casu

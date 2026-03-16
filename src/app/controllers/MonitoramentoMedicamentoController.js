@@ -7,6 +7,7 @@ import { addDays, subDays, parseISO } from 'date-fns';
 import { Op } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import * as Yup from 'yup';
+import AuditService from '../../services/AuditService.js';
 
 const obterProximoDiaUtil = (dataBase) => {
   const proximoDia = addDays(dataBase, 1);
@@ -251,7 +252,7 @@ class MonitoramentoMedicamentoController {
           status: 'PENDENTE'
         });
       }
-
+      await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato de monitoramento. Adesão: ${nivel_adesao || 'Não adere'}. Contato efetivo: ${contato_efetivo}`);
       return res.json({ message: 'Contato registrado e próximo monitoramento agendado com sucesso!' });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao registrar contato', details: error.message });

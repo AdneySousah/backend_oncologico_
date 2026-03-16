@@ -11,6 +11,7 @@ import { parseExcel } from '../../utils/excelUtils.js';
 import fs from 'fs';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import { extrairDadosDocumento } from '../../services/openAiService.js';
+import AuditService from '../../services/AuditService.js';
 
 class PacientesController {
 
@@ -133,7 +134,7 @@ class PacientesController {
                     }
                 ]
             });
-
+            await AuditService.log(req.userId, 'Criação', 'Paciente', paciente.id, `Cadastrou o paciente ${req.body.nome} ${req.body.sobrenome} (CPF: ${req.body.cpf})`);
             return res.status(201).json(pacienteCriado);
 
         } catch (err) {
@@ -224,7 +225,7 @@ class PacientesController {
                     }
                 ]
             });
-
+           await AuditService.log(req.userId, 'Edição', 'Paciente', paciente.id, `Atualizou dados do paciente ${pacienteAtualizado.nome} ${pacienteAtualizado.sobrenome} (ID: ${paciente.id})`);
             return res.json(pacienteAtualizado);
         } catch (err) {
             console.error("Erro no update:", err);
@@ -402,7 +403,7 @@ class PacientesController {
             }
 
             try { if (req.file.path) fs.unlinkSync(req.file.path); } catch (fileErr) { }
-
+            await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou planilha com ${successes.length} pacientes na operadora ${operadora_id}`);
             return res.json({
                 message: 'Processamento concluído',
                 summary: { total_lido: data.length, importados: successes.length, duplicados: duplicates.length, erros: errors.length },
@@ -495,6 +496,7 @@ class PacientesController {
             if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
             const statusAtual = paciente.is_active !== false;
             await paciente.update({ is_active: !statusAtual });
+            await AuditService.log(req.userId, 'Edição', 'Status Paciente', paciente.id, `Alterou status do paciente ${paciente.nome} para ${!statusAtual ? 'Ativo' : 'Inativo'}`);
             return res.json({
                 message: `Paciente ${!statusAtual ? 'ativado' : 'inativado'} com sucesso!`,
                 is_active: !statusAtual

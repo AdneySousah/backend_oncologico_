@@ -60,24 +60,51 @@ newClient.initialize();
 // 4. Exportamos a função que vai USAR o client instanciado lá em cima
 export const enviarMensagemWhatsApp = async (numero, mensagem) => {
     try {
-        const numeroLimpo = numero.replace(/\D/g, '');
-        const numeroComDDI = `55${numeroLimpo}`;
-
-        // O PULO DO GATO: Agora o 'client' existe e vai resolver o número
-        const numberDetails = await newClient.getNumberId(numeroComDDI);
-
-        if (!numberDetails) {
-            console.error(`❌ O número ${numeroComDDI} não possui WhatsApp registrado.`);
+        // Validação de estado: evita o erro de 'evaluate' em null
+        if (!newClient || !newClient.info || !newClient.info.wid) {
+            console.error('❌ O cliente WhatsApp não está pronto ou desconectou.');
             return false;
         }
 
-        await newClient.sendMessage(numberDetails._serialized, mensagem);
+        let numeroLimpo = numero.replace(/\D/g, '');
+        
+        // Regra para Brasil: Se tem 11 dígitos (DDD + 9 + número), 
+        // às vezes o WhatsApp Web espera o formato sem o 9 para IDs antigos 
+        // ou com o 9 para novos. O getNumberId costuma resolver isso, mas vamos garantir.
+        if (numeroLimpo.length === 11 && numeroLimpo.startsWith('55')) {
+             // já está com DDI
+        } else if (numeroLimpo.length >= 10 && !numeroLimpo.startsWith('55')) {
+            numeroLimpo = `55${numeroLimpo}`;
+        }
 
-        console.log(`✅ Mensagem enviada com sucesso para ${numeroComDDI}`);
+        console.log(`Verificando número: ${numeroLimpo}`);
+
+        // Tenta obter o ID oficial do WhatsApp
+        const numberDetails = await newClient.getNumberId(numeroLimpo);
+
+        let chatId;
+        if (numberDetails) {
+            chatId = numberDetails._serialized;
+        } else {
+            // Fallback: Se o getNumberId falhar, tentamos o formato padrão 
+            // Isso ajuda a evitar o erro "new chat not found" em alguns casos
+            console.warn(`⚠️ getNumberId falhou para ${numeroLimpo}. Tentando formato padrão.`);
+            chatId = `${numeroLimpo}@c.us`;
+        }
+
+        // Envio da mensagem
+        await newClient.sendMessage(chatId, mensagem);
+
+        console.log(`✅ Mensagem enviada com sucesso para ${chatId}`);
         return true;
 
     } catch (error) {
-        console.error('❌ Erro ao enviar WhatsApp:', error);
+        // Se o erro for o "findChat", pode ser instabilidade de rede ou do Puppeteer
+        if (error.message.includes('findChat')) {
+            console.error('❌ Erro de sincronização do WhatsApp (findChat). O número pode ser inválido ou a página oscilou.');
+        } else {
+            console.error('❌ Erro ao enviar WhatsApp:', error);
+        }
         return false;
     }
 };

@@ -30,6 +30,7 @@ import EntrevistaMedicamento from '../app/models/EntrevistaMedicamento.js';
 import MonitoramentoMedicamento from '../app/models/MonitoramentoMedicamento.js';
 import ReacaoAdversa from '../app/models/ReacaoAdversa.js';
 import TentativaContato from '../app/models/TentativaContato.js';
+import AuditLog from '../app/models/AuditLog.js';
 
 const models = [
   User, OncologyProfessional, Especiality, Operadora, Pacientes, 
@@ -38,7 +39,7 @@ const models = [
   EvaluationTemplate, EvaluationQuestion, EvaluationOption, 
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
-  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato
+  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog
 ];
 
 class Database {
