@@ -49,7 +49,7 @@ class DashboardController {
       // =========================================================
       const pacientes = await Pacientes.findAll({
         attributes: ['id', 'nome', 'sobrenome', 'status_termo', 'is_active', 'createdAt'],
-        include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }], // CORRIGIDO PARA 'operadoras'
+        include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }],
         where: { ...includePacienteWhere, ...dateFilterCreatedAt }
       });
 
@@ -64,7 +64,7 @@ class DashboardController {
       pacientes.forEach(p => {
         const statusTermo = p.status_termo || 'Pendente';
         const isAtivo = p.is_active;
-        const nomeOperadora = p.operadoras?.nome || 'N/A'; // CORRIGIDO AQUI TAMBÉM
+        const nomeOperadora = p.operadoras?.nome || 'N/A';
         const nomeCompleto = `${p.nome} ${p.sobrenome || ''}`.trim();
 
         if (termosCount[statusTermo] !== undefined) termosCount[statusTermo]++;
@@ -94,7 +94,7 @@ class DashboardController {
           model: Pacientes, as: 'paciente',
           where: { ...includePacienteWhere, is_active: true },
           attributes: ['id', 'nome', 'sobrenome'],
-          include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }] // CORRIGIDO PARA 'operadoras'
+          include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
         }],
         where: { ...dateFilter }
       });
@@ -105,7 +105,7 @@ class DashboardController {
       monitoramentos.forEach(mon => {
         if (!monitoradosSet.has(mon.paciente_id)) {
           monitoradosSet.add(mon.paciente_id);
-          const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A'; // CORRIGIDO
+          const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A';
 
           monitoradosReport.push({
             paciente_id: mon.paciente?.id,
@@ -126,7 +126,7 @@ class DashboardController {
         include: [
           {
             model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id', 'nome', 'sobrenome'],
-            include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }] // CORRIGIDO PARA 'operadoras'
+            include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
           },
           { model: EvaluationTemplate, as: 'template', attributes: ['title'] }
         ],
@@ -141,7 +141,7 @@ class DashboardController {
       avaliacoes.forEach(av => {
         const categoria = av.template?.title || 'Sem Categoria';
         const score = Number(av.total_score);
-        const nomeOperadora = av.paciente?.operadoras?.nome || 'N/A'; // CORRIGIDO
+        const nomeOperadora = av.paciente?.operadoras?.nome || 'N/A';
         const nomeCompleto = `${av.paciente?.nome} ${av.paciente?.sobrenome || ''}`.trim();
 
         if (!categoriasMap[categoria]) categoriasMap[categoria] = { total: 0, count: 0 };
@@ -184,7 +184,7 @@ class DashboardController {
       const monitoramentosAderencia = await MonitoramentoMedicamento.findAll({
         include: [{
           model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id', 'nome', 'sobrenome'],
-          include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }] // CORRIGIDO PARA 'operadoras'
+          include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
         }],
         where: { nivel_adesao: { [Op.not]: null }, status: 'CONCLUIDO', ...dateFilter }
       });
@@ -194,7 +194,7 @@ class DashboardController {
 
       monitoramentosAderencia.forEach(mon => {
         const nivel = mon.nivel_adesao;
-        const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A'; // CORRIGIDO
+        const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A';
 
         if (aderenciaOpcoesCount[nivel] !== undefined) aderenciaOpcoesCount[nivel]++;
 
@@ -214,7 +214,7 @@ class DashboardController {
         include: [
           {
             model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id', 'nome', 'sobrenome'],
-            include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }] // CORRIGIDO PARA 'operadoras'
+            include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
           },
           { model: ReacaoAdversa, as: 'reacoesAdversas', attributes: ['name'], required: true }
         ],
@@ -226,7 +226,7 @@ class DashboardController {
 
       monitoramentosRam.forEach(mon => {
         if (mon.reacoesAdversas && mon.reacoesAdversas.length > 0) {
-          const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A'; // CORRIGIDO
+          const nomeOperadora = mon.paciente?.operadoras?.nome || 'N/A';
 
           mon.reacoesAdversas.forEach(reacaoObj => {
             const reacao = reacaoObj.name;
@@ -254,15 +254,22 @@ class DashboardController {
       // =========================================================
       let nomeOperadoraLog = 'Cic Oncologia (Todas)';
       
-      if (operadora_id) {
-        console.log(operadora_id)
-        const operadoraBusca = await Operadora.findByPk(operadora_id, { attributes: ['nome'] });
+      // Busca o ID tanto da query quanto da regra de permissão
+      const idParaBuscar = operadora_id || (permission.whereClause && permission.whereClause.operadora_id);
+
+      if (idParaBuscar) {
+        // CORREÇÃO APLICADA AQUI: Usando findOne com where para evitar o erro "[object Object]"
+        const operadoraBusca = await Operadora.findOne({
+          where: { id: idParaBuscar },
+          attributes: ['nome']
+        });
+
         if (operadoraBusca) {
           nomeOperadoraLog = operadoraBusca.nome;
         }
       }
 
-      console.log('A operadora encontrada é ', nomeOperadoraLog, 'e o usuario é', req.userId)
+      console.log(`Auditoria -> Operadora: ${nomeOperadoraLog} | Usuário: ${req.userId}`);
 
       await AuditService.log(
         req.userId, 
