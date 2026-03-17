@@ -40,8 +40,6 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     wget \
     chromium \
-    axios \
-    nodemailer \
     # Limpa o cache do apt-get para deixar a imagem Docker mais leve
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
