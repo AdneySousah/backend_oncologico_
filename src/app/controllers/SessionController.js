@@ -1,6 +1,6 @@
 import * as Yup from 'yup'
 import User from '../models/User.js'
-import Perfil from '../models/Perfil.js' // ADICIONE ESTE IMPORT
+import Perfil from '../models/Perfil.js'
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import authConfig from '../../config/auth.js'
@@ -22,9 +22,11 @@ class SessionController {
 
         const { email, password } = req.body
 
-        // ADICIONAMOS O INCLUDE DO PERFIL AQUI
+        // NORMALIZAÇÃO AQUI: Remove espaços em branco e deixa tudo minúsculo
+        const normalizedEmail = email.trim().toLowerCase();
+
         const user = await User.findOne({ 
-            where: { email },
+            where: { email: normalizedEmail }, // Usa o e-mail normalizado
             include: [{
                 model: Perfil,
                 as: 'perfil',
@@ -35,6 +37,7 @@ class SessionController {
         if (!user) {
             return res.status(401).json({ error: 'email or password is invalid' })
         }
+        
         const password_hash = await bcrypt.compare(password, user.password_hash)
 
         if (!password_hash) {
@@ -51,9 +54,9 @@ class SessionController {
                 name: user.name,
                 email: user.email,
                 active: user.active,
-                is_admin: user.is_admin, // Sempre bom mandar pro front
+                is_admin: user.is_admin, 
                 is_new_user: user.is_new_user,
-                perfil: user.perfil // Envia o objeto inteiro do perfil (com as permissões)
+                perfil: user.perfil 
             }, 
             token
         })
