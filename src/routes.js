@@ -3,7 +3,6 @@ import { Router } from "express";
 import multer from 'multer';
 import multerConfig from './config/multer.cjs';
 import multerConfigAnexos from './config/anexosMulter.cjs';
-import multerConfigEntrevistaAnexos from './config/anexosEntrevistaMulter.cjs';
 
 import authMiddleware from "./middlewares/auth.js";
 import checkPermission from "./middlewares/checkPermission.js"; // Importe o novo middleware
@@ -32,17 +31,19 @@ import TentativaContatoController from "./app/controllers/TentativaContatoContro
 import PasswordResetController from "./app/controllers/PasswordResetController.js";
 import AuditLogController from "./app/controllers/AuditLogController.js";
 
+import NpsController from "./app/controllers/NpsController.js";
+
 
 
 const router = Router();
 
 const upload = multer(multerConfig);
 const uploadAnexos = multer(multerConfigAnexos);
-const uploadEntrevistaAnexos = multer(multerConfigEntrevistaAnexos);
 
 
 router.post('/session', SessionController.store)
 router.get('/pacientes/pendentes', authMiddleware, PacientesController.getPending);
+router.post('/nps/resposta', NpsController.registerResponse);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 router.get('/pacientes/:id', TermoController.verifyResponse);
@@ -161,6 +162,10 @@ router.get('/medicamentos', checkPermission('medicamentos', 'acessar'), Medicame
 // --- ROTAS DE TERMOS ---
 router.post('/termos/send', checkPermission('termos', 'editar'), TermoController.sendLink);
 router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), TermoController.checkStatus);
+
+router.post('/nps/send', checkPermission('avaliacoes', 'editar'), NpsController.sendNps); 
+router.get('/nps', checkPermission('dashboard', 'acessar'), NpsController.index); 
+router.get('/nps/paciente/:id/status', NpsController.checkPatientStatus);
 
 
 

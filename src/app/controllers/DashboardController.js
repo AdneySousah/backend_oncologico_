@@ -5,6 +5,7 @@ import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
 import Operadora from '../models/Operadora.js';
+import NpsResponse from '../models/NpsResponse.js'; // <-- IMPORT DO NPS ADICIONADO AQUI
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
 
@@ -24,7 +25,8 @@ class DashboardController {
         fichaRam: { chart: [], report: [] },
         totalPacientes: { chart: [], report: [], total: 0 },
         pacientesMonitorados: { chart: [], report: [], total: 0 },
-        pacientesElegiveis: { chart: [], report: [], total: 0 }
+        pacientesElegiveis: { chart: [], report: [], total: 0 },
+        nps: { chart: [], report: [] } // <-- ADICIONADO AQUI PARA PREVENIR ERROS
       };
 
       if (!permission.authorized) {
@@ -250,15 +252,47 @@ class DashboardController {
       })).sort((a, b) => b.value - a.value).slice(0, 10);
 
       // =========================================================
+      // 6. NPS - ÍNDICE DE SATISFAÇÃO (NOVO)
+      // =========================================================
+      const npsResponses = await NpsResponse.findAll({
+        include: [{
+          model: Pacientes, as: 'paciente', 
+          where: includePacienteWhere, 
+          attributes: ['id', 'nome', 'sobrenome'],
+          include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
+        }],
+        where: { ...dateFilterCreatedAt },
+        order: [['createdAt', 'DESC']]
+      });
+
+      let npsChart = [];
+      let npsReport = [];
+
+      npsResponses.forEach(nps => {
+        // Formato para o gráfico (só precisa da nota)
+        npsChart.push({
+          nota: nps.nota,
+          paciente_id: nps.paciente_id
+        });
+
+        // Formato para o relatório em Excel
+        npsReport.push({
+          paciente_id: nps.paciente_id,
+          nome_paciente: `${nps.paciente?.nome} ${nps.paciente?.sobrenome || ''}`.trim(),
+          operadora: nps.paciente?.operadoras?.nome || 'N/A',
+          nota: nps.nota,
+          created_at: nps.createdAt ? nps.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+        });
+      });
+
+      // =========================================================
       // REGISTRO DE AUDITORIA COM NOME DA OPERADORA
       // =========================================================
       let nomeOperadoraLog = 'Cic Oncologia (Todas)';
       
-      // Busca o ID tanto da query quanto da regra de permissão
       const idParaBuscar = operadora_id || (permission.whereClause && permission.whereClause.operadora_id);
 
       if (idParaBuscar) {
-        // CORREÇÃO APLICADA AQUI: Usando findOne com where para evitar o erro "[object Object]"
         const operadoraBusca = await Operadora.findOne({
           where: { id: idParaBuscar },
           attributes: ['nome']
@@ -332,7 +366,8 @@ class DashboardController {
           ],
           report: aderenciaOpcoesReport
         },
-        fichaRam: { chart: fichaRamChart, report: ramReport }
+        fichaRam: { chart: fichaRamChart, report: ramReport },
+        nps: { chart: npsChart, report: npsReport } // <-- NPS RETORNADO AQUI PARA O FRONTEND
       });
 
     } catch (error) {
