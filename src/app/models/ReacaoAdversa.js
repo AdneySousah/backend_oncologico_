@@ -5,6 +5,7 @@ class ReacaoAdversa extends Model {
     super.init(
       {
         name: Sequelize.STRING,
+        active: Sequelize.BOOLEAN,
       },
       {
         sequelize,

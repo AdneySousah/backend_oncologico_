@@ -32,6 +32,7 @@ import PasswordResetController from "./app/controllers/PasswordResetController.j
 import AuditLogController from "./app/controllers/AuditLogController.js";
 
 import NpsController from "./app/controllers/NpsController.js";
+import NpsHealthController from "./app/controllers/NpsHealthController.js";
 
 
 
@@ -47,7 +48,6 @@ router.post('/nps/resposta', NpsController.registerResponse);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 router.get('/pacientes/:id', TermoController.verifyResponse);
-
 
 
 
@@ -157,6 +157,8 @@ router.get('/comorbidades', checkPermission('comorbidades', 'acessar'), Comorbid
 // --- ROTAS DE MEDICAMENTOS ---
 router.post('/medicamentos', checkPermission('medicamentos', 'editar'), MedicamentosController.store);
 router.get('/medicamentos', checkPermission('medicamentos', 'acessar'), MedicamentosController.index);
+router.post('/medicamentos/validate', upload.single('file'), MedicamentosController.validateExcel);
+router.post('/medicamentos/import', upload.single('file'), MedicamentosController.importExcel);
 
 
 // --- ROTAS DE TERMOS ---
@@ -178,6 +180,8 @@ router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timelin
 /* Rotas de ficha ram */
 router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.store);
 router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), ReacaoAdversaController.index);
+router.put('/reacao-adversa/:id', ReacaoAdversaController.update);
+router.delete('/reacao-adversa/:id', ReacaoAdversaController.delete);
 
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
@@ -188,6 +192,8 @@ router.get('/tentativas-contato', TentativaContatoController.index);
 
 
 router.get('/audit-logs',checkPermission('audit-logs', 'acessar'), AuditLogController.index);
+
+router.get('/nps/health',checkPermission('check-saude', 'acessar'), NpsHealthController.checkStatus);
 
 
 

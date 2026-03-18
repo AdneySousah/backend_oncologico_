@@ -1,12 +1,13 @@
 import Pacientes from '../models/Pacientes.js';
 import NpsResponse from '../models/NpsResponse.js';
 import { Op } from 'sequelize';
-import User from '../models/User.js';
 import AuditService from '../../services/AuditService.js';
-import { enviarEnqueteNPS } from '../../services/whatsapp.js'; // Vamos criar essa função no passo 4
+import { enviarEnqueteNPS } from '../../services/whatsapp.js';
 
 class NpsController {
-    // 1. Envia o NPS (Requer Autenticação)
+    /**
+     * 1. DISPARO DO NPS (Chamado pelo sistema/atendente)
+     */
     async sendNps(req, res) {
         const { paciente_id } = req.body;
 
@@ -23,14 +24,20 @@ class NpsController {
                 return res.status(400).json({ error: 'Paciente não possui número cadastrado' });
             }
 
-            // Dispara a função que cria a enquete no whatsapp-web.js
+            // Dispara via Twilio Service (O número já vai formatado com 55 lá)
             const enviado = await enviarEnqueteNPS(numeroDestino, paciente.nome);
 
             if (!enviado) {
-                return res.status(500).json({ error: 'Falha ao enviar NPS via WhatsApp' });
+                return res.status(500).json({ error: 'Falha ao enviar NPS via Twilio' });
             }
 
-            await AuditService.log(req.userId, 'Envio', 'NPS WhatsApp', paciente.id, `Enviou pesquisa de NPS via WhatsApp para o número ${numeroDestino}`);
+            await AuditService.log(
+                req.userId, 
+                'Envio', 
+                'NPS WhatsApp', 
+                paciente.id, 
+                `Enviou pesquisa de NPS via WhatsApp para o número ${numeroDestino}`
+            );
             
             return res.json({ message: 'Pesquisa de NPS enviada com sucesso!' });
 
@@ -40,108 +47,134 @@ class NpsController {
         }
     }
 
-    // 2. Recebe a nota (Rota Pública, chamada pelo bot do WhatsApp)
-    async registerResponse(req, res) {
-        const { celular, nota } = req.body;
+   async registerResponse(req, res) {
+    // A Twilio envia os dados no corpo (req.body)
+    const { From, Body } = req.body; 
 
-        try {
-            const celularLimpo = celular.replace(/\D/g, ''); // Ex: 553197334935
-
-            // Tira o DDI (55) pra gente trabalhar só com DDD e número
-            let numeroSemDDI = celularLimpo.startsWith('55') ? celularLimpo.substring(2) : celularLimpo;
-
-            // Extrai o DDD e obriga a ler só os últimos 8 dígitos (ignora o nono dígito)
-            const ddd = numeroSemDDI.substring(0, 2);
-            const ultimos8 = numeroSemDDI.slice(-8); 
-            const prefixo = ultimos8.substring(0, 4);
-            const sufixo = ultimos8.substring(4, 8);
-
-            // Busca coringa: Aceita "(31) 99733-4935", "3197334935", etc.
-            let paciente = await Pacientes.findOne({
-                where: {
-                    celular: {
-                        [Op.like]: `%${ddd}%${prefixo}%${sufixo}%`
-                    }
-                }
-            });
-
-            if (!paciente) {
-                console.warn(`⚠️ Voto recebido de ${celular}, mas paciente não encontrado no banco com a busca inteligente.`);
-                return res.status(404).json({ error: 'Paciente não encontrado para este número' });
-            }
-
-            // Salva a nota
-            await NpsResponse.create({
-                paciente_id: paciente.id,
-                nota: Number(nota)
-            });
-
-            return res.json({ message: 'Nota de NPS registrada com sucesso!' });
-
-        } catch (error) {
-            console.error("❌ Erro ao registrar nota do NPS:", error);
-            return res.status(500).json({ error: 'Erro ao processar resposta do NPS' });
+    try {
+        // 1. Garantir que From existe e tratá-lo como String
+        if (!From) {
+            return res.status(200).send('<Response></Response>');
         }
-    }
+        const stringFrom = String(From);
+        const celularLimpo = stringFrom.replace('whatsapp:', '').replace(/\D/g, '');
 
-    // 3. Exibe o relatório (Requer Autenticação)
+        // 2. Garantir que Body seja tratado como String para o Regex funcionar
+        // Se você mandou 10 (número) no Postman, o String(Body) vira "10" (texto)
+        const stringBody = Body ? String(Body) : '';
+        const match = stringBody.match(/\b(10|[0-9])\b/);
+        
+        if (!match) {
+            console.warn(`⚠️ Resposta de ${celularLimpo} sem nota válida: "${Body}"`);
+            res.set('Content-Type', 'text/xml');
+            return res.status(200).send('<Response></Response>');
+        }
+
+        const notaFinal = parseInt(match[0]);
+
+        // 3. Busca Inteligente (últimos 8 dígitos)
+        const ultimos8 = celularLimpo.slice(-8);
+        const paciente = await Pacientes.findOne({
+            where: {
+                celular: { [Op.like]: `%${ultimos8}` }
+            }
+        });
+
+        if (!paciente) {
+            console.error(`❌ Voto de ${celularLimpo} ignorado: Paciente não localizado.`);
+            res.set('Content-Type', 'text/xml');
+            return res.status(200).send('<Response></Response>');
+        }
+
+        // 4. Salva no banco
+        await NpsResponse.create({
+            paciente_id: paciente.id,
+            nota: notaFinal
+        });
+
+        console.log(`✅ NPS Registrado: ${paciente.nome} deu nota ${notaFinal}`);
+
+        // 5. Resposta TwiML
+        res.set('Content-Type', 'text/xml');
+        return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
+            <Response>
+                <Message>A CIC Oncologia agradece o seu feedback! Sua nota ${notaFinal} foi registrada com sucesso.</Message>
+            </Response>`);
+
+    } catch (error) {
+        console.error("❌ Erro crítico no Webhook da Twilio:", error);
+        res.set('Content-Type', 'text/xml');
+        return res.status(200).send('<Response></Response>');
+    }
+  }
+
+    /**
+     * 3. RELATÓRIO DE NPS (Dashboard)
+     */
     async index(req, res) {
         try {
             const npsData = await NpsResponse.findAll({
-                attributes: ['id', 'nota', 'created_at'],
-                // Excluindo o ID do paciente da resposta para manter o anonimato como você pediu
-                // Trazemos apenas o id da resposta, a nota e a data
+                // Incluímos o ID do paciente para você saber de quem é a nota, se precisar
+                attributes: ['id', 'paciente_id', 'nota', 'created_at'],
                 order: [['created_at', 'DESC']]
             });
 
-            // Lógica rápida para calcular a média e a pontuação do NPS
             const total = npsData.length;
-            let promotores = 0; // Notas 9 e 10
-            let detratores = 0; // Notas de 0 a 6
+            if (total === 0) return res.json({ resumo: { total_respostas: 0 }, dados: [] });
+
+            let promotores = 0;
+            let detratores = 0;
+            let somaNotas = 0;
 
             npsData.forEach(resp => {
+                somaNotas += resp.nota;
                 if (resp.nota >= 9) promotores++;
                 else if (resp.nota <= 6) detratores++;
             });
 
-            const score = total > 0 ? Math.round(((promotores - detratores) / total) * 100) : 0;
+            const scoreNps = Math.round(((promotores - detratores) / total) * 100);
+            const mediaReal = (somaNotas / total).toFixed(1);
 
             return res.json({
-                resumo: { total_respostas: total, score_nps: score },
-                dados: npsData
+                resumo: { 
+                    total_respostas: total, 
+                    score_nps: scoreNps, 
+                    media_real: Number(mediaReal)
+                },
+                dados: npsData // Aqui estão as notas individuais (10, 8, 5...)
             });
-
         } catch (error) {
-            console.error("Erro ao listar NPS:", error);
             return res.status(500).json({ error: 'Erro ao buscar dados do NPS' });
         }
     }
 
+    /**
+     * 4. VERIFICAÇÃO DE DUPLICIDADE (Evita o paciente votar 10x seguidas)
+     */
     async checkPatientStatus(req, res) {
-    const { id } = req.params; // ID do paciente
-    
-    // Procura uma resposta dada por este paciente na última 1 hora
-    const limiteTempo = new Date();
-    limiteTempo.setHours(limiteTempo.getHours() - 1);
-
-    try {
-        const nps = await NpsResponse.findOne({
-            where: {
-                paciente_id: id,
-                created_at: { [Op.gte]: limiteTempo }
-            },
-            order: [['created_at', 'DESC']]
-        });
-
-        if (nps) {
-            return res.json({ respondido: true, nota: nps.nota });
-        }
+        const { id } = req.params;
         
-        return res.json({ respondido: false });
-    } catch (error) {
-        return res.status(500).json({ error: 'Erro ao verificar status' });
+        // Vamos diminuir a janela para 2 minutos. 
+        // Assim, o Modal só "valida" se a resposta for muito recente.
+        const limiteTempo = new Date();
+        limiteTempo.setMinutes(limiteTempo.getMinutes() - 2); 
+
+        try {
+            const nps = await NpsResponse.findOne({
+                where: {
+                    paciente_id: id,
+                    created_at: { [Op.gte]: limiteTempo } // Só pega se foi nos últimos 2 minutos
+                },
+                order: [['created_at', 'DESC']]
+            });
+
+            return res.json({ 
+                respondido: !!nps, 
+                nota: nps ? nps.nota : null 
+            });
+        } catch (error) {
+            return res.status(500).json({ error: 'Erro ao verificar status' });
+        }
     }
 }
-}
-
 export default new NpsController();

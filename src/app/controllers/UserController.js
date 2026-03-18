@@ -5,10 +5,10 @@ import OncologyProfessional from '../models/OncologyProfessional.js';
 import Especiality from '../models/Especiality.js'; // Garantir que está importado para o include
 import * as Yup from 'yup';
 import bcrypt from 'bcrypt';
-
+import { Op,fn,col } from 'sequelize';
 class UserController {
   // CREATE
-  async store(req, res) {
+ async store(req, res) {
     const schema = Yup.object({
       name: Yup.string().required(),
       email: Yup.string().email().required(),
@@ -33,23 +33,42 @@ class UserController {
       });
     }
 
-    const { name, email, password, is_profissional, is_admin, operadoras, perfil_id, professional_data } = req.body;
+    // Normalização: Transformamos o email em minúsculo antes de qualquer checagem ou inserção
+    const { name, password, is_profissional, is_admin, operadoras, perfil_id, professional_data } = req.body;
+    const email = req.body.email.toLowerCase();
 
-    const userExists = await User.findOne({ where: { email } });
+    // Busca insensível a maiúsculas/minúsculas
+    // Se usar PostgreSQL, o [Op.iLike] é o ideal. Se usar MySQL/SQLite, o lower() resolve.
+    
+    
+    const userExists = await User.findOne({ 
+      where: fn('lower', col('email')), 
+      where: { email } 
+    });
+
     if (userExists) {
-      return res.status(400).json({ error: 'User already exists.' });
+      return res.status(400).json({ error: 'Email já foi cadastrado' });
     }
 
     const password_hash = await bcrypt.hash(password, 8);
 
-    const user = await User.create({ 
-      name, email, password_hash, active: true, is_profissional, is_admin, perfil_id 
+    // Criação do usuário com o email já normalizado
+    const user = await User.create({
+      name,
+      email,
+      password_hash,
+      active: true,
+      is_profissional,
+      is_admin,
+      perfil_id
     });
 
+    // Vínculo com Operadoras
     if (operadoras && operadoras.length > 0) {
-      await user.setOperadoras(operadoras); 
+      await user.setOperadoras(operadoras);
     }
 
+    // Vínculo com dados profissionais
     if (is_profissional && professional_data && professional_data.registry_number) {
       await OncologyProfessional.create({
         user_id: user.id,
@@ -59,33 +78,41 @@ class UserController {
       });
     }
 
-    // Recarrega o usuário para resposta (AGORA TRAZENDO O especiality_id)
+    // Recarrega o usuário para resposta com os relacionamentos
     await user.reload({
-      attributes: ['id', 'name', 'email', 'is_profissional', 'is_admin', 'perfil_id'],
+      attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
-        { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
-        { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
         { 
-          model: OncologyProfessional, 
-          as: 'professional', 
-          attributes: ['registry_type', 'registry_number', 'especiality_id'] // <-- CORREÇÃO AQUI
+          model: Operadora, 
+          as: 'operadoras', 
+          attributes: ['id', 'nome'], 
+          through: { attributes: [] } 
+        },
+        { 
+          model: Perfil, 
+          as: 'perfil', 
+          attributes: ['id', 'nome'] 
+        },
+        {
+          model: OncologyProfessional,
+          as: 'professional',
+          attributes: ['registry_type', 'registry_number', 'especiality_id'],
+          include: [{ model: Especiality, as: 'speciality', attributes: ['id', 'name'] }]
         }
       ]
     });
 
     return res.status(201).json(user);
   }
-
   // READ (Listagem)
   async index(req, res) {
     const users = await User.findAll({
-      where: { active: true },
       attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
         { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
         { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
-        { 
-          model: OncologyProfessional, 
+        {
+          model: OncologyProfessional,
           as: 'professional',
           attributes: ['id', 'registry_type', 'registry_number', 'especiality_id'], // <-- CORREÇÃO AQUI
           include: [{ model: Especiality, as: 'speciality', attributes: ['id', 'name'] }]
@@ -103,27 +130,27 @@ class UserController {
     const user = await User.findByPk(req.params.id);
 
     if (!user) {
-      return res.status(400).json({ error: 'User not found' });
+      return res.status(400).json({ error: 'Usuario não encontrado' });
     }
 
     if (email && email !== user.email) {
       const userExists = await User.findOne({ where: { email } });
       if (userExists) {
-        return res.status(400).json({ error: 'User already exists.' });
+        return res.status(400).json({ error: 'Email ja foi utilizado' });
       }
     }
 
     if (oldPassword && !(await user.checkPassword(oldPassword))) {
-      return res.status(401).json({ error: 'Password does not match' });
+      return res.status(401).json({ error: 'Senha não confere' });
     }
 
     // Atualiza os dados básicos
     await user.update({
-        name: req.body.name,
-        email: req.body.email,
-        is_admin: req.body.is_admin,
-        is_profissional: is_profissional,
-        perfil_id: perfil_id
+      name: req.body.name,
+      email: req.body.email,
+      is_admin: req.body.is_admin,
+      is_profissional: is_profissional,
+      perfil_id: perfil_id
     });
 
     if (operadoras) {
@@ -132,7 +159,7 @@ class UserController {
 
     if (is_profissional && professional_data) {
       const profProfile = await OncologyProfessional.findOne({ where: { user_id: user.id } });
-      
+
       if (profProfile) {
         await profProfile.update(professional_data);
       } else {
@@ -142,8 +169,8 @@ class UserController {
         });
       }
     } else if (!is_profissional) {
-        // Opcional: Se ele deixar de ser profissional, podemos deletar o registro profissional dele
-        await OncologyProfessional.destroy({ where: { user_id: user.id }});
+      // Opcional: Se ele deixar de ser profissional, podemos deletar o registro profissional dele
+      await OncologyProfessional.destroy({ where: { user_id: user.id } });
     }
 
     // Recarrega o usuário completo (AGORA TRAZENDO O especiality_id)
@@ -152,11 +179,11 @@ class UserController {
       include: [
         { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'], through: { attributes: [] } },
         { model: Perfil, as: 'perfil', attributes: ['id', 'nome'] },
-        { 
-            model: OncologyProfessional, 
-            as: 'professional', 
-            attributes: ['id', 'registry_type', 'registry_number', 'especiality_id'], // <-- CORREÇÃO AQUI
-            include: [{ model: Especiality, as: 'speciality', attributes: ['name'] }] 
+        {
+          model: OncologyProfessional,
+          as: 'professional',
+          attributes: ['id', 'registry_type', 'registry_number', 'especiality_id'], // <-- CORREÇÃO AQUI
+          include: [{ model: Especiality, as: 'speciality', attributes: ['name'] }]
         }
       ]
     });
@@ -168,8 +195,15 @@ class UserController {
   async delete(req, res) {
     const user = await User.findByPk(req.params.id);
     if (!user) return res.status(400).json({ error: 'User not found' });
-    await user.update({ active: false });
-    return res.json({ message: 'User deactivated successfully' });
+
+    // Inverte o status atual: se true vira false, se false vira true
+    const newStatus = !user.active;
+    await user.update({ active: newStatus });
+
+    return res.json({
+      message: `User ${newStatus ? 'activated' : 'deactivated'} successfully`,
+      active: newStatus
+    });
   }
 
   // CHANGE PASSWORD
@@ -205,13 +239,13 @@ class UserController {
     }
 
     const password_hash = await bcrypt.hash(newPassword, 8);
-    
+
     try {
       await user.update({
         password_hash,
         is_new_user: false
       });
-    } catch(err) {
+    } catch (err) {
       return res.status(500).json({ error: 'Ocorreu um erro ao atualizar a senha. Por favor, tente novamente.' });
     }
 
@@ -225,11 +259,11 @@ class UserController {
       const user = await User.findByPk(req.userId, {
         attributes: ['id', 'name', 'email', 'is_admin', 'is_profissional', 'perfil_id'],
         include: [
-          { 
-            model: Operadora, 
-            as: 'operadoras', 
-            attributes: ['id', 'nome'], 
-            through: { attributes: [] } 
+          {
+            model: Operadora,
+            as: 'operadoras',
+            attributes: ['id', 'nome'],
+            through: { attributes: [] }
           }
         ]
       });

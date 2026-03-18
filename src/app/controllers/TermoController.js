@@ -24,17 +24,24 @@ class TermoController {
             }
 
             // URL do seu Front-End. Em dev geralmente é http://localhost:3000
-           const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
+            const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
             const linkAcompanhamento = `${frontUrl}/paciente/termo/${paciente.id}`;
 
-            const mensagem = `Olá ${paciente.nome}, meu nome é ${user.name}, estou entrando em contato em nome da CIC Oncologia.\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}`;
-
-            const enviado = await enviarMensagemWhatsApp(numeroDestino, mensagem);
+            // ✅ Aqui está a alteração: Passamos as variáveis direto para o WhatsApp Service
+            // que vai injetar lá no Template da Twilio ({{1}}, {{2}} e {{3}})
+            const enviado = await enviarMensagemWhatsApp(
+                numeroDestino, 
+                paciente.nome, 
+                user.name, 
+                linkAcompanhamento
+            );
 
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar mensagem via WhatsApp' });
             }
+
             await AuditService.log(req.userId, 'Envio', 'Termo WhatsApp', paciente.id, `Enviou link do termo via WhatsApp para o número ${numeroDestino}`);
+            
             return res.json({ message: 'Link enviado com sucesso!' });
 
         } catch (error) {
