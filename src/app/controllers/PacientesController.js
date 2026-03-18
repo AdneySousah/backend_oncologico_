@@ -13,19 +13,20 @@ import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import { extrairDadosDocumento } from '../../services/openAiService.js';
 import AuditService from '../../services/AuditService.js';
 
-class PacientesController {
-
-    // Helper para formatar e validar celular para padrão WhatsApp (55 + DDD + 9 + Numero)
-    formatarCelularWhatsapp(numero) {
-        if (!numero) return null;
-        let limpo = String(numero).replace(/\D/g, ''); // Remove tudo que não é número
-        
-        // Se o usuário não digitou o 55, nós adicionamos
-        if (limpo.length === 11 && !limpo.startsWith('55')) {
-            limpo = '55' + limpo;
-        }
-        return limpo;
+// Helper para formatar e validar celular para padrão WhatsApp (55 + DDD + 9 + Numero)
+// Movido para fora da classe para evitar problemas de escopo (this)
+const formatarCelularWhatsapp = (numero) => {
+    if (!numero) return null;
+    let limpo = String(numero).replace(/\D/g, ''); // Remove tudo que não é número
+    
+    // Se o usuário não digitou o 55, nós adicionamos
+    if (limpo.length === 11 && !limpo.startsWith('55')) {
+        limpo = '55' + limpo;
     }
+    return limpo;
+};
+
+class PacientesController {
 
     async getNomesAnexos(req, res) {
         try {
@@ -45,9 +46,9 @@ class PacientesController {
         req.body.fez_entrevista = req.body.fez_entrevista === 'true';
         req.body.operadora_id = Number(req.body.operadora_id);
 
-        // Formatação prévia do celular para validação
+        // Formatação prévia do celular para validação (chamando a função externa)
         if (req.body.celular) {
-            req.body.celular = this.formatarCelularWhatsapp(req.body.celular);
+            req.body.celular = formatarCelularWhatsapp(req.body.celular);
         }
         if (req.body.telefone) {
             req.body.telefone = String(req.body.telefone).replace(/\D/g, '');
@@ -154,7 +155,7 @@ class PacientesController {
 
             // Formata celular se estiver vindo no update
             if (req.body.celular) {
-                req.body.celular = this.formatarCelularWhatsapp(req.body.celular);
+                req.body.celular = formatarCelularWhatsapp(req.body.celular);
                 
                 // Validação manual para o update (Yup opcional aqui para brevidade)
                 if (req.body.celular.length !== 13) {
@@ -286,9 +287,9 @@ class PacientesController {
 
                 if (!cpf || !nomeDaPlanilha) continue;
 
-                // Formata Celular na Importação
+                // Formata Celular na Importação (chamando a função externa)
                 let celularRaw = row['celular'] || row['Celular'];
-                let celular = this.formatarCelularWhatsapp(celularRaw);
+                let celular = formatarCelularWhatsapp(celularRaw);
 
                 const pacienteExists = await Pacientes.findOne({ where: { cpf } });
                 if (pacienteExists) {
@@ -348,8 +349,6 @@ class PacientesController {
             return res.status(500).json({ error: 'Falha no Excel', details: error.message });
         }
     }
-
-    // [Os demais métodos validateImport, getOperadorasFiltro, toggleActive, show, getPending, confirmPatient, autoFillFromDocument permanecem os mesmos, mas agora utilizam a lógica de celular sanitizado se necessário]
     
     async validateImport(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
