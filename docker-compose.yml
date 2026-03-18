@@ -18,6 +18,8 @@ services:
     container_name: onco-app # Nome fixo para o container
     ports:
       - "3002:3002"
+    env_file:           # <--- ADICIONE ESTA LINHA
+      - .env            # <--- E ESTA LINHA AQUI
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/dev-onco-db
       PORT: 3002
