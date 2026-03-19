@@ -16,6 +16,7 @@ class PrestadorMedico extends Model {
             cidade: Sequelize.STRING,
             estado: Sequelize.STRING,
             tipo: Sequelize.ENUM('hospital', 'clinica', 'laboratorio'),
+            active: Sequelize.BOOLEAN,
         },{
             sequelize,
             tableName: 'prestador_medico',

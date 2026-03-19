@@ -45,7 +45,7 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome) {
         const message = await client.messages.create({
             from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
             to: `whatsapp:${numeroFormatado}`,
-            contentSid: 'HX70a924c913ef5da046a92a4042451880', // O SID do pesquisa_nps_aberta
+            contentSid: 'HX6693f153d35b2877578501858d6af0af', // O SID do pesquisa_nps_aberta
             contentVariables: JSON.stringify({
                 '1': pacienteNome
             })

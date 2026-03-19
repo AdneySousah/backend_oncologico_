@@ -36,6 +36,7 @@ import NpsHealthController from "./app/controllers/NpsHealthController.js";
 
 
 
+
 const router = Router();
 
 const upload = multer(multerConfig);
@@ -48,7 +49,6 @@ router.post('/nps/resposta', NpsController.registerResponse);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 router.get('/pacientes/:id', TermoController.verifyResponse);
-
 
 
 
@@ -87,6 +87,10 @@ router.get('/professionals', checkPermission('profissionais', 'acessar'), Oncolo
 // --- ROTAS DE ESPECIALIDADES ---
 router.post('/specialities', checkPermission('especialidades', 'editar'), EspecialitesController.store);
 router.get('/specialities', checkPermission('especialidades', 'acessar'), EspecialitesController.index);
+router.put('/specialities/:id', checkPermission('especialidades', 'editar'), EspecialitesController.update);
+router.delete('/specialities/:id', checkPermission('especialidades', 'editar'), EspecialitesController.delete);
+router.post('/specialities/validate', checkPermission('especialidades', 'editar'), upload.single('file'), EspecialitesController.validateExcel);
+router.post('/specialities/import', checkPermission('especialidades', 'editar'), upload.single('file'), EspecialitesController.importExcel);
 
 
 // --- ROTAS DE OPERADORAS ---
@@ -114,12 +118,18 @@ router.post('/pacientes/autofill', checkPermission('pacientes', 'editar'), uploa
 router.post('/prestadores-medicos', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.store);
 router.get('/prestadores-medicos', checkPermission('prestadores_medicos', 'acessar'), PrestadorMedicoController.index);
 router.put('/prestadores-medicos/:id', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.update);
+router.delete('/prestadores-medicos/:id', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.delete);
+router.post('/prestadores-medicos/validate', checkPermission('prestadores_medicos', 'editar'), upload.single('file'), PrestadorMedicoController.validateExcel);
+router.post('/prestadores-medicos/import', checkPermission('prestadores_medicos', 'editar'), upload.single('file'), PrestadorMedicoController.importExcel);
 
 
 // --- ROTAS DE DIAGNÓSTICOS CID ---
 router.post('/diagnosticos', checkPermission('diagnosticos', 'editar'), DiagnosticoController.store);
 router.get('/diagnosticos', checkPermission('diagnosticos', 'acessar'), DiagnosticoController.index);
 router.put('/diagnosticos/:id', checkPermission('diagnosticos', 'editar'), DiagnosticoController.update);
+router.delete('/diagnosticos/:id', checkPermission('diagnosticos', 'editar'), DiagnosticoController.delete);
+router.post('/diagnosticos/validate', checkPermission('diagnosticos', 'editar'), upload.single('file'), DiagnosticoController.validateExcel);
+router.post('/diagnosticos/import', checkPermission('diagnosticos', 'editar'), upload.single('file'), DiagnosticoController.importExcel);
 
 
 // --- ROTAS DE EXAMES ---
@@ -182,6 +192,8 @@ router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), Reac
 router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), ReacaoAdversaController.index);
 router.put('/reacao-adversa/:id', ReacaoAdversaController.update);
 router.delete('/reacao-adversa/:id', ReacaoAdversaController.delete);
+router.post('/reacao-adversa/validate', checkPermission('reacao_adversa', 'editar'), upload.single('file'), ReacaoAdversaController.validateExcel);
+router.post('/reacao-adversa/import', checkPermission('reacao_adversa', 'editar'), upload.single('file'), ReacaoAdversaController.importExcel);
 
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
@@ -194,7 +206,6 @@ router.get('/tentativas-contato', TentativaContatoController.index);
 router.get('/audit-logs',checkPermission('audit-logs', 'acessar'), AuditLogController.index);
 
 router.get('/nps/health',checkPermission('check-saude', 'acessar'), NpsHealthController.checkStatus);
-
 
 
 export default router;
