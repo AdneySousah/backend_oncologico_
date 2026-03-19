@@ -252,6 +252,55 @@ class PacientesController {
         }
     }
 
+    async validateImport(req, res) {
+        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+        const { operadora_id } = req.body;
+        const permission = await getOperadoraFilter(req.userId, operadora_id);
+        if (!permission.authorized) return res.status(permission.status).json({ error: permission.error });
+
+        try {
+            const data = parseExcel(req.file.path);
+            const validos = [];
+            const duplicados = [];
+            const invalidos = []; // <-- CORREÇÃO: Criado array de inválidos
+
+            for (const row of data) {
+                const cpf = String(row['cpf'] || row['CPF'] || '').replace(/\D/g, '');
+                const nomeDaPlanilha = row['nome'] || row['Nome'];
+
+                if (!cpf || !nomeDaPlanilha) {
+                    invalidos.push({ motivo: 'Nome ou CPF faltando na planilha' });
+                    continue;
+                }
+
+                const pacienteExists = await Pacientes.findOne({ where: { cpf } });
+                if (pacienteExists) {
+                    duplicados.push({ nome: nomeDaPlanilha, cpf, motivo: 'CPF já cadastrado' });
+                } else {
+                    validos.push({ nome: nomeDaPlanilha, cpf });
+                }
+            }
+            if (req.file.path) fs.unlinkSync(req.file.path);
+            
+            // <-- CORREÇÃO: Adicionado invalidos no resumo e nos detalhes
+            return res.json({ 
+                resumo: { 
+                    total: data.length, 
+                    validos: validos.length, 
+                    duplicados: duplicados.length,
+                    invalidos: invalidos.length 
+                }, 
+                detalhes: { 
+                    validos, 
+                    duplicados,
+                    invalidos 
+                } 
+            });
+        } catch (error) {
+            return res.status(500).json({ error: 'Erro na validação' });
+        }
+    }
+
     async importExcel(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         const { operadora_id } = req.body;
@@ -287,7 +336,6 @@ class PacientesController {
 
                 if (!cpf || !nomeDaPlanilha) continue;
 
-                // Formata Celular na Importação (chamando a função externa)
                 let celularRaw = row['celular'] || row['Celular'];
                 let celular = formatarCelularWhatsapp(celularRaw);
 
@@ -318,7 +366,7 @@ class PacientesController {
                     await Pacientes.create({
                         nome: formatarNome(nomeDaPlanilha),
                         sobrenome: formatarNome(String(row['sobrenome'] || row['Sobrenome'] || '')),
-                        celular: celular || '5500000000000', // Valor fallback se estiver vazio
+                        celular: celular || '5500000000000', 
                         telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
                         data_nascimento: dataNascimento || new Date(),
                         sexo: row['sexo'] || row['Sexo'] || 'nao definido',
@@ -344,38 +392,26 @@ class PacientesController {
 
             if (req.file.path) fs.unlinkSync(req.file.path);
             await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
-            return res.json({ message: 'Processamento concluído', summary: { total: data.length, importados: successes.length, duplicados: duplicates.length, erros: errors.length } });
+            
+            // <-- CORREÇÃO: Retornando o objeto "detalhes" com a chave "erros" que o frontend espera
+            return res.json({ 
+                message: 'Processamento concluído', 
+                summary: { 
+                    total: data.length, 
+                    importados: successes.length, 
+                    duplicados: duplicates.length, 
+                    erros: errors.length 
+                },
+                detalhes: {
+                    erros: errors,
+                    sucessos: successes,
+                    duplicados: duplicates
+                }
+            });
         } catch (error) {
             return res.status(500).json({ error: 'Falha no Excel', details: error.message });
         }
     }
-    
-    async validateImport(req, res) {
-        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-        const { operadora_id } = req.body;
-        const permission = await getOperadoraFilter(req.userId, operadora_id);
-        if (!permission.authorized) return res.status(permission.status).json({ error: permission.error });
-
-        try {
-            const data = parseExcel(req.file.path);
-            const validos = [];
-            const duplicados = [];
-            for (const row of data) {
-                const cpf = String(row['cpf'] || row['CPF'] || '').replace(/\D/g, '');
-                const pacienteExists = await Pacientes.findOne({ where: { cpf } });
-                if (pacienteExists) {
-                    duplicados.push({ nome: row['nome'], cpf, motivo: 'CPF já cadastrado' });
-                } else {
-                    validos.push({ nome: row['nome'], cpf });
-                }
-            }
-            if (req.file.path) fs.unlinkSync(req.file.path);
-            return res.json({ resumo: { total: data.length, validos: validos.length, duplicados: duplicados.length }, detalhes: { validos, duplicados } });
-        } catch (error) {
-            return res.status(500).json({ error: 'Erro na validação' });
-        }
-    }
-
     async getOperadorasFiltro(req, res) {
         try {
             const permission = await getOperadoraFilter(req.userId);

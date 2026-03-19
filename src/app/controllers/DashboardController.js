@@ -160,10 +160,21 @@ class DashboardController {
         });
 
         let nivel = '';
-        if (score >= 0 && score <= 10) { adesaoAlta++; nivel = 'Alta Adesão'; }
-        else if (score >= 11 && score <= 13) { adesaoMedia++; nivel = 'Média Adesão'; }
-        else if (score >= 14) { adesaoBaixa++; nivel = 'Baixa Adesão'; }
-        else { nivel = 'Não Classificado'; }
+        if (score >= 0 && score <= 9) {
+          adesaoAlta++;
+          nivel = 'Alta Adesão';
+        }
+        else if (score >= 10 && score <= 12) {
+          adesaoMedia++;
+          nivel = 'Média Adesão';
+        }
+        else if (score >= 13) {
+          adesaoBaixa++;
+          nivel = 'Baixa Adesão';
+        }
+        else {
+          nivel = 'Não Classificado';
+        }
 
         adesaoScoreReport.push({
           paciente_id: av.paciente?.id,
@@ -256,8 +267,8 @@ class DashboardController {
       // =========================================================
       const npsResponses = await NpsResponse.findAll({
         include: [{
-          model: Pacientes, as: 'paciente', 
-          where: includePacienteWhere, 
+          model: Pacientes, as: 'paciente',
+          where: includePacienteWhere,
           attributes: ['id', 'nome', 'sobrenome'],
           include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
         }],
@@ -289,7 +300,7 @@ class DashboardController {
       // REGISTRO DE AUDITORIA COM NOME DA OPERADORA
       // =========================================================
       let nomeOperadoraLog = 'Cic Oncologia (Todas)';
-      
+
       const idParaBuscar = operadora_id || (permission.whereClause && permission.whereClause.operadora_id);
 
       if (idParaBuscar) {
@@ -306,10 +317,10 @@ class DashboardController {
       console.log(`Auditoria -> Operadora: ${nomeOperadoraLog} | Usuário: ${req.userId}`);
 
       await AuditService.log(
-        req.userId, 
-        'Emissão', 
-        'Dashboard', 
-        null, 
+        req.userId,
+        'Emissão',
+        'Dashboard',
+        null,
         `Gerou relatório do dashboard para o período ${data_inicio || 'Início'} a ${data_fim || 'Fim'} - Operadora: ${nomeOperadoraLog}`
       );
 
