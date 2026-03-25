@@ -19,7 +19,7 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, userNa
         const message = await client.messages.create({
             from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`, // Certifique-se que é +553122980876
             to: `whatsapp:${numeroFormatado}`,
-            contentSid: 'HXd1788f58346dfb10ac55cd63696c32f4', // SID do seu print
+            contentSid: 'HXfa365bb91e965e9939e6204588222659', // SID do seu print
             contentVariables: JSON.stringify({
                 '1': pacienteNome,
                 '2': userName,
