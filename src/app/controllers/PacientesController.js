@@ -340,9 +340,9 @@ class PacientesController {
         }
     }
 
-    async importExcel(req, res) {
+   async importExcel(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-
+        
         const { operadora_id } = req.body;
         if (!operadora_id) {
             if (req.file.path) fs.unlinkSync(req.file.path);
@@ -376,10 +376,10 @@ class PacientesController {
 
                 // Evita que o backend pule a linha em silêncio se faltar dado básico
                 if (!cpf || !nomeDaPlanilha) {
-                    errors.push({
-                        nome: nomeDaPlanilha || 'Linha sem nome',
-                        cpf: cpf || 'N/A',
-                        erro: 'CPF ou Nome não preenchidos na planilha'
+                    errors.push({ 
+                        nome: nomeDaPlanilha || 'Linha sem nome', 
+                        cpf: cpf || 'N/A', 
+                        erro: 'CPF ou Nome não preenchidos na planilha' 
                     });
                     continue;
                 }
@@ -412,6 +412,17 @@ class PacientesController {
                     dataNascimento = dataObj.toISOString().split('T')[0];
                 }
 
+                // --- TRATAMENTO DO ENUM DE SEXO ---
+                let sexoPlanilha = String(row['sexo'] || row['Sexo'] || '').toLowerCase().trim();
+                let sexoFormatado = 'nao definido';
+                
+                if (sexoPlanilha === 'm' || sexoPlanilha === 'masculino') {
+                    sexoFormatado = 'M';
+                } else if (sexoPlanilha === 'f' || sexoPlanilha === 'feminino') {
+                    sexoFormatado = 'F';
+                }
+                // ----------------------------------
+
                 try {
                     await Pacientes.create({
                         nome: formatarNome(nomeDaPlanilha),
@@ -419,7 +430,7 @@ class PacientesController {
                         celular: celular || '5500000000000',
                         telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
                         data_nascimento: dataNascimento || new Date(),
-                        sexo: row['sexo'] || row['Sexo'] || 'nao definido',
+                        sexo: sexoFormatado, // Valor tratado e compatível com o Enum do banco
                         possui_cuidador: (String(row['possui_cuidador']).toUpperCase() === 'SIM' || row['possui_cuidador'] === true),
                         nome_cuidador: String(row['nome_cuidador'] || ''),
                         contato_cuidador: String(row['contato_cuidador'] || ''),
@@ -434,30 +445,28 @@ class PacientesController {
                         estado: enderecoData.uf || 'N/A',
                         is_new_user: isNewUserFlag
                     });
-
+                    
                     successes.push({ nome: nomeDaPlanilha, cpf });
-
+                    
                 } catch (err) {
-                    // 1. ISSO AQUI FAZ O ERRO APARECER NO SEU TERMINAL NODE.JS
                     console.error(`\n❌ [ERRO BANCO] Falha ao criar paciente ${nomeDaPlanilha} - CPF: ${cpf}`);
                     console.error(err);
-
-                    // 2. EXTRAI A MENSAGEM EXATA DO SEQUELIZE PARA ENVIAR AO FRONTEND
+                    
                     let dbErrorMessage = err.message;
                     if (err.errors && err.errors.length > 0) {
                         dbErrorMessage = err.errors.map(e => e.message).join(', ');
                     }
 
-                    errors.push({
-                        nome: nomeDaPlanilha,
-                        cpf: cpf,
-                        erro: dbErrorMessage
+                    errors.push({ 
+                        nome: nomeDaPlanilha, 
+                        cpf: cpf, 
+                        erro: dbErrorMessage 
                     });
                 }
             }
 
             if (req.file.path) fs.unlinkSync(req.file.path);
-
+            
             if (successes.length > 0) {
                 await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
             }
