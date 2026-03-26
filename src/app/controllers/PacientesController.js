@@ -3,7 +3,7 @@ import stringSimilarity from 'string-similarity';
 import User from '../models/User.js';
 import Pacientes from '../models/Pacientes.js';
 import Operadora from '../models/Operadora.js';
-import Medicamentos from '../models/Medicamentos.js'; 
+import Medicamentos from '../models/Medicamentos.js';
 import getAdress from '../../utils/getAdress.js';
 import PacientesAnexos from '../models/PacientesAnexos.js';
 import Sequelize, { Op } from 'sequelize';
@@ -18,7 +18,7 @@ import AuditService from '../../services/AuditService.js';
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
     let limpo = String(numero).replace(/\D/g, ''); // Remove tudo que não é número
-    
+
     // Se o usuário não digitou o 55, nós adicionamos
     if (limpo.length === 11 && !limpo.startsWith('55')) {
         limpo = '55' + limpo;
@@ -112,7 +112,7 @@ class PacientesController {
         try {
             const currentUser = await User.findByPk(req.userId);
             const isAdmin = currentUser && (currentUser.is_admin === true || String(currentUser.is_admin).toLowerCase() === 'true' || currentUser.is_admin === 1);
-            
+
             req.body.is_new_user = !isAdmin;
 
             const paciente = await Pacientes.create(req.body);
@@ -153,11 +153,29 @@ class PacientesController {
             const paciente = await Pacientes.findByPk(id);
             if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
 
-            // Formata celular se estiver vindo no update
+            // --- CONVERSÕES DE TIPO (Crucial para FormData) ---
+            if (req.body.possui_cuidador !== undefined) {
+                req.body.possui_cuidador = req.body.possui_cuidador === 'true' || req.body.possui_cuidador === true;
+            }
+
+            if (req.body.fez_entrevista !== undefined) {
+                req.body.fez_entrevista = req.body.fez_entrevista === 'true' || req.body.fez_entrevista === true;
+            }
+
+            if (req.body.operadora_id) {
+                req.body.operadora_id = Number(req.body.operadora_id);
+            }
+
+            if (req.body.medicamento_id === '' || req.body.medicamento_id === 'null') {
+                req.body.medicamento_id = null;
+            } else if (req.body.medicamento_id) {
+                req.body.medicamento_id = Number(req.body.medicamento_id);
+            }
+            // --------------------------------------------------
+
+            // Validação de Celular
             if (req.body.celular) {
                 req.body.celular = formatarCelularWhatsapp(req.body.celular);
-                
-                // Validação manual para o update (Yup opcional aqui para brevidade)
                 if (req.body.celular.length !== 13) {
                     return res.status(400).json({ error: 'O celular deve ter 13 dígitos (55 + DDD + 9 + número).' });
                 }
@@ -168,14 +186,15 @@ class PacientesController {
                 if (isCelular) return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
             }
 
+            // Permissão de Operadora
             if (req.body.operadora_id && req.body.operadora_id !== paciente.operadora_id) {
-                req.body.operadora_id = Number(req.body.operadora_id);
                 const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
                 if (!permission.authorized) {
-                    return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para transferir este paciente." });
+                    return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para esta operadora." });
                 }
             }
 
+            // Validação de CPF
             if (req.body.cpf) {
                 req.body.cpf = req.body.cpf.replace(/\D/g, '');
                 const isCPF = await Pacientes.findOne({
@@ -184,20 +203,37 @@ class PacientesController {
                 if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
             }
 
+            // Busca de Endereço (CEP)
             if (req.body.cep && req.body.cep !== paciente.cep) {
-                const consulta = await getAdress(req.body.cep);
-                if (consulta && !consulta[0].erro) {
-                    const end = consulta[0];
-                    req.body.logradouro = end.logradouro;
-                    req.body.bairro = end.bairro;
-                    req.body.cidade = end.localidade;
-                    req.body.estado = end.uf;
+                try {
+                    const consulta = await getAdress(req.body.cep);
+                    if (consulta && consulta.length > 0 && !consulta[0].erro) {
+                        const end = consulta[0];
+                        req.body.logradouro = end.logradouro;
+                        req.body.bairro = end.bairro;
+                        req.body.cidade = end.localidade;
+                        req.body.estado = end.uf;
+                    }
+                } catch (err) {
+                    console.error("Erro ao buscar CEP no update:", err);
                 }
             }
 
-            if (req.body.medicamento_id === '') req.body.medicamento_id = null;
-
             await paciente.update(req.body);
+
+            // Lógica de Novos Anexos (Adicione se desejar que o update também salve arquivos)
+            if (req.files && req.files.length > 0) {
+                let nomesAnexos = req.body.anexos_nomes || [];
+                if (!Array.isArray(nomesAnexos)) nomesAnexos = [nomesAnexos];
+
+                const anexosData = req.files.map((file, index) => ({
+                    paciente_id: paciente.id,
+                    nome: nomesAnexos[index] || 'Sem Nome',
+                    file_path: file.filename,
+                    original_name: file.originalname
+                }));
+                await PacientesAnexos.bulkCreate(anexosData);
+            }
 
             const pacienteAtualizado = await Pacientes.findByPk(id, {
                 include: [
@@ -205,9 +241,12 @@ class PacientesController {
                     { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
                 ]
             });
-            await AuditService.log(req.userId, 'Edição', 'Paciente', paciente.id, `Atualizou dados do paciente ${pacienteAtualizado.nome} (ID: ${paciente.id})`);
+
+            await AuditService.log(req.userId, 'Edição', 'Paciente', paciente.id, `Atualizou dados do paciente ${pacienteAtualizado.nome}`);
+
             return res.json(pacienteAtualizado);
         } catch (err) {
+            console.error("ERRO NO UPDATE:", err); // IMPORTANTE: Ver o log no terminal do VS Code
             return res.status(500).json({ error: err.message || 'Erro ao atualizar paciente' });
         }
     }
@@ -281,20 +320,20 @@ class PacientesController {
                 }
             }
             if (req.file.path) fs.unlinkSync(req.file.path);
-            
+
             // <-- CORREÇÃO: Adicionado invalidos no resumo e nos detalhes
-            return res.json({ 
-                resumo: { 
-                    total: data.length, 
-                    validos: validos.length, 
+            return res.json({
+                resumo: {
+                    total: data.length,
+                    validos: validos.length,
                     duplicados: duplicados.length,
-                    invalidos: invalidos.length 
-                }, 
-                detalhes: { 
-                    validos, 
+                    invalidos: invalidos.length
+                },
+                detalhes: {
+                    validos,
                     duplicados,
-                    invalidos 
-                } 
+                    invalidos
+                }
             });
         } catch (error) {
             return res.status(500).json({ error: 'Erro na validação' });
@@ -353,7 +392,7 @@ class PacientesController {
                     try {
                         const consultaEndereco = await getAdress(cep);
                         if (consultaEndereco && !consultaEndereco[0].erro) enderecoData = consultaEndereco[0];
-                    } catch (err) {}
+                    } catch (err) { }
                 }
 
                 let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
@@ -366,7 +405,7 @@ class PacientesController {
                     await Pacientes.create({
                         nome: formatarNome(nomeDaPlanilha),
                         sobrenome: formatarNome(String(row['sobrenome'] || row['Sobrenome'] || '')),
-                        celular: celular || '5500000000000', 
+                        celular: celular || '5500000000000',
                         telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
                         data_nascimento: dataNascimento || new Date(),
                         sexo: row['sexo'] || row['Sexo'] || 'nao definido',
@@ -392,15 +431,15 @@ class PacientesController {
 
             if (req.file.path) fs.unlinkSync(req.file.path);
             await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
-            
+
             // <-- CORREÇÃO: Retornando o objeto "detalhes" com a chave "erros" que o frontend espera
-            return res.json({ 
-                message: 'Processamento concluído', 
-                summary: { 
-                    total: data.length, 
-                    importados: successes.length, 
-                    duplicados: duplicates.length, 
-                    erros: errors.length 
+            return res.json({
+                message: 'Processamento concluído',
+                summary: {
+                    total: data.length,
+                    importados: successes.length,
+                    duplicados: duplicates.length,
+                    erros: errors.length
                 },
                 detalhes: {
                     erros: errors,
