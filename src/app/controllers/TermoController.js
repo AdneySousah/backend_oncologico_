@@ -5,11 +5,11 @@ import AuditService from '../../services/AuditService.js';
 
 class TermoController {
     // Disparado pelo usuário do sistema (Médico/Atendente)
+    // Disparado pelo usuário do sistema (Médico/Atendente)
     async sendLink(req, res) {
         const { paciente_id } = req.body;
 
         try {
-            // Pega o usuário logado usando o ID injetado pelo authMiddleware
             const user = await User.findByPk(req.userId);
             const paciente = await Pacientes.findByPk(paciente_id);
 
@@ -18,22 +18,24 @@ class TermoController {
             }
 
             const numeroDestino = paciente.celular || paciente.telefone;
-            
+
             if (!numeroDestino) {
                 return res.status(400).json({ error: 'Paciente não possui número cadastrado' });
             }
 
-            // URL do seu Front-End. Em dev geralmente é http://localhost:3000
+            // ✅ CORREÇÃO: Reseta o status para Pendente para o Polling do Front funcionar no reenvio
+            paciente.status_termo = 'Pendente';
+            await paciente.save();
+
             const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
             const linkAcompanhamento = `${frontUrl}/paciente/termo/${paciente.id}`;
 
-            // ✅ Aqui está a alteração: Passamos as variáveis direto para o WhatsApp Service
-            // que vai injetar lá no Template da Twilio ({{1}}, {{2}} e {{3}})
             const enviado = await enviarMensagemWhatsApp(
-                numeroDestino, 
-                paciente.nome, 
-                user.name, 
-                linkAcompanhamento
+                numeroDestino,
+                paciente.nome,
+                user.name,
+                linkAcompanhamento,
+                req.userId // Injetando o ID para rastreio
             );
 
             if (!enviado) {
@@ -41,7 +43,7 @@ class TermoController {
             }
 
             await AuditService.log(req.userId, 'Envio', 'Termo WhatsApp', paciente.id, `Enviou link do termo via WhatsApp para o número ${numeroDestino}`);
-            
+
             return res.json({ message: 'Link enviado com sucesso!' });
 
         } catch (error) {
@@ -86,13 +88,13 @@ class TermoController {
     }
 
     async verifyResponse(req, res) {
-        const {id} = req.params
+        const { id } = req.params
         try {
             const paciente = await Pacientes.findByPk(id, { attributes: ['id', 'status_termo'] });
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
-            return res.json({ paciente});
+            return res.json({ paciente });
         } catch (error) {
             return res.status(500).json({ error: 'Erro ao checar status' });
         }

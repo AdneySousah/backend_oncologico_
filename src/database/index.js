@@ -32,6 +32,8 @@ import ReacaoAdversa from '../app/models/ReacaoAdversa.js';
 import TentativaContato from '../app/models/TentativaContato.js';
 import AuditLog from '../app/models/AuditLog.js';
 import NpsResponse from '../app/models/NpsResponse.js';
+import Conversation from '../app/models/Conversation.js';
+import Message from '../app/models/Message.js';
 
 const models = [
   User, OncologyProfessional, Especiality, Operadora, Pacientes, 
@@ -40,7 +42,7 @@ const models = [
   EvaluationTemplate, EvaluationQuestion, EvaluationOption, 
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
-  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse
+  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message
 ];
 
 class Database {

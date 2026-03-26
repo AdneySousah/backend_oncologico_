@@ -6,12 +6,6 @@ function authMiddleware(req, res, next) {
     if (req.method === 'OPTIONS') {
         return next();
     }
-    
-    // 2. FORÇA a liberação dessa rota pública específica
-    // Se a URL contiver '/termos/paciente/', ele passa direto sem pedir token
-    /* if (req.originalUrl.includes('/termos/paciente/')) {
-        return next();
-    } */
 
     const authToken = req.headers.authorization
 
