@@ -342,6 +342,7 @@ class PacientesController {
 
     async importExcel(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+
         const { operadora_id } = req.body;
         if (!operadora_id) {
             if (req.file.path) fs.unlinkSync(req.file.path);
@@ -373,7 +374,15 @@ class PacientesController {
                 const cpf = cpfRaw ? String(cpfRaw).replace(/\D/g, '') : null;
                 const nomeDaPlanilha = row['nome'] || row['Nome'];
 
-                if (!cpf || !nomeDaPlanilha) continue;
+                // Evita que o backend pule a linha em silêncio se faltar dado básico
+                if (!cpf || !nomeDaPlanilha) {
+                    errors.push({
+                        nome: nomeDaPlanilha || 'Linha sem nome',
+                        cpf: cpf || 'N/A',
+                        erro: 'CPF ou Nome não preenchidos na planilha'
+                    });
+                    continue;
+                }
 
                 let celularRaw = row['celular'] || row['Celular'];
                 let celular = formatarCelularWhatsapp(celularRaw);
@@ -392,7 +401,9 @@ class PacientesController {
                     try {
                         const consultaEndereco = await getAdress(cep);
                         if (consultaEndereco && !consultaEndereco[0].erro) enderecoData = consultaEndereco[0];
-                    } catch (err) { }
+                    } catch (err) {
+                        console.error(`[Aviso] Erro ao buscar CEP ${cep}:`, err.message);
+                    }
                 }
 
                 let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
@@ -423,16 +434,34 @@ class PacientesController {
                         estado: enderecoData.uf || 'N/A',
                         is_new_user: isNewUserFlag
                     });
+
                     successes.push({ nome: nomeDaPlanilha, cpf });
+
                 } catch (err) {
-                    errors.push({ nome: nomeDaPlanilha, cpf, erro: err.message });
+                    // 1. ISSO AQUI FAZ O ERRO APARECER NO SEU TERMINAL NODE.JS
+                    console.error(`\n❌ [ERRO BANCO] Falha ao criar paciente ${nomeDaPlanilha} - CPF: ${cpf}`);
+                    console.error(err);
+
+                    // 2. EXTRAI A MENSAGEM EXATA DO SEQUELIZE PARA ENVIAR AO FRONTEND
+                    let dbErrorMessage = err.message;
+                    if (err.errors && err.errors.length > 0) {
+                        dbErrorMessage = err.errors.map(e => e.message).join(', ');
+                    }
+
+                    errors.push({
+                        nome: nomeDaPlanilha,
+                        cpf: cpf,
+                        erro: dbErrorMessage
+                    });
                 }
             }
 
             if (req.file.path) fs.unlinkSync(req.file.path);
-            await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
 
-            // <-- CORREÇÃO: Retornando o objeto "detalhes" com a chave "erros" que o frontend espera
+            if (successes.length > 0) {
+                await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
+            }
+
             return res.json({
                 message: 'Processamento concluído',
                 summary: {
@@ -447,8 +476,11 @@ class PacientesController {
                     duplicados: duplicates
                 }
             });
+
         } catch (error) {
-            return res.status(500).json({ error: 'Falha no Excel', details: error.message });
+            console.error("❌ Falha geral no processamento do Excel:", error);
+            if (req.file && req.file.path) fs.unlinkSync(req.file.path);
+            return res.status(500).json({ error: 'Falha no processamento do Excel', details: error.message });
         }
     }
     async getOperadorasFiltro(req, res) {
