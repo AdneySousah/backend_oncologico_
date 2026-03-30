@@ -5,9 +5,9 @@ import AuditService from '../../services/AuditService.js';
 
 class TermoController {
     // Disparado pelo usuário do sistema (Médico/Atendente)
-    // Disparado pelo usuário do sistema (Médico/Atendente)
     async sendLink(req, res) {
-        const { paciente_id } = req.body;
+        // Recebe também a intenção: se é paciente ou cuidador
+        const { paciente_id, telefone_destino, destino_tipo } = req.body;
 
         try {
             const user = await User.findByPk(req.userId);
@@ -17,13 +17,12 @@ class TermoController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            const numeroDestino = paciente.celular || paciente.telefone;
+            const numeroDestino = telefone_destino || paciente.celular || paciente.telefone;
 
             if (!numeroDestino) {
-                return res.status(400).json({ error: 'Paciente não possui número cadastrado' });
+                return res.status(400).json({ error: 'Nenhum número de destino informado ou cadastrado.' });
             }
 
-            // ✅ CORREÇÃO: Reseta o status para Pendente para o Polling do Front funcionar no reenvio
             paciente.status_termo = 'Pendente';
             await paciente.save();
 
@@ -35,14 +34,31 @@ class TermoController {
                 paciente.nome,
                 user.name,
                 linkAcompanhamento,
-                req.userId // Injetando o ID para rastreio
+                req.userId
             );
 
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar mensagem via WhatsApp' });
             }
 
-            await AuditService.log(req.userId, 'Envio', 'Termo WhatsApp', paciente.id, `Enviou link do termo via WhatsApp para o número ${numeroDestino}`);
+            // ---------------------------------------------
+            // LÓGICA DO LOG DETALHADO E IMPECÁVEL AQUI
+            // ---------------------------------------------
+            const nomeDestinoFinal = destino_tipo === 'cuidador' && paciente.nome_cuidador 
+                                    ? paciente.nome_cuidador 
+                                    : paciente.nome;
+            const papelDestino = destino_tipo === 'cuidador' ? 'Cuidador/Responsável' : 'Paciente';
+
+            const mensagemLog = `Disparou o termo de acompanhamento para o(a) ${papelDestino} (${nomeDestinoFinal}) no número ${numeroDestino}.`;
+
+            // O seu AuditService.log() sendo chamado perfeitamente como você idealizou:
+            await AuditService.log(
+                req.userId, 
+                'Envio', 
+                'Termo WhatsApp', 
+                paciente.id, 
+                mensagemLog
+            );
 
             return res.json({ message: 'Link enviado com sucesso!' });
 

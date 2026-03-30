@@ -9,7 +9,8 @@ class NpsController {
      * 1. DISPARO DO NPS (Chamado pelo sistema/atendente)
      */
     async sendNps(req, res) {
-        const { paciente_id } = req.body;
+        // Recebe também a intenção de quem é o destinatário
+        const { paciente_id, telefone_destino, destino_tipo } = req.body;
 
         try {
             const paciente = await Pacientes.findByPk(paciente_id);
@@ -18,25 +19,35 @@ class NpsController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            const numeroDestino = paciente.celular || paciente.telefone;
+            const numeroDestino = telefone_destino || paciente.celular || paciente.telefone;
             
             if (!numeroDestino) {
-                return res.status(400).json({ error: 'Paciente não possui número cadastrado' });
+                return res.status(400).json({ error: 'Paciente/Cuidador não possui número cadastrado' });
             }
 
-            // Dispara via Twilio Service (O número já vai formatado com 55 lá)
+            // Dispara via Twilio Service
             const enviado = await enviarEnqueteNPS(numeroDestino, paciente.nome);
 
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar NPS via Twilio' });
             }
 
+            // ---------------------------------------------
+            // LÓGICA DO LOG DETALHADO
+            // ---------------------------------------------
+            const nomeDestinoFinal = destino_tipo === 'cuidador' && paciente.nome_cuidador 
+                                    ? paciente.nome_cuidador 
+                                    : paciente.nome;
+            const papelDestino = destino_tipo === 'cuidador' ? 'Cuidador/Responsável' : 'Paciente';
+
+            const mensagemLog = `Disparou a pesquisa NPS (Satisfação) via WhatsApp para o(a) ${papelDestino} (${nomeDestinoFinal}) no número ${numeroDestino}.`;
+
             await AuditService.log(
                 req.userId, 
                 'Envio', 
                 'NPS WhatsApp', 
                 paciente.id, 
-                `Enviou pesquisa de NPS via WhatsApp para o número ${numeroDestino}`
+                mensagemLog
             );
             
             return res.json({ message: 'Pesquisa de NPS enviada com sucesso!' });
@@ -48,19 +59,15 @@ class NpsController {
     }
 
    async registerResponse(req, res) {
-    // A Twilio envia os dados no corpo (req.body)
     const { From, Body } = req.body; 
 
     try {
-        // 1. Garantir que From existe e tratá-lo como String
         if (!From) {
             return res.status(200).send('<Response></Response>');
         }
         const stringFrom = String(From);
         const celularLimpo = stringFrom.replace('whatsapp:', '').replace(/\D/g, '');
 
-        // 2. Garantir que Body seja tratado como String para o Regex funcionar
-        // Se você mandou 10 (número) no Postman, o String(Body) vira "10" (texto)
         const stringBody = Body ? String(Body) : '';
         const match = stringBody.match(/\b(10|[0-9])\b/);
         
@@ -72,7 +79,6 @@ class NpsController {
 
         const notaFinal = parseInt(match[0]);
 
-        // 3. Busca Inteligente (últimos 8 dígitos)
         const ultimos8 = celularLimpo.slice(-8);
         const paciente = await Pacientes.findOne({
             where: {
@@ -86,7 +92,6 @@ class NpsController {
             return res.status(200).send('<Response></Response>');
         }
 
-        // 4. Salva no banco
         await NpsResponse.create({
             paciente_id: paciente.id,
             nota: notaFinal
@@ -94,7 +99,6 @@ class NpsController {
 
         console.log(`✅ NPS Registrado: ${paciente.nome} deu nota ${notaFinal}`);
 
-        // 5. Resposta TwiML
         res.set('Content-Type', 'text/xml');
         return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
             <Response>
@@ -114,7 +118,6 @@ class NpsController {
     async index(req, res) {
         try {
             const npsData = await NpsResponse.findAll({
-                // Incluímos o ID do paciente para você saber de quem é a nota, se precisar
                 attributes: ['id', 'paciente_id', 'nota', 'created_at'],
                 order: [['created_at', 'DESC']]
             });
@@ -141,7 +144,7 @@ class NpsController {
                     score_nps: scoreNps, 
                     media_real: Number(mediaReal)
                 },
-                dados: npsData // Aqui estão as notas individuais (10, 8, 5...)
+                dados: npsData 
             });
         } catch (error) {
             return res.status(500).json({ error: 'Erro ao buscar dados do NPS' });
@@ -154,8 +157,6 @@ class NpsController {
     async checkPatientStatus(req, res) {
         const { id } = req.params;
         
-        // Vamos diminuir a janela para 2 minutos. 
-        // Assim, o Modal só "valida" se a resposta for muito recente.
         const limiteTempo = new Date();
         limiteTempo.setMinutes(limiteTempo.getMinutes() - 2); 
 
@@ -163,7 +164,7 @@ class NpsController {
             const nps = await NpsResponse.findOne({
                 where: {
                     paciente_id: id,
-                    created_at: { [Op.gte]: limiteTempo } // Só pega se foi nos últimos 2 minutos
+                    created_at: { [Op.gte]: limiteTempo } 
                 },
                 order: [['created_at', 'DESC']]
             });
