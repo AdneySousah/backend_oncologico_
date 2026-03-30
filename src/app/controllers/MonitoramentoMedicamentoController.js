@@ -77,7 +77,6 @@ class MonitoramentoMedicamentoController {
   }
 
   async index(req, res) {
-    // ... MANTIDO IGUAL AO SEU CÓDIGO ORIGINAL ...
     try {
       const { operadora_id, page = 1, limit = 20, search = '' } = req.query;
       const offset = (page - 1) * limit;
@@ -146,7 +145,7 @@ class MonitoramentoMedicamentoController {
           { 
             model: Pacientes, 
             as: 'paciente', 
-            attributes: ['id', 'nome', 'sobrenome', 'operadora_id'],
+            attributes: ['id', 'nome', 'sobrenome', 'operadora_id','possui_cuidador','nome_cuidador','contato_cuidador'],
             include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
           },
           { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
