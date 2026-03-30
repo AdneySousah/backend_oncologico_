@@ -112,7 +112,7 @@ class MonitoramentoMedicamentoController {
           { 
             model: Pacientes, 
             as: 'paciente', 
-            attributes: ['id', 'nome', 'sobrenome', 'operadora_id'],
+            attributes: ['id', 'nome', 'sobrenome', 'operadora_id','possui_cuidador','nome_cuidador','contato_cuidador'],
             where: pacienteWhere, 
             required: true,
             include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
