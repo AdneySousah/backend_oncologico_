@@ -294,34 +294,144 @@ class PacientesController {
     async validateImport(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         const { operadora_id } = req.body;
-        const permission = await getOperadoraFilter(req.userId, operadora_id);
-        if (!permission.authorized) return res.status(permission.status).json({ error: permission.error });
 
         try {
             const data = parseExcel(req.file.path);
             const validos = [];
             const duplicados = [];
-            const invalidos = []; // <-- CORREÇÃO: Criado array de inválidos
+            const invalidos = [];
 
-            for (const row of data) {
-                const cpf = String(row['cpf'] || row['CPF'] || '').replace(/\D/g, '');
+            console.log(`[Importação] Iniciando validação de ${data.length} linhas.`);
+
+            // 1. Extração rápida de todos os CPFs da planilha
+            const cpfsNaPlanilha = [...new Set(data.map(r => String(r['cpf'] || r['CPF'] || '').replace(/\D/g, '')).filter(cpf => cpf.length === 11))];
+
+            console.log(`[Importação] Encontrados ${cpfsNaPlanilha.length} CPFs com 11 dígitos na planilha.`);
+
+            // 2. Busca SEGURA de duplicatas no banco de dados.
+            // Executamos a query diretamente. Bancos modernos como PostgreSQL aguentam cláusulas IN com 1000 itens tranquilamente.
+            // O que quebrava antes era que provavelmente existiam CPFs nulos ou vazios no array, causando query inválida.
+            let cpfsExistentesSet = new Set();
+            
+            if (cpfsNaPlanilha.length > 0) {
+                 try {
+                     const pacientesExistentes = await Pacientes.findAll({
+                         where: { cpf: cpfsNaPlanilha },
+                         attributes: ['cpf'],
+                         raw: true // Extremamente importante para performance: não cria instâncias do Sequelize, retorna objeto puro
+                     });
+                     cpfsExistentesSet = new Set(pacientesExistentes.map(p => p.cpf));
+                     console.log(`[Importação] Destes, ${cpfsExistentesSet.size} já existem no banco.`);
+                 } catch (dbError) {
+                     console.error("[Importação] Erro crítico ao buscar CPFs no banco:", dbError);
+                     throw new Error("Falha na comunicação com o banco de dados durante a validação de CPFs.");
+                 }
+            }
+
+            // 3. Processamento linha a linha (Síncrono para ser extremamente rápido)
+            for (let i = 0; i < data.length; i++) {
+                const row = data[i];
+                const linhaNum = i + 2; 
+                const errosDaLinha = []; 
+
+                // --- VALIDAÇÕES RÁPIDAS ---
                 const nomeDaPlanilha = row['nome'] || row['Nome'];
+                if (!nomeDaPlanilha || String(nomeDaPlanilha).trim() === '') errosDaLinha.push('Nome é obrigatório');
 
-                if (!cpf || !nomeDaPlanilha) {
-                    invalidos.push({ motivo: 'Nome ou CPF faltando na planilha' });
-                    continue;
+                const cpfRaw = row['cpf'] || row['CPF'] || '';
+                const cpf = String(cpfRaw).replace(/\D/g, '');
+                if (!cpf) errosDaLinha.push('CPF não preenchido');
+                else if (cpf.length !== 11) errosDaLinha.push(`CPF inválido (${cpf.length} dígitos)`);
+
+                // Validação de Data (A mais complexa)
+                let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
+                let dataFormatada = null;
+
+                if (dataNascimento) {
+                    if (typeof dataNascimento === 'number') {
+                        const dataObj = new Date(Math.round((dataNascimento - 25569) * 86400 * 1000));
+                        if (!isNaN(dataObj.getTime())) {
+                            dataFormatada = dataObj.toISOString().split('T')[0];
+                        } else {
+                            errosDaLinha.push('Data inválida');
+                        }
+                    } else if (typeof dataNascimento === 'string') {
+                        const dateStr = dataNascimento.trim();
+                        if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
+                            const [dia, mes, ano] = dateStr.split('/');
+                            dataFormatada = `${ano}-${mes}-${dia}`;
+                        } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                            dataFormatada = dateStr;
+                        } else {
+                            errosDaLinha.push('Formato de data inválido (Use DD/MM/AAAA)');
+                        }
+                    }
                 }
 
-                const pacienteExists = await Pacientes.findOne({ where: { cpf } });
-                if (pacienteExists) {
-                    duplicados.push({ nome: nomeDaPlanilha, cpf, motivo: 'CPF já cadastrado' });
+                const cepRaw = row['cep'] || row['CEP'];
+                const cep = cepRaw ? String(cepRaw).replace(/\D/g, '') : '';
+                if (cep && cep.length !== 8) errosDaLinha.push('CEP inválido');
+
+                const celularRaw = row['celular'] || row['Celular'];
+                const celular = celularRaw ? String(celularRaw).replace(/\D/g, '') : '';
+                if (celular && celular.length > 20) errosDaLinha.push('Celular muito longo');
+
+                let sexoPlanilha = String(row['sexo'] || row['Sexo'] || '').toLowerCase().trim();
+                let sexoFormatado = 'nao definido';
+                if (sexoPlanilha === 'm' || sexoPlanilha === 'masculino') sexoFormatado = 'M';
+                else if (sexoPlanilha === 'f' || sexoPlanilha === 'feminino') sexoFormatado = 'F';
+
+                // --- CLASSIFICAÇÃO DA LINHA ---
+                if (errosDaLinha.length > 0) {
+                    invalidos.push({ 
+                        linha: linhaNum, 
+                        nome: nomeDaPlanilha || 'S/N', 
+                        cpf: cpf || 'S/N', 
+                        motivo: errosDaLinha.join(' | ') 
+                    });
+                } else if (cpfsExistentesSet.has(cpf)) {
+                    duplicados.push({ 
+                        linha: linhaNum, 
+                        nome: nomeDaPlanilha, 
+                        cpf, 
+                        motivo: 'CPF já cadastrado' 
+                    });
                 } else {
-                    validos.push({ nome: nomeDaPlanilha, cpf });
+                    validos.push({
+                        nome: nomeDaPlanilha,
+                        sobrenome: String(row['sobrenome'] || row['Sobrenome'] || ''),
+                        celular: celular || '5500000000000',
+                        telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
+                        data_nascimento: dataFormatada || new Date(),
+                        sexo: sexoFormatado,
+                        possui_cuidador: (String(row['possui_cuidador']).toUpperCase() === 'SIM' || row['possui_cuidador'] === true),
+                        nome_cuidador: String(row['nome_cuidador'] || ''),
+                        contato_cuidador: String(row['contato_cuidador'] || ''),
+                        cep: cep,
+                        logradouro: String(row['logradouro'] || row['Logradouro'] || 'N/A'),
+                        numero: String(row['numero'] || row['Numero'] || 'S/N'),
+                        complemento: String(row['complemento'] || row['Complemento'] || ''),
+                        bairro: String(row['bairro'] || row['Bairro'] || 'N/A'),
+                        cidade: String(row['cidade'] || row['Cidade'] || 'N/A'),
+                        estado: String(row['estado'] || row['Estado'] || 'N/A'),
+                        cpf: cpf,
+                        operadora_id: Number(operadora_id),
+                        medicamento_id: row['medicamento_id'] ? Number(row['medicamento_id']) : null,
+                    });
                 }
             }
-            if (req.file.path) fs.unlinkSync(req.file.path);
 
-            // <-- CORREÇÃO: Adicionado invalidos no resumo e nos detalhes
+            console.log(`[Importação] Validação concluída. Válidos: ${validos.length}, Inválidos: ${invalidos.length}, Duplicados: ${duplicados.length}`);
+
+            // Remove o arquivo físico
+            if (req.file.path) {
+                try {
+                     fs.unlinkSync(req.file.path);
+                } catch(err) {
+                     console.warn("[Importação] Aviso: Não foi possível deletar o arquivo temporário.");
+                }
+            }
+
             return res.json({
                 resumo: {
                     total: data.length,
@@ -329,18 +439,65 @@ class PacientesController {
                     duplicados: duplicados.length,
                     invalidos: invalidos.length
                 },
-                detalhes: {
-                    validos,
-                    duplicados,
-                    invalidos
-                }
+                detalhes: { validos, duplicados, invalidos }
             });
+
         } catch (error) {
-            return res.status(500).json({ error: 'Erro na validação' });
+            console.error("❌ Erro FATAL na validação:", error);
+            // Garante que o arquivo seja deletado mesmo em caso de erro fatal
+            if (req.file && req.file.path && fs.existsSync(req.file.path)) {
+                 try { fs.unlinkSync(req.file.path); } catch(e) {}
+            }
+            return res.status(500).json({ error: error.message || 'Erro interno na validação do arquivo' });
         }
     }
 
-   async importExcel(req, res) {
+    // 2. NOVA IMPORTAÇÃO EM LOTES (Recebe JSON em vez de arquivo)
+    async importBatch(req, res) {
+        const { operadora_id, pacientes } = req.body;
+        
+        if (!operadora_id || !pacientes || !Array.isArray(pacientes)) {
+            return res.status(400).json({ error: 'Dados inválidos para importação.' });
+        }
+
+        const successes = [];
+        const errors = [];
+
+        try {
+            const currentUser = await User.findByPk(req.userId);
+            const isNewUserFlag = !(currentUser && currentUser.is_admin);
+
+            // Inserção direta no banco, ignorando chamadas externas
+            for (const pacienteData of pacientes) {
+                try {
+                    await Pacientes.create({
+                        ...pacienteData,
+                        is_new_user: isNewUserFlag
+                    });
+                    successes.push({ nome: pacienteData.nome, cpf: pacienteData.cpf });
+                } catch (err) {
+                    let dbErrorMessage = err.message;
+                    if (err.errors && err.errors.length > 0) {
+                        dbErrorMessage = err.errors.map(e => e.message).join(', ');
+                    }
+                    errors.push({ 
+                        nome: pacienteData.nome, 
+                        cpf: pacienteData.cpf, 
+                        erro: dbErrorMessage 
+                    });
+                }
+            }
+
+            return res.json({ successes, errors });
+
+        } catch (error) {
+            console.error("❌ Falha geral no processamento do lote:", error);
+            return res.status(500).json({ error: 'Falha no processamento do lote', details: error.message });
+        }
+    }
+
+
+   /* async importExcel(req, res) {
         if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
         
         const { operadora_id } = req.body;
@@ -491,7 +648,9 @@ class PacientesController {
             if (req.file && req.file.path) fs.unlinkSync(req.file.path);
             return res.status(500).json({ error: 'Falha no processamento do Excel', details: error.message });
         }
-    }
+    } */
+
+
     async getOperadorasFiltro(req, res) {
         try {
             const permission = await getOperadoraFilter(req.userId);
