@@ -5,10 +5,10 @@ import OncologyProfessional from '../models/OncologyProfessional.js';
 import Especiality from '../models/Especiality.js'; // Garantir que está importado para o include
 import * as Yup from 'yup';
 import bcrypt from 'bcrypt';
-import { Op,fn,col } from 'sequelize';
+import { Op, fn, col } from 'sequelize';
 class UserController {
   // CREATE
- async store(req, res) {
+  async store(req, res) {
     const schema = Yup.object({
       name: Yup.string().required(),
       email: Yup.string().email().required(),
@@ -39,11 +39,11 @@ class UserController {
 
     // Busca insensível a maiúsculas/minúsculas
     // Se usar PostgreSQL, o [Op.iLike] é o ideal. Se usar MySQL/SQLite, o lower() resolve.
-    
-    
-    const userExists = await User.findOne({ 
-      where: fn('lower', col('email')), 
-      where: { email } 
+
+
+    const userExists = await User.findOne({
+      where: fn('lower', col('email')),
+      where: { email }
     });
 
     if (userExists) {
@@ -82,16 +82,16 @@ class UserController {
     await user.reload({
       attributes: ['id', 'name', 'email', 'active', 'is_profissional', 'is_admin', 'perfil_id'],
       include: [
-        { 
-          model: Operadora, 
-          as: 'operadoras', 
-          attributes: ['id', 'nome'], 
-          through: { attributes: [] } 
+        {
+          model: Operadora,
+          as: 'operadoras',
+          attributes: ['id', 'nome'],
+          through: { attributes: [] }
         },
-        { 
-          model: Perfil, 
-          as: 'perfil', 
-          attributes: ['id', 'nome'] 
+        {
+          model: Perfil,
+          as: 'perfil',
+          attributes: ['id', 'nome']
         },
         {
           model: OncologyProfessional,
@@ -254,6 +254,7 @@ class UserController {
 
 
   // GET ME (Busca os dados do usuário logado)
+  // GET ME (Busca os dados do usuário logado)
   async profile(req, res) {
     try {
       const user = await User.findByPk(req.userId, {
@@ -264,6 +265,11 @@ class UserController {
             as: 'operadoras',
             attributes: ['id', 'nome'],
             through: { attributes: [] }
+          },
+          // ---> ADICIONE ESTE BLOCO AQUI PARA TRAZER AS PERMISSÕES <---
+          {
+            model: Perfil,
+            as: 'perfil'
           }
         ]
       });

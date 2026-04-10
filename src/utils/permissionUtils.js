@@ -1,6 +1,6 @@
 import { Op } from 'sequelize';
-import User from '../app/models/User.js'; // Ajuste o caminho se necessário
-import Operadora from '../app/models/Operadora.js'; // Ajuste o caminho se necessário
+import User from '../app/models/User.js'; 
+import Operadora from '../app/models/Operadora.js'; 
 
 /**
  * Função para gerar a cláusula 'where' baseada nas permissões da operadora do usuário.
@@ -23,8 +23,14 @@ export async function getOperadoraFilter(userId, operadoraQueryId = null) {
         }
 
         const allowedOperadorasIds = user.operadoras.map(op => op.id);
-        const temAcessoGlobal = user.operadoras.some(op => op.nome.toLowerCase().trim() === 'Clinica de Infusão Oncologica');
-        console.log()
+        
+        // CORREÇÃO AQUI: Tratando acentos e o nome correto que está no banco
+        const temAcessoGlobal = user.operadoras.some(op => {
+            const nomeOperadora = op.nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "").trim();
+            // Verifica o nome exato sem acentos e minúsculo: 'clinica de infusao compartilhada'
+            return nomeOperadora === 'clinica de infusao compartilhada';
+        });
+        
         let whereClause = {};
 
         // Se for admin ou tiver a "Clinica" (Acesso Global)

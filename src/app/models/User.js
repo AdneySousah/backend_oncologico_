@@ -14,6 +14,9 @@ class User extends Model {
         is_new_user: Sequelize.BOOLEAN,
         reset_password_token: Sequelize.STRING, // ADICIONADO
         reset_password_expires: Sequelize.DATE, // ADICIONADO
+        username: Sequelize.STRING,
+        external_id: Sequelize.INTEGER,
+        external_token: Sequelize.TEXT,
       },
       {
         sequelize,

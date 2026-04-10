@@ -1,5 +1,4 @@
 import * as Yup from 'yup';
-import stringSimilarity from 'string-similarity';
 import User from '../models/User.js';
 import Pacientes from '../models/Pacientes.js';
 import Operadora from '../models/Operadora.js';
@@ -7,19 +6,14 @@ import Medicamentos from '../models/Medicamentos.js';
 import getAdress from '../../utils/getAdress.js';
 import PacientesAnexos from '../models/PacientesAnexos.js';
 import Sequelize, { Op } from 'sequelize';
-import { parseExcel } from '../../utils/excelUtils.js';
-import fs from 'fs';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
-import { extrairDadosDocumento } from '../../services/openAiService.js';
 import AuditService from '../../services/AuditService.js';
+import axios from 'axios';
+import PacienteSyncService from '../../services/SyncService.js';
 
-// Helper para formatar e validar celular para padrão WhatsApp (55 + DDD + 9 + Numero)
-// Movido para fora da classe para evitar problemas de escopo (this)
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
-    let limpo = String(numero).replace(/\D/g, ''); // Remove tudo que não é número
-
-    // Se o usuário não digitou o 55, nós adicionamos
+    let limpo = String(numero).replace(/\D/g, '');
     if (limpo.length === 11 && !limpo.startsWith('55')) {
         limpo = '55' + limpo;
     }
@@ -46,45 +40,28 @@ class PacientesController {
         req.body.fez_entrevista = req.body.fez_entrevista === 'true';
         req.body.operadora_id = Number(req.body.operadora_id);
 
-        // Formatação prévia do celular para validação (chamando a função externa)
-        if (req.body.celular) {
-            req.body.celular = formatarCelularWhatsapp(req.body.celular);
-        }
-        if (req.body.telefone) {
-            req.body.telefone = String(req.body.telefone).replace(/\D/g, '');
-        }
+        if (req.body.celular) req.body.celular = formatarCelularWhatsapp(req.body.celular);
+        if (req.body.telefone) req.body.telefone = String(req.body.telefone).replace(/\D/g, '');
 
         const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
         if (!permission.authorized) {
-            return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para cadastrar pacientes nesta operadora." });
+            return res.status(permission.status || 403).json({ error: permission.error || "Sem permissão." });
         }
 
-        if (req.body.medicamento_id) {
-            req.body.medicamento_id = Number(req.body.medicamento_id);
-        } else {
-            req.body.medicamento_id = null;
-        }
+        req.body.medicamento_id = req.body.medicamento_id ? Number(req.body.medicamento_id) : null;
 
         const schema = Yup.object({
             nome: Yup.string().required(),
             sobrenome: Yup.string().required(),
-            celular: Yup.string()
-                .required('Celular é obrigatório')
-                .length(13, 'O celular deve ter o formato 55 + DDD + 9 + número (13 dígitos)'),
-            telefone: Yup.string().nullable(),
+            celular: Yup.string().required().length(13),
             data_nascimento: Yup.date().required(),
             sexo: Yup.string().oneOf(['M', 'F', 'nao definido']).required(),
             possui_cuidador: Yup.boolean().required(),
-            nome_cuidador: Yup.string().nullable(),
-            contato_cuidador: Yup.string().nullable(),
             operadora_id: Yup.number().required(),
-            medicamento_id: Yup.number().nullable(),
             cpf: Yup.string().required(),
-            fez_entrevista: Yup.boolean().default(false),
             cep: Yup.string().required(),
             logradouro: Yup.string().required(),
             numero: Yup.string().required(),
-            complemento: Yup.string().nullable(),
             bairro: Yup.string().required(),
             cidade: Yup.string().required(),
             estado: Yup.string().required()
@@ -96,158 +73,57 @@ class PacientesController {
             return res.status(400).json({ error: err.errors });
         }
 
-        const formatarNome = (texto) => {
-            if (!texto) return '';
-            return texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-        };
+        const formatarNome = (texto) => texto ? texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : '';
         req.body.nome = formatarNome(req.body.nome);
         req.body.sobrenome = formatarNome(req.body.sobrenome);
 
         const isCPF = await Pacientes.findOne({ where: { cpf: req.body.cpf.replace(/\D/g, '') } });
-        if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
-
-        const isCelular = await Pacientes.findOne({ where: { celular: req.body.celular } });
-        if (isCelular) return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
+        if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado.' });
 
         try {
-            const currentUser = await User.findByPk(req.userId);
-            const isAdmin = currentUser && (currentUser.is_admin === true || String(currentUser.is_admin).toLowerCase() === 'true' || currentUser.is_admin === 1);
-
-            req.body.is_new_user = !isAdmin;
-
             const paciente = await Pacientes.create(req.body);
 
             if (req.files && req.files.length > 0) {
-                let nomesAnexos = req.body.anexos_nomes || [];
-                if (!Array.isArray(nomesAnexos)) nomesAnexos = [nomesAnexos];
-
+                let nomesAnexos = Array.isArray(req.body.anexos_nomes) ? req.body.anexos_nomes : [req.body.anexos_nomes || ''];
                 const anexosData = req.files.map((file, index) => ({
                     paciente_id: paciente.id,
                     nome: nomesAnexos[index] || 'Sem Nome',
                     file_path: file.filename,
                     original_name: file.originalname
                 }));
-
                 await PacientesAnexos.bulkCreate(anexosData);
             }
 
-            const pacienteCriado = await Pacientes.findByPk(paciente.id, {
-                include: [
-                    { model: PacientesAnexos, as: 'anexos', attributes: ['id', 'nome', 'file_path', 'original_name'] },
-                    { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
-                ]
-            });
-            await AuditService.log(req.userId, 'Criação', 'Paciente', paciente.id, `Cadastrou o paciente ${req.body.nome} ${req.body.sobrenome} (CPF: ${req.body.cpf})`);
-            return res.status(201).json(pacienteCriado);
-
+            return res.status(201).json(paciente);
         } catch (err) {
-            console.error("Erro no cadastro de paciente:", err);
-            return res.status(500).json({ error: 'Erro ao cadastrar paciente', details: err.message });
+            return res.status(500).json({ error: 'Erro ao cadastrar', details: err.message });
         }
     }
 
     async update(req, res) {
         const { id } = req.params;
-
         try {
             const paciente = await Pacientes.findByPk(id);
             if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
 
-            // --- CONVERSÕES DE TIPO (Crucial para FormData) ---
-            if (req.body.possui_cuidador !== undefined) {
-                req.body.possui_cuidador = req.body.possui_cuidador === 'true' || req.body.possui_cuidador === true;
-            }
+            if (req.body.possui_cuidador !== undefined) req.body.possui_cuidador = String(req.body.possui_cuidador) === 'true';
+            if (req.body.fez_entrevista !== undefined) req.body.fez_entrevista = String(req.body.fez_entrevista) === 'true';
+            if (req.body.operadora_id) req.body.operadora_id = Number(req.body.operadora_id);
+            if (req.body.medicamento_id === '' || req.body.medicamento_id === 'null') req.body.medicamento_id = null;
+            else if (req.body.medicamento_id) req.body.medicamento_id = Number(req.body.medicamento_id);
 
-            if (req.body.fez_entrevista !== undefined) {
-                req.body.fez_entrevista = req.body.fez_entrevista === 'true' || req.body.fez_entrevista === true;
-            }
-
-            if (req.body.operadora_id) {
-                req.body.operadora_id = Number(req.body.operadora_id);
-            }
-
-            if (req.body.medicamento_id === '' || req.body.medicamento_id === 'null') {
-                req.body.medicamento_id = null;
-            } else if (req.body.medicamento_id) {
-                req.body.medicamento_id = Number(req.body.medicamento_id);
-            }
-            // --------------------------------------------------
-
-            // Validação de Celular
             if (req.body.celular) {
                 req.body.celular = formatarCelularWhatsapp(req.body.celular);
-                if (req.body.celular.length !== 13) {
-                    return res.status(400).json({ error: 'O celular deve ter 13 dígitos (55 + DDD + 9 + número).' });
-                }
-
-                const isCelular = await Pacientes.findOne({
-                    where: { celular: req.body.celular, id: { [Op.ne]: id } }
-                });
-                if (isCelular) return res.status(400).json({ error: 'Celular já cadastrado para outro paciente.' });
             }
 
-            // Permissão de Operadora
-            if (req.body.operadora_id && req.body.operadora_id !== paciente.operadora_id) {
-                const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
-                if (!permission.authorized) {
-                    return res.status(permission.status || 403).json({ error: permission.error || "Você não tem permissão para esta operadora." });
-                }
-            }
-
-            // Validação de CPF
             if (req.body.cpf) {
                 req.body.cpf = req.body.cpf.replace(/\D/g, '');
-                const isCPF = await Pacientes.findOne({
-                    where: { cpf: req.body.cpf, id: { [Op.ne]: id } }
-                });
-                if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado para outro paciente.' });
-            }
-
-            // Busca de Endereço (CEP)
-            if (req.body.cep && req.body.cep !== paciente.cep) {
-                try {
-                    const consulta = await getAdress(req.body.cep);
-                    if (consulta && consulta.length > 0 && !consulta[0].erro) {
-                        const end = consulta[0];
-                        req.body.logradouro = end.logradouro;
-                        req.body.bairro = end.bairro;
-                        req.body.cidade = end.localidade;
-                        req.body.estado = end.uf;
-                    }
-                } catch (err) {
-                    console.error("Erro ao buscar CEP no update:", err);
-                }
             }
 
             await paciente.update(req.body);
-
-            // Lógica de Novos Anexos (Adicione se desejar que o update também salve arquivos)
-            if (req.files && req.files.length > 0) {
-                let nomesAnexos = req.body.anexos_nomes || [];
-                if (!Array.isArray(nomesAnexos)) nomesAnexos = [nomesAnexos];
-
-                const anexosData = req.files.map((file, index) => ({
-                    paciente_id: paciente.id,
-                    nome: nomesAnexos[index] || 'Sem Nome',
-                    file_path: file.filename,
-                    original_name: file.originalname
-                }));
-                await PacientesAnexos.bulkCreate(anexosData);
-            }
-
-            const pacienteAtualizado = await Pacientes.findByPk(id, {
-                include: [
-                    { model: PacientesAnexos, as: 'anexos', attributes: ['id', 'nome', 'file_path', 'original_name'] },
-                    { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
-                ]
-            });
-
-            await AuditService.log(req.userId, 'Edição', 'Paciente', paciente.id, `Atualizou dados do paciente ${pacienteAtualizado.nome}`);
-
-            return res.json(pacienteAtualizado);
+            return res.json(paciente);
         } catch (err) {
-            console.error("ERRO NO UPDATE:", err); // IMPORTANTE: Ver o log no terminal do VS Code
-            return res.status(500).json({ error: err.message || 'Erro ao atualizar paciente' });
+            return res.status(500).json({ error: 'Erro ao atualizar' });
         }
     }
 
@@ -255,10 +131,7 @@ class PacientesController {
         const { nome, cpf, operadora_id, status_active } = req.query;
         const permission = await getOperadoraFilter(req.userId, operadora_id);
 
-        if (!permission.authorized) {
-            if (permission.emptyResult) return res.json([]);
-            return res.status(permission.status).json({ error: permission.error });
-        }
+        if (!permission.authorized) return res.json([]);
 
         const where = permission.whereClause;
         if (nome) {
@@ -269,11 +142,8 @@ class PacientesController {
         }
         if (cpf) where.cpf = cpf.replace(/\D/g, '');
 
-        if (status_active === 'false') {
-            where.is_active = false;
-        } else if (status_active !== 'ambos' && status_active !== 'todos') {
-            where.is_active = { [Op.not]: false };
-        }
+        if (status_active === 'false') where.is_active = false;
+        else if (status_active !== 'ambos' && status_active !== 'todos') where.is_active = { [Op.not]: false };
 
         try {
             const pacientes = await Pacientes.findAll({
@@ -283,7 +153,7 @@ class PacientesController {
                     { model: PacientesAnexos, as: 'anexos', attributes: ['id', 'nome', 'file_path', 'original_name'] },
                     { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'dosagem'] }
                 ],
-                order: [['is_new_user', 'DESC'], ['nome', 'ASC']]
+                order: [['nome', 'ASC']] // Removida a ordenação por is_new_user
             });
             return res.json(pacientes);
         } catch (err) {
@@ -291,365 +161,149 @@ class PacientesController {
         }
     }
 
-    async validateImport(req, res) {
-        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-        const { operadora_id } = req.body;
+    // =========================================================================
+    // SINCRONIZAÇÃO COM API EXTERNA
+    // =========================================================================
 
+    async syncExternal(req, res) {
         try {
-            const data = parseExcel(req.file.path);
-            const validos = [];
-            const duplicados = [];
-            const invalidos = [];
+            console.log("[BACKEND] 1. Buscando o token do usuário logado...");
+            const currentUser = await User.findByPk(req.userId);
 
-            console.log(`[Importação] Iniciando validação de ${data.length} linhas.`);
+            if (!currentUser || !currentUser.external_token) {
+                console.log("❌ Usuário sem external_token!");
+                return res.status(401).json({ error: "Token externo não encontrado." });
+            }
 
-            // 1. Extração rápida de todos os CPFs da planilha
-            const cpfsNaPlanilha = [...new Set(data.map(r => String(r['cpf'] || r['CPF'] || '').replace(/\D/g, '')).filter(cpf => cpf.length === 11))];
+            const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+            let todosPacientes = [];
 
-            console.log(`[Importação] Encontrados ${cpfsNaPlanilha.length} CPFs com 11 dígitos na planilha.`);
+            // A MÁGICA ACONTECE AQUI: Criamos a URL base já com o seu filtro!
+            const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
 
-            // 2. Busca SEGURA de duplicatas no banco de dados.
-            // Executamos a query diretamente. Bancos modernos como PostgreSQL aguentam cláusulas IN com 1000 itens tranquilamente.
-            // O que quebrava antes era que provavelmente existiam CPFs nulos ou vazios no array, causando query inválida.
-            let cpfsExistentesSet = new Set();
+            console.log(`[BACKEND] 2. Buscando pacientes (Filtro aplicado na URL)...`);
             
-            if (cpfsNaPlanilha.length > 0) {
-                 try {
-                     const pacientesExistentes = await Pacientes.findAll({
-                         where: { cpf: cpfsNaPlanilha },
-                         attributes: ['cpf'],
-                         raw: true // Extremamente importante para performance: não cria instâncias do Sequelize, retorna objeto puro
-                     });
-                     cpfsExistentesSet = new Set(pacientesExistentes.map(p => p.cpf));
-                     console.log(`[Importação] Destes, ${cpfsExistentesSet.size} já existem no banco.`);
-                 } catch (dbError) {
-                     console.error("[Importação] Erro crítico ao buscar CPFs no banco:", dbError);
-                     throw new Error("Falha na comunicação com o banco de dados durante a validação de CPFs.");
-                 }
-            }
+            // Busca a primeira página
+            const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
+            const dataP1 = responseP1.data;
+            
+            if (dataP1.data) todosPacientes = todosPacientes.concat(dataP1.data);
+            else if (Array.isArray(dataP1)) todosPacientes = todosPacientes.concat(dataP1);
 
-            // 3. Processamento linha a linha (Síncrono para ser extremamente rápido)
-            for (let i = 0; i < data.length; i++) {
-                const row = data[i];
-                const linhaNum = i + 2; 
-                const errosDaLinha = []; 
+            const lastPage = (dataP1.meta && dataP1.meta.last_page) ? dataP1.meta.last_page : 1;
 
-                // --- VALIDAÇÕES RÁPIDAS ---
-                const nomeDaPlanilha = row['nome'] || row['Nome'];
-                if (!nomeDaPlanilha || String(nomeDaPlanilha).trim() === '') errosDaLinha.push('Nome é obrigatório');
-
-                const cpfRaw = row['cpf'] || row['CPF'] || '';
-                const cpf = String(cpfRaw).replace(/\D/g, '');
-                if (!cpf) errosDaLinha.push('CPF não preenchido');
-                else if (cpf.length !== 11) errosDaLinha.push(`CPF inválido (${cpf.length} dígitos)`);
-
-                // Validação de Data (A mais complexa)
-                let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
-                let dataFormatada = null;
-
-                if (dataNascimento) {
-                    if (typeof dataNascimento === 'number') {
-                        const dataObj = new Date(Math.round((dataNascimento - 25569) * 86400 * 1000));
-                        if (!isNaN(dataObj.getTime())) {
-                            dataFormatada = dataObj.toISOString().split('T')[0];
-                        } else {
-                            errosDaLinha.push('Data inválida');
-                        }
-                    } else if (typeof dataNascimento === 'string') {
-                        const dateStr = dataNascimento.trim();
-                        if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) {
-                            const [dia, mes, ano] = dateStr.split('/');
-                            dataFormatada = `${ano}-${mes}-${dia}`;
-                        } else if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-                            dataFormatada = dateStr;
-                        } else {
-                            errosDaLinha.push('Formato de data inválido (Use DD/MM/AAAA)');
-                        }
-                    }
-                }
-
-                const cepRaw = row['cep'] || row['CEP'];
-                const cep = cepRaw ? String(cepRaw).replace(/\D/g, '') : '';
-                if (cep && cep.length !== 8) errosDaLinha.push('CEP inválido');
-
-                const celularRaw = row['celular'] || row['Celular'];
-                const celular = celularRaw ? String(celularRaw).replace(/\D/g, '') : '';
-                if (celular && celular.length > 20) errosDaLinha.push('Celular muito longo');
-
-                let sexoPlanilha = String(row['sexo'] || row['Sexo'] || '').toLowerCase().trim();
-                let sexoFormatado = 'nao definido';
-                if (sexoPlanilha === 'm' || sexoPlanilha === 'masculino') sexoFormatado = 'M';
-                else if (sexoPlanilha === 'f' || sexoPlanilha === 'feminino') sexoFormatado = 'F';
-
-                // --- CLASSIFICAÇÃO DA LINHA ---
-                if (errosDaLinha.length > 0) {
-                    invalidos.push({ 
-                        linha: linhaNum, 
-                        nome: nomeDaPlanilha || 'S/N', 
-                        cpf: cpf || 'S/N', 
-                        motivo: errosDaLinha.join(' | ') 
-                    });
-                } else if (cpfsExistentesSet.has(cpf)) {
-                    duplicados.push({ 
-                        linha: linhaNum, 
-                        nome: nomeDaPlanilha, 
-                        cpf, 
-                        motivo: 'CPF já cadastrado' 
-                    });
-                } else {
-                    validos.push({
-                        nome: nomeDaPlanilha,
-                        sobrenome: String(row['sobrenome'] || row['Sobrenome'] || ''),
-                        celular: celular || '5500000000000',
-                        telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
-                        data_nascimento: dataFormatada || new Date(),
-                        sexo: sexoFormatado,
-                        possui_cuidador: (String(row['possui_cuidador']).toUpperCase() === 'SIM' || row['possui_cuidador'] === true),
-                        nome_cuidador: String(row['nome_cuidador'] || ''),
-                        contato_cuidador: String(row['contato_cuidador'] || ''),
-                        cep: cep,
-                        logradouro: String(row['logradouro'] || row['Logradouro'] || 'N/A'),
-                        numero: String(row['numero'] || row['Numero'] || 'S/N'),
-                        complemento: String(row['complemento'] || row['Complemento'] || ''),
-                        bairro: String(row['bairro'] || row['Bairro'] || 'N/A'),
-                        cidade: String(row['cidade'] || row['Cidade'] || 'N/A'),
-                        estado: String(row['estado'] || row['Estado'] || 'N/A'),
-                        cpf: cpf,
-                        operadora_id: Number(operadora_id),
-                        medicamento_id: row['medicamento_id'] ? Number(row['medicamento_id']) : null,
-                    });
-                }
-            }
-
-            console.log(`[Importação] Validação concluída. Válidos: ${validos.length}, Inválidos: ${invalidos.length}, Duplicados: ${duplicados.length}`);
-
-            // Remove o arquivo físico
-            if (req.file.path) {
-                try {
-                     fs.unlinkSync(req.file.path);
-                } catch(err) {
-                     console.warn("[Importação] Aviso: Não foi possível deletar o arquivo temporário.");
-                }
-            }
-
-            return res.json({
-                resumo: {
-                    total: data.length,
-                    validos: validos.length,
-                    duplicados: duplicados.length,
-                    invalidos: invalidos.length
-                },
-                detalhes: { validos, duplicados, invalidos }
-            });
-
-        } catch (error) {
-            console.error("❌ Erro FATAL na validação:", error);
-            // Garante que o arquivo seja deletado mesmo em caso de erro fatal
-            if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-                 try { fs.unlinkSync(req.file.path); } catch(e) {}
-            }
-            return res.status(500).json({ error: error.message || 'Erro interno na validação do arquivo' });
-        }
-    }
-
-    // 2. NOVA IMPORTAÇÃO EM LOTES (Recebe JSON em vez de arquivo)
-    async importBatch(req, res) {
-        const { operadora_id, pacientes } = req.body;
-        
-        if (!operadora_id || !pacientes || !Array.isArray(pacientes)) {
-            return res.status(400).json({ error: 'Dados inválidos para importação.' });
-        }
-
-        const successes = [];
-        const errors = [];
-
-        try {
-            const currentUser = await User.findByPk(req.userId);
-            const isNewUserFlag = !(currentUser && currentUser.is_admin);
-
-            // Inserção direta no banco, ignorando chamadas externas
-            for (const pacienteData of pacientes) {
-                try {
-                    await Pacientes.create({
-                        ...pacienteData,
-                        is_new_user: isNewUserFlag
-                    });
-                    successes.push({ nome: pacienteData.nome, cpf: pacienteData.cpf });
-                } catch (err) {
-                    let dbErrorMessage = err.message;
-                    if (err.errors && err.errors.length > 0) {
-                        dbErrorMessage = err.errors.map(e => e.message).join(', ');
-                    }
-                    errors.push({ 
-                        nome: pacienteData.nome, 
-                        cpf: pacienteData.cpf, 
-                        erro: dbErrorMessage 
-                    });
-                }
-            }
-
-            return res.json({ successes, errors });
-
-        } catch (error) {
-            console.error("❌ Falha geral no processamento do lote:", error);
-            return res.status(500).json({ error: 'Falha no processamento do lote', details: error.message });
-        }
-    }
-
-
-   /* async importExcel(req, res) {
-        if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-        
-        const { operadora_id } = req.body;
-        if (!operadora_id) {
-            if (req.file.path) fs.unlinkSync(req.file.path);
-            return res.status(400).json({ error: 'Operadora não informada.' });
-        }
-
-        const permission = await getOperadoraFilter(req.userId, operadora_id);
-        if (!permission.authorized) {
-            if (req.file.path) fs.unlinkSync(req.file.path);
-            return res.status(permission.status).json({ error: permission.error });
-        }
-
-        const successes = [];
-        const errors = [];
-        const duplicates = [];
-
-        try {
-            const data = parseExcel(req.file.path);
-            const currentUser = await User.findByPk(req.userId);
-            const isNewUserFlag = !(currentUser && currentUser.is_admin);
-
-            const formatarNome = (texto) => {
-                if (!texto) return '';
-                return texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-            };
-
-            for (const row of data) {
-                const cpfRaw = row['cpf'] || row['CPF'];
-                const cpf = cpfRaw ? String(cpfRaw).replace(/\D/g, '') : null;
-                const nomeDaPlanilha = row['nome'] || row['Nome'];
-
-                // Evita que o backend pule a linha em silêncio se faltar dado básico
-                if (!cpf || !nomeDaPlanilha) {
-                    errors.push({ 
-                        nome: nomeDaPlanilha || 'Linha sem nome', 
-                        cpf: cpf || 'N/A', 
-                        erro: 'CPF ou Nome não preenchidos na planilha' 
-                    });
-                    continue;
-                }
-
-                let celularRaw = row['celular'] || row['Celular'];
-                let celular = formatarCelularWhatsapp(celularRaw);
-
-                const pacienteExists = await Pacientes.findOne({ where: { cpf } });
-                if (pacienteExists) {
-                    duplicates.push({ nome: nomeDaPlanilha, cpf, motivo: 'CPF já cadastrado' });
-                    continue;
-                }
-
-                const cepRaw = row['cep'] || row['CEP'];
-                const cep = cepRaw ? String(cepRaw).replace(/\D/g, '') : '';
-                let enderecoData = {};
-
-                if (cep && cep.length === 8) {
-                    try {
-                        const consultaEndereco = await getAdress(cep);
-                        if (consultaEndereco && !consultaEndereco[0].erro) enderecoData = consultaEndereco[0];
-                    } catch (err) {
-                        console.error(`[Aviso] Erro ao buscar CEP ${cep}:`, err.message);
-                    }
-                }
-
-                let dataNascimento = row['data_nascimento'] || row['Data_nascimento'] || null;
-                if (typeof dataNascimento === 'number') {
-                    const dataObj = new Date(Math.round((dataNascimento - 25569) * 86400 * 1000));
-                    dataNascimento = dataObj.toISOString().split('T')[0];
-                }
-
-                // --- TRATAMENTO DO ENUM DE SEXO ---
-                let sexoPlanilha = String(row['sexo'] || row['Sexo'] || '').toLowerCase().trim();
-                let sexoFormatado = 'nao definido';
+            // Se tiver mais de uma página de pacientes oncológicos, busca o resto
+            if (lastPage > 1) {
+                console.log(`[BACKEND] Total de páginas com pacientes oncológicos: ${lastPage}. Buscando o resto...`);
                 
-                if (sexoPlanilha === 'm' || sexoPlanilha === 'masculino') {
-                    sexoFormatado = 'M';
-                } else if (sexoPlanilha === 'f' || sexoPlanilha === 'feminino') {
-                    sexoFormatado = 'F';
-                }
-                // ----------------------------------
-
-                try {
-                    await Pacientes.create({
-                        nome: formatarNome(nomeDaPlanilha),
-                        sobrenome: formatarNome(String(row['sobrenome'] || row['Sobrenome'] || '')),
-                        celular: celular || '5500000000000',
-                        telefone: String(row['telefone'] || row['Telefone'] || '').replace(/\D/g, ''),
-                        data_nascimento: dataNascimento || new Date(),
-                        sexo: sexoFormatado, // Valor tratado e compatível com o Enum do banco
-                        possui_cuidador: (String(row['possui_cuidador']).toUpperCase() === 'SIM' || row['possui_cuidador'] === true),
-                        nome_cuidador: String(row['nome_cuidador'] || ''),
-                        contato_cuidador: String(row['contato_cuidador'] || ''),
-                        cep: cep,
-                        operadora_id: Number(operadora_id),
-                        medicamento_id: row['medicamento_id'] ? Number(row['medicamento_id']) : null,
-                        cpf: cpf,
-                        logradouro: enderecoData.logradouro || 'N/A',
-                        numero: String(row['numero'] || 'S/N'),
-                        bairro: enderecoData.bairro || 'N/A',
-                        cidade: enderecoData.localidade || 'N/A',
-                        estado: enderecoData.uf || 'N/A',
-                        is_new_user: isNewUserFlag
-                    });
+                const BATCH_SIZE = 5; // Lotes de 5 em 5 requisições paralelas
+                
+                for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
+                    const batchPromises = [];
                     
-                    successes.push({ nome: nomeDaPlanilha, cpf });
-                    
-                } catch (err) {
-                    console.error(`\n❌ [ERRO BANCO] Falha ao criar paciente ${nomeDaPlanilha} - CPF: ${cpf}`);
-                    console.error(err);
-                    
-                    let dbErrorMessage = err.message;
-                    if (err.errors && err.errors.length > 0) {
-                        dbErrorMessage = err.errors.map(e => e.message).join(', ');
+                    for (let j = i; j < i + BATCH_SIZE && j <= lastPage; j++) {
+                        batchPromises.push(axios.get(`${baseUrl}&page=${j}`, { headers }));
                     }
 
-                    errors.push({ 
-                        nome: nomeDaPlanilha, 
-                        cpf: cpf, 
-                        erro: dbErrorMessage 
-                    });
+                    const batchResponses = await Promise.all(batchPromises);
+
+                    for (const response of batchResponses) {
+                        const responseData = response.data;
+                        if (responseData.data) todosPacientes = todosPacientes.concat(responseData.data);
+                        else if (Array.isArray(responseData)) todosPacientes = todosPacientes.concat(responseData);
+                    }
                 }
             }
 
-            if (req.file.path) fs.unlinkSync(req.file.path);
+            console.log(`[BACKEND] 3. Download concluído! Total de pacientes encontrados: ${todosPacientes.length}`);
             
-            if (successes.length > 0) {
-                await AuditService.log(req.userId, 'Importação', 'Paciente', null, `Importou ${successes.length} pacientes.`);
+            if (todosPacientes.length === 0) {
+                 return res.json({ message: "Nenhum paciente de navegação oncológica encontrado." });
             }
 
-            return res.json({
-                message: 'Processamento concluído',
-                summary: {
-                    total: data.length,
-                    importados: successes.length,
-                    duplicados: duplicates.length,
-                    erros: errors.length
-                },
-                detalhes: {
-                    erros: errors,
-                    sucessos: successes,
-                    duplicados: duplicates
-                }
+            console.log(`[BACKEND] 4. Iniciando sincronização no banco local...`);
+
+            const { successes, errors } = await PacienteSyncService.syncPacientes(todosPacientes);
+
+            return res.json({ 
+                message: `Sincronização finalizada. ${successes.length} atualizados/inseridos.`,
+                successes, 
+                errors 
             });
 
-        } catch (error) {
-            console.error("❌ Falha geral no processamento do Excel:", error);
-            if (req.file && req.file.path) fs.unlinkSync(req.file.path);
-            return res.status(500).json({ error: 'Falha no processamento do Excel', details: error.message });
+        } catch (err) {
+            console.error('[BACKEND] Erro na sincronização externa:', err.response?.data || err.message);
+            return res.status(500).json({ error: 'Erro ao comunicar com a API externa para sincronizar pacientes.' });
         }
-    } */
+    }
 
+
+    // =========================================================================
+    // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE
+    // =========================================================================
+
+    async checkSync(req, res) {
+        try {
+            const currentUser = await User.findByPk(req.userId);
+
+            if (!currentUser || !currentUser.external_token) {
+                return res.status(401).json({ error: "Token externo não encontrado." });
+            }
+
+            const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+            const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
+            let todosPacientesExternos = [];
+
+            const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
+            const dataP1 = responseP1.data;
+            
+            if (dataP1.data) todosPacientesExternos = todosPacientesExternos.concat(dataP1.data);
+            else if (Array.isArray(dataP1)) todosPacientesExternos = todosPacientesExternos.concat(dataP1);
+
+            const lastPage = (dataP1.meta && dataP1.meta.last_page) ? dataP1.meta.last_page : 1;
+
+            if (lastPage > 1) {
+                const BATCH_SIZE = 5;
+                for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
+                    const batchPromises = [];
+                    for (let j = i; j < i + BATCH_SIZE && j <= lastPage; j++) {
+                        batchPromises.push(axios.get(`${baseUrl}&page=${j}`, { headers }));
+                    }
+                    const batchResponses = await Promise.all(batchPromises);
+                    for (const response of batchResponses) {
+                        const responseData = response.data;
+                        if (responseData.data) todosPacientesExternos = todosPacientesExternos.concat(responseData.data);
+                        else if (Array.isArray(responseData)) todosPacientesExternos = todosPacientesExternos.concat(responseData);
+                    }
+                }
+            }
+
+            // FORÇANDO A CONVERSÃO PARA STRING PARA EVITAR BUGS DE COMPARAÇÃO
+            const externalIds = todosPacientesExternos.map(p => String(p.id));
+
+            const pacientesLocais = await Pacientes.findAll({
+                attributes: ['external_id'],
+                where: { external_id: { [Op.not]: null } } 
+            });
+            
+            // FORÇANDO A CONVERSÃO AQUI TAMBÉM
+            const localIds = pacientesLocais.map(p => String(p.external_id));
+
+            const pendentes = externalIds.filter(id => !localIds.includes(id));
+
+            console.log(`[CHECK SYNC] Externos: ${externalIds.length} | Locais: ${localIds.length} | Pendentes: ${pendentes.length}`);
+
+            return res.json({ 
+                pendentes: pendentes.length,
+                total_externo: externalIds.length, 
+                total_local: localIds.length
+            });
+
+        } catch (err) {
+            console.error('[BACKEND] Erro ao checar sync:', err.message);
+            return res.status(500).json({ error: 'Erro ao verificar sincronização pendente.' });
+        }
+    }
 
     async getOperadorasFiltro(req, res) {
         try {
@@ -688,53 +342,6 @@ class PacientesController {
             return res.json(paciente);
         } catch (err) {
             return res.status(500).json({ error: 'Erro ao buscar paciente' });
-        }
-    }
-
-    async getPending(req, res) {
-        try {
-            const permission = await getOperadoraFilter(req.userId);
-            const where = permission.whereClause || {};
-            where.is_new_user = true;
-            const pendentes = await Pacientes.findAll({ where, attributes: ['id', 'nome', 'sobrenome'], order: [['createdAt', 'DESC']] });
-            return res.json(pendentes);
-        } catch (error) {
-            return res.status(500).json({ error: 'Erro ao buscar pendentes' });
-        }
-    }
-
-    async confirmPatient(req, res) {
-        const { id } = req.params;
-        try {
-            const paciente = await Pacientes.findByPk(id);
-            await paciente.update({ is_new_user: false });
-            return res.json({ message: 'Confirmado' });
-        } catch (err) {
-            return res.status(500).json({ error: 'Erro ao confirmar' });
-        }
-    }
-
-    async autoFillFromDocument(req, res) {
-        if (!req.file) return res.status(400).json({ error: 'Sem arquivo' });
-        try {
-            const dadosExtraidos = await extrairDadosDocumento(req.file.path, req.file.mimetype);
-            let medicamentos_sugeridos = [];
-            if (dadosExtraidos.medicamento_extraido) {
-                const todosMedicamentos = await Medicamentos.findAll({ attributes: ['id', 'nome', 'dosagem'] });
-                const nomesBanco = todosMedicamentos.map(m => `${m.nome} ${m.dosagem || ''}`.trim());
-                if (nomesBanco.length > 0) {
-                    const matches = stringSimilarity.findBestMatch(dadosExtraidos.medicamento_extraido, nomesBanco);
-                    medicamentos_sugeridos = matches.ratings
-                        .map((resultado, index) => ({ ...todosMedicamentos[index].toJSON(), rating: resultado.rating }))
-                        .filter(med => med.rating >= 0.70)
-                        .sort((a, b) => b.rating - a.rating);
-                }
-            }
-            if (req.file.path) fs.unlinkSync(req.file.path);
-            return res.json({ ...dadosExtraidos, medicamentos_sugeridos });
-        } catch (error) {
-            if (req.file.path) fs.unlinkSync(req.file.path);
-            return res.status(500).json({ error: 'Erro na IA' });
         }
     }
 }

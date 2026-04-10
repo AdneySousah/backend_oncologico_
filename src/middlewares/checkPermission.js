@@ -4,7 +4,6 @@ import Perfil from '../app/models/Perfil.js';
 export default function checkPermission(modulo, acao) {
     return async (req, res, next) => {
         try {
-            // O authMiddleware já colocou o req.userId pra gente!
             const user = await User.findByPk(req.userId, {
                 include: [{ model: Perfil, as: 'perfil' }]
             });
@@ -13,10 +12,7 @@ export default function checkPermission(modulo, acao) {
                 return res.status(401).json({ error: 'Usuário não encontrado.' });
             }
 
-            // Se o usuário for administrador total, ele tem passe livre em tudo
-            if (user.is_admin) {
-                return next();
-            }
+            // REMOVIDO O BLOCO DO is_admin QUE DAVA PASSE LIVRE AQUI!
 
             // Verifica se o usuário tem um perfil vinculado e se existem permissões
             if (!user.perfil || !user.perfil.permissoes) {

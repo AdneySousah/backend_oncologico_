@@ -5,9 +5,13 @@ class Operadora extends Model {
     static init(sequelize){
         super.init({
             nome: Sequelize.STRING,
-            cnpj: Sequelize.STRING,
+            cnpj: {
+                type: Sequelize.STRING,
+                defaultValue: null,
+            },
             telefone: Sequelize.STRING,
-            email: Sequelize.JSONB
+            email: Sequelize.JSONB,
+            external_id: Sequelize.INTEGER
         }, {
             sequelize,
             tableName: 'operadoras'

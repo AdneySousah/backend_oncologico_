@@ -45,7 +45,6 @@ const uploadAnexos = multer(multerConfigAnexos);
 
 
 router.post('/session', SessionController.store)
-router.get('/pacientes/pendentes', authMiddleware, PacientesController.getPending);
 /* router.post('/nps/resposta', NpsController.registerResponse); */
 
 /* rota publica chat ativo */
@@ -105,17 +104,15 @@ router.put('/operadoras/:id', checkPermission('operadoras', 'editar'), Operadora
 
 // --- ROTAS DOS PACIENTES ---
 router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.store);
+router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.syncExternal);
 router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
 router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
 router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
-router.post('/pacientes/validate', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.validateImport);
-router.post('/pacientes/import-batch', checkPermission('pacientes', 'editar'), upload.single('file'), PacientesController.importBatch);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
 router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
 router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
-router.patch('/pacientes/:id/confirmar', checkPermission('pacientes', 'editar'), PacientesController.confirmPatient);
+router.get('/pacientes/check-sync', checkPermission('pacientes', 'acessar'), PacientesController.checkSync);
 
-router.post('/pacientes/autofill', checkPermission('pacientes', 'editar'), upload.single('documento'), PacientesController.autoFillFromDocument);
 
 
 // --- ROTAS DE PRESTADORES MÉDICOS (HOSPITAIS) ---
