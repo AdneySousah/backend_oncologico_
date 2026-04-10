@@ -1,6 +1,6 @@
 import Pacientes from '../app/models/Pacientes.js';
 import Operadora from '../app/models/Operadora.js';
-import Medicamentos from '../app/models/Medicamentos.js'; // <-- Importe o model de Medicamentos
+import Medicamentos from '../app/models/Medicamentos.js'; 
 
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
@@ -10,7 +10,7 @@ const formatarCelularWhatsapp = (numero) => {
 };
 
 class PacienteSyncService {
-
+    
     async syncPacientes(pacientesExternos) {
         const successes = [];
         const errors = [];
@@ -18,40 +18,46 @@ class PacienteSyncService {
         for (const extPatient of pacientesExternos) {
             try {
                 // ============================================================
-                // FILTRO DE NAVEGAÇÃO ONCOLÓGICA
+                // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA
                 // ============================================================
-                if (String(extPatient.oncological_navigation) !== '1') {
-                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Não é navegação oncológica)`);
-                    continue;
+                if (
+                    String(extPatient.oncological_navigation) !== '1' ||
+                    String(extPatient.immunobiological) === '1' ||
+                    String(extPatient.oncological) === '1'
+                ) {
+                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Não é exclusivo de navegação oncológica)`);
+                    continue; 
                 }
+                
                 console.log(`[SYNC] ⏳ Processando paciente: ${extPatient.name}...`);
+                
                 // ==========================================
                 // PASSO 1: SINCRONIZAR A OPERADORA
                 // ==========================================
                 let operadora = null;
-
+                
                 if (extPatient.company) {
                     if (extPatient.company.id !== undefined && extPatient.company.id !== null) {
-                        operadora = await Operadora.findOne({
-                            where: { external_id: extPatient.company.id }
+                        operadora = await Operadora.findOne({ 
+                            where: { external_id: extPatient.company.id } 
                         });
                     }
 
                     if (operadora && extPatient.company.name) {
                         await operadora.update({ nome: extPatient.company.name });
-                    }
+                    } 
                     else if (!operadora && extPatient.company.name) {
                         operadora = await Operadora.findOne({ where: { nome: extPatient.company.name } });
-
+                        
                         if (operadora) {
                             await operadora.update({ external_id: extPatient.company.id || null });
                         } else {
                             operadora = await Operadora.create({
                                 external_id: extPatient.company.id || null,
                                 nome: extPatient.company.name,
-                                cnpj: '00000000000000',
-                                telefone: '00000000000',
-                                email: [],
+                                cnpj: '00000000000000', 
+                                telefone: '00000000000', 
+                                email: [], 
                                 is_active: true
                             });
                         }
@@ -59,75 +65,64 @@ class PacienteSyncService {
                 }
 
                 // ==========================================
-                // PASSO 2: SINCRONIZAR O MEDICAMENTO (via events)
+                // PASSO 2: SINCRONIZAR O MEDICAMENTO (via medicament1)
                 // ==========================================
                 let medicamento_id = null;
 
-                if (extPatient.events && extPatient.events.length > 0) {
-                    // Pega o primeiro evento (assumindo que seja o tratamento atual/ativo)
-                    const lastEvent = extPatient.events[0];
+                // Agora lemos direto de extPatient.medicament1
+                if (extPatient.medicament1) {
+                    const extMed = extPatient.medicament1;
+                    let medicamento = null;
 
-                    if (lastEvent.medicament) {
-                        const extMed = lastEvent.medicament;
-                        const eventPrice = lastEvent.price;
-
-                        let medicamento = null;
-
-                        // Tenta achar pelo ID externo primeiro
-                        if (extMed.id) {
-                            medicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
-                        }
-
-                        // Se não achar, tenta pelo código TUSS
-                        if (!medicamento && extMed.tusscode) {
-                            medicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
-                        }
-
-                        // Tratar o ENUM de tipo_dosagem (ex: "mg/ml" vira "MG/ML")
-                        let tipoDosagemFormatado = extMed.measurement ? String(extMed.measurement).toUpperCase().trim() : null;
-                        const dosagensPermitidas = ['MG', 'G', 'MCG', 'UI', 'ML', 'MG/ML'];
-                        if (tipoDosagemFormatado && !dosagensPermitidas.includes(tipoDosagemFormatado)) {
-                            tipoDosagemFormatado = null; // Evita erro no banco se vier um tipo desconhecido
-                        }
-
-                        // Extrai apenas os números da string para garantir que a quantidade seja um número inteiro
-                        let qtdCapsulaExtraida = null;
-                        if (extMed.dosage) {
-                            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
-                            if (apenasNumeros) {
-                                qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
-                            }
-                        }
-
-                        const medData = {
-                            external_id: extMed.id || null,
-                            codigo_tuss: extMed.tusscode || null,
-                            nome: extMed.name,
-                            nome_comercial: extMed.commercial_name,
-                            principio_ativo: extMed.active_principle,
-
-                            // Mapeando a quantidade de cápsulas (comprimidos)
-                            qtd_capsula: qtdCapsulaExtraida,
-
-                            // Mantive a dosagem original como string caso a tabela exija esse campo preenchido
-                            dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
-
-                            tipo_dosagem: tipoDosagemFormatado,
-                            apresentacao: extMed.apresentation,
-                            via_administracao: extMed.way_administration,
-                            tipo_matmed: extMed.typematmed,
-                            tipo_medicamento: extMed.type_medicament,
-                            price: eventPrice ? parseFloat(eventPrice) : null
-                        };
-
-                        if (medicamento) {
-                            await medicamento.update(medData);
-                        } else {
-                            medicamento = await Medicamentos.create(medData);
-                        }
-
-                        medicamento_id = medicamento.id;
+                    // Tenta achar pelo ID externo primeiro
+                    if (extMed.id) {
+                        medicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
                     }
+
+                    // Se não achar, tenta pelo código TUSS
+                    if (!medicamento && extMed.tusscode) {
+                        medicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
+                    }
+
+                    // Tratar o ENUM de tipo_dosagem
+                    let tipoDosagemFormatado = extMed.measurement ? String(extMed.measurement).toUpperCase().trim() : null;
+                    const dosagensPermitidas = ['MG', 'G', 'MCG', 'UI', 'ML', 'MG/ML'];
+                    if (tipoDosagemFormatado && !dosagensPermitidas.includes(tipoDosagemFormatado)) {
+                        tipoDosagemFormatado = null; 
+                    }
+
+                    // Extrair quantidade de cápsulas (apenas números) do dosage para o Telemonitoramento
+                    let qtdCapsulaExtraida = null;
+                    if (extMed.dosage) {
+                        const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+                        if (apenasNumeros) {
+                            qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+                        }
+                    }
+
+                    const medData = {
+                        external_id: extMed.id || null,
+                        codigo_tuss: extMed.tusscode || null,
+                        nome: extMed.name,
+                        nome_comercial: extMed.commercial_name,
+                        principio_ativo: extMed.active_principle,
+                        qtd_capsula: qtdCapsulaExtraida, // <-- Extraído do dosage
+                        dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
+                        tipo_dosagem: tipoDosagemFormatado,
+                        apresentacao: extMed.apresentation,
+                        via_administracao: extMed.way_administration,
+                        tipo_matmed: extMed.typematmed,
+                        tipo_medicamento: extMed.type_medicament,
+                        price: null // A API não manda preço dentro de medicament1
+                    };
+
+                    if (medicamento) {
+                        await medicamento.update(medData);
+                    } else {
+                        medicamento = await Medicamentos.create(medData);
+                    }
+
+                    medicamento_id = medicamento.id;
                 }
 
                 // ==========================================
@@ -159,9 +154,9 @@ class PacienteSyncService {
                     nome_cuidador: extPatient.responsible || null,
                     contato_cuidador: extPatient.phone_responsible ? formatarCelularWhatsapp(extPatient.phone_responsible) : null,
                     operadora_id: operadora ? operadora.id : null,
-                    medicamento_id: medicamento_id, // <-- VINCOLO DO MEDICAMENTO AQUI
+                    medicamento_id: medicamento_id, // <-- VÍNCULO DO MEDICAMENTO AQUI
                     is_active: extPatient.status === 0,
-                    is_new_user: true
+                    is_new_user: true 
                 };
 
                 // ==========================================
