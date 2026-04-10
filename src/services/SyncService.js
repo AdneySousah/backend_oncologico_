@@ -65,13 +65,26 @@ class PacienteSyncService {
                 }
 
                 // ==========================================
-                // PASSO 2: SINCRONIZAR O MEDICAMENTO (via medicament1)
+                // PASSO 2: SINCRONIZAR O MEDICAMENTO E O PREÇO
                 // ==========================================
                 let medicamento_id = null;
+                let extMed = null;
+                let eventPrice = null;
 
-                // Agora lemos direto de extPatient.medicament1
+                // 1. Tenta pegar o medicamento da chave raiz, se não, tenta do primeiro evento
                 if (extPatient.medicament1) {
-                    const extMed = extPatient.medicament1;
+                    extMed = extPatient.medicament1;
+                } else if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].medicament) {
+                    extMed = extPatient.events[0].medicament;
+                }
+
+                // 2. Tenta pegar o preço do array de events (se ele existir)
+                if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].price) {
+                    eventPrice = extPatient.events[0].price;
+                }
+
+                // 3. Se encontrou dados de medicamento, salva no banco
+                if (extMed) {
                     let medicamento = null;
 
                     // Tenta achar pelo ID externo primeiro
@@ -106,14 +119,14 @@ class PacienteSyncService {
                         nome: extMed.name,
                         nome_comercial: extMed.commercial_name,
                         principio_ativo: extMed.active_principle,
-                        qtd_capsula: qtdCapsulaExtraida, // <-- Extraído do dosage
+                        qtd_capsula: qtdCapsulaExtraida, // <-- Extraído do dosage (comprimidos)
                         dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
                         tipo_dosagem: tipoDosagemFormatado,
                         apresentacao: extMed.apresentation,
                         via_administracao: extMed.way_administration,
                         tipo_matmed: extMed.typematmed,
                         tipo_medicamento: extMed.type_medicament,
-                        price: null // A API não manda preço dentro de medicament1
+                        price: eventPrice ? parseFloat(eventPrice) : null // <-- Preço do evento aplicado aqui
                     };
 
                     if (medicamento) {
