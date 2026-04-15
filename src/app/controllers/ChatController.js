@@ -2,18 +2,18 @@ import { Op } from 'sequelize';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
-import Pacientes from '../models/Pacientes.js'; 
-import NpsResponse from '../models/NpsResponse.js'; 
+import Pacientes from '../models/Pacientes.js';
+import NpsResponse from '../models/NpsResponse.js';
 import twilio from 'twilio';
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 class ChatController {
-  
+
   async receiveWebhook(req, res) {
     try {
       const { From, Body, MessageSid } = req.body;
-      
+
       if (!From) return res.status(200).send('<Response></Response>');
 
       const stringFrom = String(From);
@@ -23,23 +23,28 @@ class ChatController {
       const ultimos8 = celularLimpo.slice(-8);
 
       const paciente = await Pacientes.findOne({
-          where: { celular: { [Op.like]: `%${ultimos8}` } }
+        where: {
+          [Op.or]: [
+            { celular: { [Op.like]: `%${ultimos8}` } },
+            { contato_cuidador: { [Op.like]: `%${ultimos8}` } }
+          ]
+        }
       });
 
       let conversation = await Conversation.findOne({
-          where: { phone_number: { [Op.like]: `%${ultimos8}` } }
+        where: { phone_number: { [Op.like]: `%${ultimos8}` } }
       });
 
       if (!conversation) {
-          conversation = await Conversation.create({ 
-              phone_number: phoneNumber,
-              paciente_id: paciente ? paciente.id : null 
-          });
+        conversation = await Conversation.create({
+          phone_number: phoneNumber,
+          paciente_id: paciente ? paciente.id : null
+        });
       } else {
-          await conversation.update({ 
-              phone_number: phoneNumber,
-              paciente_id: paciente ? paciente.id : conversation.paciente_id
-          });
+        await conversation.update({
+          phone_number: phoneNumber,
+          paciente_id: paciente ? paciente.id : conversation.paciente_id
+        });
       }
 
       const expireDate = new Date();
@@ -52,12 +57,12 @@ class ChatController {
         direction: 'inbound',
         body: Body || '[Mídia ou Áudio recebido]',
         is_read: false,
-        user_id: null 
+        user_id: null
       });
 
       const stringBody = Body ? String(Body) : '';
-      const match = stringBody.match(/\b(10|[0-9])\b/); 
-      
+      const match = stringBody.match(/\b(10|[0-9])\b/);
+
       if (match && paciente) {
         const notaFinal = parseInt(match[0]);
         await NpsResponse.create({ paciente_id: paciente.id, nota: notaFinal });
@@ -69,6 +74,7 @@ class ChatController {
       return res.status(200).send('<Response></Response>');
 
     } catch (error) {
+      console.error('❌ [ERRO TWILIO WEBHOOK]:', error); // PARE DE ENGOLIR O ERRO AQUI
       res.set('Content-Type', 'text/xml');
       return res.status(200).send('<Response></Response>');
     }
@@ -103,7 +109,7 @@ class ChatController {
         message_sid: twilioMsg.sid,
         direction: 'outbound-reply',
         body: body,
-        is_read: true 
+        is_read: true
       });
 
       const messageWithUser = await Message.findByPk(message.id, {
@@ -119,7 +125,7 @@ class ChatController {
   // ✅ ALTERADO: Agora retorna os dados da conversa + paciente
   async getHistory(req, res) {
     const { id } = req.params;
-    
+
     try {
       const conversation = await Conversation.findByPk(id, {
         include: [{ model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] }]
@@ -148,7 +154,7 @@ class ChatController {
   async reopenWindow(req, res) {
     try {
       const { conversation_id } = req.body;
-      
+
       const conversation = await Conversation.findByPk(conversation_id, {
         include: [{ model: Pacientes, as: 'paciente' }]
       });
@@ -163,14 +169,14 @@ class ChatController {
 
       // Dispara o template via Twilio
       const twilioMsg = await client.messages.create({
-          from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-          to: `whatsapp:${conversation.phone_number}`,
-          contentSid: 'HXfa365bb91e965e9939e6204588222659',
-          contentVariables: JSON.stringify({
-              '1': pacienteNome,
-              '2': userName,
-              '3': linkAcompanhamento
-          })
+        from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
+        to: `whatsapp:${conversation.phone_number}`,
+        contentSid: 'HXfa365bb91e965e9939e6204588222659',
+        contentVariables: JSON.stringify({
+          '1': pacienteNome,
+          '2': userName,
+          '3': linkAcompanhamento
+        })
       });
 
       // Template reabre a janela de 24h!
@@ -181,12 +187,12 @@ class ChatController {
       const textoRealDoTemplate = `Olá ${pacienteNome}, meu nome é ${userName}, estou entrando em contato em nome da CIC FARMA.\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}\n\nAgradecemos a sua atenção.`;
 
       const message = await Message.create({
-          conversation_id: conversation.id,
-          user_id: req.userId,
-          message_sid: twilioMsg.sid,
-          direction: 'outbound-api',
-          body: textoRealDoTemplate,
-          is_read: true 
+        conversation_id: conversation.id,
+        user_id: req.userId,
+        message_sid: twilioMsg.sid,
+        direction: 'outbound-api',
+        body: textoRealDoTemplate,
+        is_read: true
       });
 
       const messageWithUser = await Message.findByPk(message.id, {
@@ -212,7 +218,7 @@ class ChatController {
 
       const startOfMonth = new Date();
       startOfMonth.setDate(1);
-      startOfMonth.setHours(0,0,0,0);
+      startOfMonth.setHours(0, 0, 0, 0);
 
       const activeThisMonth = await Conversation.count({
         where: { updatedAt: { [Op.gte]: startOfMonth } }
@@ -234,7 +240,7 @@ class ChatController {
       });
 
       const total = unreadMessages.length;
-      
+
       // Agrupa por conversa para a Sidebar saber exatamente onde colocar a bolinha verde
       const by_conversation = {};
       unreadMessages.forEach(msg => {
@@ -247,7 +253,7 @@ class ChatController {
       return res.status(500).json({ error: 'Erro ao contar mensagens' });
     }
   }
-  
+
 }
 
 export default new ChatController();

@@ -25,7 +25,8 @@ class Pacientes extends Model {
             is_active: Sequelize.BOOLEAN,
             is_new_user: Sequelize.BOOLEAN,
             medicamento_id: Sequelize.INTEGER, // Adicionado aqui
-            external_id: Sequelize.INTEGER
+            external_id: Sequelize.INTEGER,
+            data_entrega_medicamento: Sequelize.DATEONLY,
         },{
             sequelize,
             tableName: 'pacientes',

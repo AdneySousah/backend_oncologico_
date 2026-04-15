@@ -11,28 +11,30 @@ import AuditService from '../../services/AuditService.js';
 
 const obterProximoDiaUtil = (dataBase) => {
   const proximoDia = addDays(dataBase, 1);
-  const diaDaSemana = proximoDia.getDay(); 
+  const diaDaSemana = proximoDia.getDay();
 
-  if (diaDaSemana === 6) { 
+  if (diaDaSemana === 6) {
     return addDays(proximoDia, 2);
   }
-  if (diaDaSemana === 0) { 
+  if (diaDaSemana === 0) {
     return addDays(proximoDia, 1);
   }
-  
+
   return proximoDia;
 };
 
 class MonitoramentoMedicamentoController {
-  
-  async store(req, res) {
+
+ async store(req, res) {
     const schema = Yup.object().shape({
       paciente_id: Yup.number().integer().required('O ID do paciente é obrigatório.'),
       patient_evaluation_id: Yup.number().integer().nullable(),
       medicamentos_confirmados: Yup.array().of(
         Yup.object().shape({
           medicamento_id: Yup.number().integer().required('ID do medicamento é obrigatório.'),
-          posologia_diaria: Yup.number().integer().required('A posologia é obrigatória.')
+          posologia_diaria: Yup.number().integer().required('A posologia é obrigatória.'),
+          date_delivery: Yup.date().required('A data de entrega do medicamento é obrigatória.'),
+          qtd_capsula_manual: Yup.number().integer().nullable() // <-- NOVO CAMPO
         })
       ).min(1, 'É necessário enviar pelo menos um medicamento.').required('A lista de medicamentos é obrigatória.')
     });
@@ -50,12 +52,38 @@ class MonitoramentoMedicamentoController {
 
       for (let item of medicamentos_confirmados) {
         const medicamento = await Medicamentos.findByPk(item.medicamento_id);
-        
-        if (!medicamento || !medicamento.qtd_capsula) continue; 
 
-        const diasDuracao = Math.floor(medicamento.qtd_capsula / item.posologia_diaria);
-        const dataFimCaixa = addDays(new Date(), diasDuracao);
-        const dataProximoContato = subDays(dataFimCaixa, 10); 
+        if (!medicamento) {
+          return res.status(404).json({ error: `Medicamento ID ${item.medicamento_id} não encontrado.` });
+        }
+
+        // Verifica a quantidade da caixa: usa a enviada pelo front ou a do banco
+        const qtdCaixa = item.qtd_capsula_manual || medicamento.qtd_capsula;
+
+        // SE NÃO TIVER EM NENHUM DOS DOIS LUGARES, BARRA E AVISA O FRONTEND
+        if (!qtdCaixa) {
+          return res.status(400).json({
+            error: 'MISSING_QTD_CAPSULA',
+            needs_qtd_capsula: true,
+            message: `Quantidade de cápsulas na caixa não encontrada para o medicamento ${medicamento.nome}. Por favor, informe a quantidade manualmente para prosseguir.`,
+            medicamento_id: item.medicamento_id
+          });
+        }
+
+        // Se o front enviou a quantidade manualmente e o banco estava vazio, salva no banco para as próximas vezes!
+        if (item.qtd_capsula_manual && !medicamento.qtd_capsula) {
+          await medicamento.update({ qtd_capsula: item.qtd_capsula_manual });
+        }
+
+        // 1. Converte a data de entrega que veio do front
+        const dataEntrega = parseISO(item.date_delivery);
+
+        // 2. Calcula a data final da caixa
+        const diasDuracao = Math.floor(qtdCaixa / item.posologia_diaria);
+        const dataFimCaixa = addDays(dataEntrega, diasDuracao);
+
+        // 3. Regra do primeiro contato: Data da Entrega + 2 dias
+        const dataProximoContato = addDays(dataEntrega, 2);
 
         const novoMonitoramento = await MonitoramentoMedicamento.create({
           paciente_id,
@@ -76,6 +104,8 @@ class MonitoramentoMedicamentoController {
     }
   }
 
+
+
   async index(req, res) {
     try {
       const { operadora_id, page = 1, limit = 20, search = '' } = req.query;
@@ -90,8 +120,8 @@ class MonitoramentoMedicamentoController {
 
       let pacienteWhere = { ...permission.whereClause };
       if (search) {
-        const termosPesquisa = search.trim().split(/\s+/); 
-        
+        const termosPesquisa = search.trim().split(/\s+/);
+
         const condicoesBusca = termosPesquisa.map(termo => ({
           [Op.or]: [
             { nome: { [Op.iLike]: `%${termo}%` } },
@@ -101,18 +131,18 @@ class MonitoramentoMedicamentoController {
 
         pacienteWhere = {
           ...pacienteWhere,
-          [Op.and]: condicoesBusca 
+          [Op.and]: condicoesBusca
         };
       }
 
       const { count, rows: pendentesPagina } = await MonitoramentoMedicamento.findAndCountAll({
         where: { status: 'PENDENTE' },
         include: [
-          { 
-            model: Pacientes, 
-            as: 'paciente', 
-            attributes: ['id', 'nome', 'sobrenome', 'operadora_id','possui_cuidador','nome_cuidador','contato_cuidador'],
-            where: pacienteWhere, 
+          {
+            model: Pacientes,
+            as: 'paciente',
+            attributes: ['id', 'nome', 'sobrenome', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
+            where: pacienteWhere,
             required: true,
             include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
           }
@@ -129,11 +159,11 @@ class MonitoramentoMedicamentoController {
       const uniquePairs = [];
       const map = new Set();
       for (const p of pendentesPagina) {
-         const key = `${p.paciente_id}_${p.medicamento_id}`;
-         if (!map.has(key)) {
-             map.add(key);
-             uniquePairs.push({ paciente_id: p.paciente_id, medicamento_id: p.medicamento_id });
-         }
+        const key = `${p.paciente_id}_${p.medicamento_id}`;
+        if (!map.has(key)) {
+          map.add(key);
+          uniquePairs.push({ paciente_id: p.paciente_id, medicamento_id: p.medicamento_id });
+        }
       }
 
       const allRecordsForPage = await MonitoramentoMedicamento.findAll({
@@ -142,10 +172,10 @@ class MonitoramentoMedicamentoController {
           status: { [Op.ne]: 'CANCELADO' }
         },
         include: [
-          { 
-            model: Pacientes, 
-            as: 'paciente', 
-            attributes: ['id', 'nome', 'sobrenome', 'operadora_id','possui_cuidador','nome_cuidador','contato_cuidador'],
+          {
+            model: Pacientes,
+            as: 'paciente',
+            attributes: ['id', 'nome', 'sobrenome', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
             include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
           },
           { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
@@ -172,8 +202,8 @@ class MonitoramentoMedicamentoController {
       nivel_adesao: Yup.string().oneOf(['COMPLETAMENTE', 'PARCIALMENTE', 'NAO_ADERE']).nullable(),
       qtd_informada_caixa: Yup.number().integer().nullable(),
       data_abertura_nova_caixa: Yup.date().nullable(),
-      is_reacao: Yup.boolean().nullable(), 
-      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable() 
+      is_reacao: Yup.boolean().nullable(),
+      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable()
     });
 
     try {
@@ -183,12 +213,12 @@ class MonitoramentoMedicamentoController {
     }
 
     const { id } = req.params;
-    const { 
+    const {
       contato_efetivo,
       nivel_adesao,
-      qtd_informada_caixa, 
+      qtd_informada_caixa,
       data_abertura_nova_caixa,
-      is_reacao, 
+      is_reacao,
       reacoes_adversas
     } = req.body;
 
@@ -213,7 +243,7 @@ class MonitoramentoMedicamentoController {
       if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
         await monitoramentoAtual.setReacoesAdversas(reacoes_adversas);
       } else {
-        await monitoramentoAtual.setReacoesAdversas([]); 
+        await monitoramentoAtual.setReacoesAdversas([]);
       }
 
       if (contato_efetivo === false) {
@@ -243,7 +273,7 @@ class MonitoramentoMedicamentoController {
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
-          patient_evaluation_id: monitoramentoAtual.patient_evaluation_id, 
+          patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: posologia,
           data_calculada_fim_caixa: novaDataFimCaixa,
@@ -261,27 +291,27 @@ class MonitoramentoMedicamentoController {
   async timeline(req, res) {
     // ... MANTIDO IGUAL AO SEU CÓDIGO ORIGINAL ...
     try {
-        const operadoraQueryId = req.query.operadora_id;
-        const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
+      const operadoraQueryId = req.query.operadora_id;
+      const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
 
-        if (!permission.authorized) return res.json([]);
+      if (!permission.authorized) return res.json([]);
 
-        const monitoramentos = await MonitoramentoMedicamento.findAll({
-            include: [
-                { 
-                    model: Pacientes, 
-                    as: 'paciente', 
-                    where: permission.whereClause,
-                    attributes: ['id', 'nome', 'sobrenome'] 
-                },
-                { model: Medicamentos, as: 'medicamento', attributes: ['nome'] }
-            ],
-            order: [['createdAt', 'DESC']]
-        });
+      const monitoramentos = await MonitoramentoMedicamento.findAll({
+        include: [
+          {
+            model: Pacientes,
+            as: 'paciente',
+            where: permission.whereClause,
+            attributes: ['id', 'nome', 'sobrenome']
+          },
+          { model: Medicamentos, as: 'medicamento', attributes: ['nome'] }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
 
-        return res.json(monitoramentos);
+      return res.json(monitoramentos);
     } catch (error) {
-        return res.status(500).json({ error: 'Erro ao buscar dados da timeline' });
+      return res.status(500).json({ error: 'Erro ao buscar dados da timeline' });
     }
   }
 }

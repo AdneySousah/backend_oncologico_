@@ -147,6 +147,12 @@ class PacienteSyncService {
 
                 const cpfLimpo = extPatient.cpf ? String(extPatient.cpf).replace(/\D/g, '') : null;
 
+                // Captura a data de entrega do medicamento
+                let dateDeliveryExtraido = null;
+                if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].date_delivery) {
+                    dateDeliveryExtraido = extPatient.events[0].date_delivery;
+                }
+
                 const dadosPaciente = {
                     external_id: extPatient.id || null,
                     nome: primeiroNome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
@@ -167,7 +173,8 @@ class PacienteSyncService {
                     nome_cuidador: extPatient.responsible || null,
                     contato_cuidador: extPatient.phone_responsible ? formatarCelularWhatsapp(extPatient.phone_responsible) : null,
                     operadora_id: operadora ? operadora.id : null,
-                    medicamento_id: medicamento_id, // <-- VÍNCULO DO MEDICAMENTO AQUI
+                    medicamento_id: medicamento_id,
+                    data_entrega_medicamento: dateDeliveryExtraido, // <-- CAMPO ADICIONADO AQUI
                     is_active: extPatient.status === 0,
                     is_new_user: true 
                 };
