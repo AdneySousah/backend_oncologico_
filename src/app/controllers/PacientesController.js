@@ -178,7 +178,7 @@ class PacientesController {
             const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
             let todosPacientes = [];
 
-            // A MÁGICA ACONTECE AQUI: Criamos a URL base já com o seu filtro!
+            
             const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
 
             console.log(`[BACKEND] 2. Buscando pacientes (Filtro aplicado na URL)...`);
