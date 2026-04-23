@@ -182,11 +182,11 @@ class PacientesController {
             const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
 
             console.log(`[BACKEND] 2. Buscando pacientes (Filtro aplicado na URL)...`);
-            
+
             // Busca a primeira página
             const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
             const dataP1 = responseP1.data;
-            
+
             if (dataP1.data) todosPacientes = todosPacientes.concat(dataP1.data);
             else if (Array.isArray(dataP1)) todosPacientes = todosPacientes.concat(dataP1);
 
@@ -195,12 +195,12 @@ class PacientesController {
             // Se tiver mais de uma página de pacientes oncológicos, busca o resto
             if (lastPage > 1) {
                 console.log(`[BACKEND] Total de páginas com pacientes oncológicos: ${lastPage}. Buscando o resto...`);
-                
+
                 const BATCH_SIZE = 5; // Lotes de 5 em 5 requisições paralelas
-                
+
                 for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
                     const batchPromises = [];
-                    
+
                     for (let j = i; j < i + BATCH_SIZE && j <= lastPage; j++) {
                         batchPromises.push(axios.get(`${baseUrl}&page=${j}`, { headers }));
                     }
@@ -216,19 +216,19 @@ class PacientesController {
             }
 
             console.log(`[BACKEND] 3. Download concluído! Total de pacientes encontrados: ${todosPacientes.length}`);
-            
+
             if (todosPacientes.length === 0) {
-                 return res.json({ message: "Nenhum paciente de navegação oncológica encontrado." });
+                return res.json({ message: "Nenhum paciente de navegação oncológica encontrado." });
             }
 
             console.log(`[BACKEND] 4. Iniciando sincronização no banco local...`);
 
-            const { successes, errors } = await PacienteSyncService.syncPacientes(todosPacientes);
+            const { successes, errors } = await PacienteSyncService.syncPacientes(todosPacientes, currentUser.id);
 
-            return res.json({ 
+            return res.json({
                 message: `Sincronização finalizada. ${successes.length} atualizados/inseridos.`,
-                successes, 
-                errors 
+                successes,
+                errors
             });
 
         } catch (err) {
@@ -256,7 +256,7 @@ class PacientesController {
 
             const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
             const dataP1 = responseP1.data;
-            
+
             if (dataP1.data) todosPacientesExternos = todosPacientesExternos.concat(dataP1.data);
             else if (Array.isArray(dataP1)) todosPacientesExternos = todosPacientesExternos.concat(dataP1);
 
@@ -279,13 +279,19 @@ class PacientesController {
             }
 
             // FORÇANDO A CONVERSÃO PARA STRING PARA EVITAR BUGS DE COMPARAÇÃO
-            const externalIds = todosPacientesExternos.map(p => String(p.id));
+            const pacientesValidosParaSync = todosPacientesExternos.filter(extPatient => {
+                return String(extPatient.oncological_navigation) === '1' &&
+                    String(extPatient.immunobiological) !== '1' &&
+                    String(extPatient.oncological) !== '1';
+            });
+
+            const externalIds = pacientesValidosParaSync.map(p => String(p.id));
 
             const pacientesLocais = await Pacientes.findAll({
                 attributes: ['external_id'],
-                where: { external_id: { [Op.not]: null } } 
+                where: { external_id: { [Op.not]: null } }
             });
-            
+
             // FORÇANDO A CONVERSÃO AQUI TAMBÉM
             const localIds = pacientesLocais.map(p => String(p.external_id));
 
@@ -293,9 +299,9 @@ class PacientesController {
 
             console.log(`[CHECK SYNC] Externos: ${externalIds.length} | Locais: ${localIds.length} | Pendentes: ${pendentes.length}`);
 
-            return res.json({ 
+            return res.json({
                 pendentes: pendentes.length,
-                total_externo: externalIds.length, 
+                total_externo: externalIds.length,
                 total_local: localIds.length
             });
 

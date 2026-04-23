@@ -12,6 +12,7 @@ class MonitoramentoMedicamento extends Model {
       is_reacao: Sequelize.BOOLEAN,
       contato_efetivo: Sequelize.BOOLEAN,
       nivel_adesao: Sequelize.STRING,
+      observacao: Sequelize.TEXT,
     }, {
       sequelize,
       tableName: 'monitoramento_medicamentos',

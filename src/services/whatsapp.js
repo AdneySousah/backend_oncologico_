@@ -7,7 +7,7 @@ import Pacientes from '../app/models/Pacientes.js';
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, userName, linkAcompanhamento, userId) {
+export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, operadora, userName, linkAcompanhamento, userId) {
     try {
         let numeroLimpo = String(numeroDestino).replace(/\D/g, '');
 
@@ -19,11 +19,12 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, userNa
         const message = await client.messages.create({
             from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
             to: `whatsapp:${numeroFormatado}`,
-            contentSid: 'HXfa365bb91e965e9939e6204588222659',
+            contentSid: 'HXc43938b8488489499917fc5311a48598',
             contentVariables: JSON.stringify({
                 '1': pacienteNome,
-                '2': userName,
-                '3': linkAcompanhamento
+                '2': operadora,
+                '3': userName,
+                '4': linkAcompanhamento
             })
         });
 
@@ -58,8 +59,9 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, userNa
         expireDate.setHours(expireDate.getHours() + 24);
         await conversation.update({ window_expires_at: expireDate });
 
-        const textoRealDoTemplate = `Olá ${pacienteNome}, meu nome é ${userName}, estou entrando em contato em nome da CIC FARMA.\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}\n\nAgradecemos a sua atenção.`;
+        const textoRealDoTemplate = `Olá ${pacienteNome}, meu nome é ${userName}, estou entrando em contato em nome da ${operadora}.\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}\n\nAgradecemos a sua atenção.`;
 
+        console.log(`Olá ${pacienteNome}, meu nome é ${userName}, estou entrando em contato em nome da .\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}\n\nAgradecemos a sua atenção.`)
         await Message.create({
             conversation_id: conversation.id,
             user_id: userId || null,
@@ -78,7 +80,7 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, userNa
 }
 
 
-export async function enviarEnqueteNPS(numeroDestino, pacienteNome, userId) {
+export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, userId) {
     try {
         const numeroLimpo = String(numeroDestino).replace(/\D/g, '');
         const numeroFormatado = `+${numeroLimpo.startsWith('55') ? numeroLimpo : '55' + numeroLimpo}`;
@@ -86,9 +88,10 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome, userId) {
         const message = await client.messages.create({
             from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
             to: `whatsapp:${numeroFormatado}`,
-            contentSid: 'HX6693f153d35b2877578501858d6af0af',
+            contentSid: 'HXf7e522282d3d9179f0bebdfcf134f3c4',
             contentVariables: JSON.stringify({
-                '1': pacienteNome
+                '1': pacienteNome,
+                '2': operadora
             })
         });
 
@@ -122,8 +125,9 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome, userId) {
         expireDate.setHours(expireDate.getHours() + 24);
         await conversation.update({ window_expires_at: expireDate });
 
-        const textoRealDoTemplateNps = `Olá ${pacienteNome}, somos da CICFARMA, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`;
+        const textoRealDoTemplateNps = `Olá ${pacienteNome}, somos da ${operadora}, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`;
 
+        console.log(`Olá ${pacienteNome}, somos da ${operadora}, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`)
         await Message.create({
             conversation_id: conversation.id,
             user_id: userId || null,

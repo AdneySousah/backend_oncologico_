@@ -1,6 +1,7 @@
 import Pacientes from '../app/models/Pacientes.js';
 import Operadora from '../app/models/Operadora.js';
 import Medicamentos from '../app/models/Medicamentos.js'; 
+import AuditService from './AuditService.js';
 
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
@@ -11,7 +12,7 @@ const formatarCelularWhatsapp = (numero) => {
 
 class PacienteSyncService {
     
-    async syncPacientes(pacientesExternos) {
+    async syncPacientes(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
 
@@ -194,8 +195,15 @@ class PacienteSyncService {
 
                 if (paciente) {
                     await paciente.update(dadosPaciente);
+                    
+                     await AuditService.log(userId, 'Edição', 'Pacientes', paciente.id, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} atualizado via sincronização.`);
+
                 } else {
                     await Pacientes.create(dadosPaciente);
+                    await AuditService.log(userId, 'Criação', 'Pacientes', null, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} criado via sincronização.`);
+                    
+                  
+                    
                 }
 
                 successes.push({ nome: extPatient.name, cpf: extPatient.cpf });

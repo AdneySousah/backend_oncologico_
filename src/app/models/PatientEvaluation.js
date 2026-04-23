@@ -8,6 +8,7 @@ class PatientEvaluation extends Model {
       consulta: Sequelize.BOOLEAN,
       observacoes: Sequelize.TEXT,
       data_proximo_contato: Sequelize.DATEONLY,
+      data_proxima_avaliacao: Sequelize.DATEONLY,
     }, {
       sequelize,
       tableName: 'patient_evaluations',

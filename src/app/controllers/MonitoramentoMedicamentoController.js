@@ -176,7 +176,11 @@ class MonitoramentoMedicamentoController {
             model: Pacientes,
             as: 'paciente',
             attributes: ['id', 'nome', 'sobrenome', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
-            include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
+            include: [
+              { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] },
+              // 👇 ADICIONE ESTA LINHA PARA TRAZER O HISTÓRICO 👇
+              { model: PatientEvaluation, as: 'avaliacoes', attributes: ['id', 'total_score', 'createdAt'], required: false }
+            ]
           },
           { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
           { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
@@ -203,7 +207,8 @@ class MonitoramentoMedicamentoController {
       qtd_informada_caixa: Yup.number().integer().nullable(),
       data_abertura_nova_caixa: Yup.date().nullable(),
       is_reacao: Yup.boolean().nullable(),
-      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable()
+      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable(),
+      observacao: Yup.string().nullable() 
     });
 
     try {
@@ -219,7 +224,8 @@ class MonitoramentoMedicamentoController {
       qtd_informada_caixa,
       data_abertura_nova_caixa,
       is_reacao,
-      reacoes_adversas
+      reacoes_adversas,
+      observacao
     } = req.body;
 
     try {
@@ -237,7 +243,8 @@ class MonitoramentoMedicamentoController {
         qtd_informada_caixa,
         data_abertura_nova_caixa,
         is_reacao,
-        status: 'CONCLUIDO'
+        status: 'CONCLUIDO',
+        observacao
       });
 
       if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
@@ -289,7 +296,6 @@ class MonitoramentoMedicamentoController {
   }
 
   async timeline(req, res) {
-    // ... MANTIDO IGUAL AO SEU CÓDIGO ORIGINAL ...
     try {
       const operadoraQueryId = req.query.operadora_id;
       const permission = await getOperadoraFilter(req.userId, operadoraQueryId);

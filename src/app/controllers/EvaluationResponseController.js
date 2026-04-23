@@ -38,7 +38,6 @@ class EvaluationResponseController {
 
     let resultado = null;
 
-    // CORREÇÃO: Só processa a data se ela não for nula
     if (data_proxima_consulta) {
       let [ano, mes, dia] = data_proxima_consulta.split('-').map(Number);
       let data = new Date(ano, mes - 1, dia);
@@ -46,10 +45,14 @@ class EvaluationResponseController {
       resultado = data.toLocaleDateString('sv-SE');
     }
 
+    // NOVA REGRA: Calcula a próxima avaliação para daqui a 6 meses
+    const dateProximaAvaliacao = new Date();
+    dateProximaAvaliacao.setMonth(dateProximaAvaliacao.getMonth() + 6);
+    const dataProximaAvaliacaoFormatada = dateProximaAvaliacao.toISOString().split('T')[0]; // Formato YYYY-MM-DD
+
     let totalScore = 0;
     const answersToCreate = [];
 
-    // Processamento para calcular pontuação
     for (const resp of respostas) {
       let currentScore = 0;
 
@@ -79,21 +82,19 @@ class EvaluationResponseController {
         data_proxima_consulta,
         consulta,
         observacoes,
-        data_proximo_contato: resultado
+        data_proximo_contato: resultado,
+        data_proxima_avaliacao: dataProximaAvaliacaoFormatada
       });
 
       const finalAnswers = answersToCreate.map(a => ({ ...a, evaluation_id: evaluation.id }));
       await EvaluationAnswer.bulkCreate(finalAnswers);
 
-      // 1. Busca os dados do Paciente e do Template no banco
       const paciente = await Pacientes.findByPk(paciente_id);
       const template = await EvaluationTemplate.findByPk(template_id);
 
-      // 2. Monta as strings com os nomes (com fallback para o ID caso algo dê muito errado e venha null)
       const nomePaciente = paciente ? `${paciente.nome} ${paciente.sobrenome}`.trim() : `ID ${paciente_id}`;
       const nomeTemplate = template ? template.title : `ID ${template_id}`;
 
-      // 3. Salva o log com os nomes
       await AuditService.log(
         req.userId,
         'Criação',
@@ -186,6 +187,69 @@ class EvaluationResponseController {
     } catch (error) {
       console.log("Erro no index de EvaluationResponse:", error);
       return res.status(500).json({ error: "Erro ao buscar pacientes e avaliações" });
+    }
+  }
+
+
+  async history(req, res) {
+    try {
+      const { paciente_id } = req.params;
+      const avaliacoes = await PatientEvaluation.findAll({
+        where: { paciente_id },
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['nome', 'sobrenome'] },
+          { model: EvaluationTemplate, as: 'template', attributes: ['title'] }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+      return res.json(avaliacoes);
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao buscar histórico de avaliações' });
+    }
+  }
+
+  // NOVO MÉTODO: Alertas de Avaliação Pendente (Sidebar)
+  async pendentesAlerta(req, res) {
+    try {
+      const operadoraQueryId = req.query.operadora_id;
+      const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
+      if (!permission.authorized) return res.json([]);
+
+      // Busca as avaliações com permissão
+      const avaliacoes = await PatientEvaluation.findAll({
+        include: [
+          { model: Pacientes, as: 'paciente', where: { ...permission.whereClause, is_active: true }, attributes: ['id', 'nome', 'sobrenome'] },
+          { model: EvaluationTemplate, as: 'template', attributes: ['title'] }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+
+      // Filtra apenas a ÚLTIMA avaliação de cada paciente
+      const latestPerPatient = new Map();
+      avaliacoes.forEach(av => {
+        if (!latestPerPatient.has(av.paciente_id)) {
+          latestPerPatient.set(av.paciente_id, av);
+        }
+      });
+
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+      const limiteDeDias = new Date(hoje);
+      limiteDeDias.setDate(limiteDeDias.getDate() + 5); // Alerta 5 dias antes de vencer
+
+      const alertas = [];
+      latestPerPatient.forEach(av => {
+        if (av.data_proxima_avaliacao) {
+          const dataProx = new Date(av.data_proxima_avaliacao + 'T00:00:00');
+          if (dataProx <= limiteDeDias) {
+            alertas.push(av);
+          }
+        }
+      });
+
+      return res.json(alertas);
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao buscar alertas' });
     }
   }
 }

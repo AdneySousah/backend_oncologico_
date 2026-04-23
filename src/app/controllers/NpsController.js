@@ -13,7 +13,9 @@ class NpsController {
         const { paciente_id, telefone_destino, destino_tipo } = req.body;
 
         try {
-            const paciente = await Pacientes.findByPk(paciente_id);
+            const paciente = await Pacientes.findByPk(paciente_id,{
+                include: ['operadoras']
+            });
 
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
@@ -26,7 +28,7 @@ class NpsController {
             }
 
             // Dispara via Twilio Service
-            const enviado = await enviarEnqueteNPS(numeroDestino, paciente.nome);
+            const enviado = await enviarEnqueteNPS(numeroDestino, paciente.nome, paciente.operadoras.nome, req.userId);
 
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar NPS via Twilio' });

@@ -213,6 +213,31 @@ class EvaluationBuilderController {
       return res.status(500).json({ error: 'Erro ao buscar templates pendentes' });
     }
   }
+
+
+  async show(req, res) {
+    const { id } = req.params;
+    try {
+      const template = await EvaluationTemplate.findByPk(id, {
+        include: [{
+          model: EvaluationQuestion,
+          as: 'questions',
+          include: [{ model: EvaluationOption, as: 'options' }]
+        }],
+        order: [
+          [{ model: EvaluationQuestion, as: 'questions' }, 'id', 'ASC'] // Garante a ordem certa das perguntas
+        ]
+      });
+
+      if (!template) {
+        return res.status(404).json({ error: 'Template não encontrado' });
+      }
+
+      return res.json(template);
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao buscar template específico', details: error.message });
+    }
+  }
 }
 
 export default new EvaluationBuilderController();

@@ -11,7 +11,9 @@ class TermoController {
 
         try {
             const user = await User.findByPk(req.userId);
-            const paciente = await Pacientes.findByPk(paciente_id);
+            const paciente = await Pacientes.findByPk(paciente_id,{
+                include: ['operadoras']
+            });
 
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
@@ -29,9 +31,11 @@ class TermoController {
             const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
             const linkAcompanhamento = `${frontUrl}/paciente/termo/${paciente.id}`;
 
+            console.log(paciente.operadoras)
             const enviado = await enviarMensagemWhatsApp(
                 numeroDestino,
                 paciente.nome,
+                paciente.operadoras.nome,
                 user.name,
                 linkAcompanhamento,
                 req.userId

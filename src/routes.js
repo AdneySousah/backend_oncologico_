@@ -104,14 +104,14 @@ router.put('/operadoras/:id', checkPermission('operadoras', 'editar'), Operadora
 
 // --- ROTAS DOS PACIENTES ---
 router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.store);
-router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.syncExternal);
+router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), PacientesController.syncExternal);
 router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
 router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
 router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
 router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
 router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
-router.get('/pacientes/check-sync', checkPermission('pacientes', 'acessar'), PacientesController.checkSync);
+router.get('/sync/pacientes/check', checkPermission('pacientes', 'acessar'), PacientesController.checkSync);
 
 
 
@@ -145,11 +145,20 @@ router.post('/infos-comorbidade', checkPermission('comorbidades', 'editar'), Inf
 router.post('/evaluations/templates', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.store);
 router.patch('/evaluations/templates/:id/status', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.toggleStatus);
 router.get('/evaluations/templates', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.index);
+
+// Rota de buscar os pendentes do paciente
+router.get('/evaluations/templates/pending/:paciente_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForPatient);
+
+// NOVA ROTA AQUI: Buscar um template específico pelo ID (deve ficar abaixo da rota de pending!)
+router.get('/evaluations/templates/:id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.show);
+
+router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.update);
+
+// Rotas de respostas e histórico
 router.post('/evaluations/responses', checkPermission('avaliacoes', 'editar'), EvaluationResponseController.store);
 router.get('/evaluations/responses', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
-// Onde estava /pending/:entrevista_id, altere para:
-router.get('/evaluations/templates/pending/:paciente_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForPatient);
-router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.update);
+router.get('/evaluations/paciente/:paciente_id/history', EvaluationResponseController.history);
+router.get('/evaluations/pendentes-alerta', EvaluationResponseController.pendentesAlerta);
 
 // --- TIMELINE DE AVALIAÇÕES ---
 router.get('/avaliacoes', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);

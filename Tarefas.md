@@ -78,11 +78,11 @@
 
 
 
-de 0 a 10 o quanto indicaria o serviço 
-
-operadoras iniciais
-cemig saude
-copass saude
-fundaffemg
-fundação libertas
-casu
+CORREÇÕES
+[x] 43. Paciente não aceita o termo vai pro tele, caso eu vá aplicar o termo novamente e ele ja tiver telemonitoramento, aplicar somente o update do score desse paciente, e manter o historico ja existente do telemonitoramento
+[x] 44. Adicionar historico de avaliação de termo, ele deve ser reaplicado sempre dentro de um ano, e ter no dashboard de alguma forma a evolução das pontuações
+[x] 45. Sincronizar os dois bancos e informar que tem um novo paciente na aba de pacientes para navegação
+[] 46. Utilizar a flag de recebidos que vem do sistema de compras, essa flag vai ser utilizada para bloquear o telemonitoramento caso o meidcamento não tenha chegado
+[] 47. inserir nps de fornecedor
+[] 48. inserir nps de medico
+[] 49. inserir nps de operadora
