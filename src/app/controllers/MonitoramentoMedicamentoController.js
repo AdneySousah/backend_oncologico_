@@ -175,7 +175,7 @@ class MonitoramentoMedicamentoController {
           {
             model: Pacientes,
             as: 'paciente',
-            attributes: ['id', 'nome', 'sobrenome', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
+            attributes: ['id', 'nome', 'sobrenome','celular','telefone', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
             include: [
               { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] },
               // 👇 ADICIONE ESTA LINHA PARA TRAZER O HISTÓRICO 👇

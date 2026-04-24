@@ -110,7 +110,12 @@ class TermoController {
     async verifyResponse(req, res) {
         const { id } = req.params
         try {
-            const paciente = await Pacientes.findByPk(id, { attributes: ['id', 'status_termo'] });
+            const paciente = await Pacientes.findByPk(id,
+                 { 
+                    include: ['operadoras'],
+                    attributes: ['id', 'status_termo']
+                 }
+                );
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
