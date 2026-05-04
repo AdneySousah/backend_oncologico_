@@ -1,6 +1,6 @@
 import Pacientes from '../app/models/Pacientes.js';
 import Operadora from '../app/models/Operadora.js';
-import Medicamentos from '../app/models/Medicamentos.js'; 
+import Medicamentos from '../app/models/Medicamentos.js';
 import AuditService from './AuditService.js';
 
 const formatarCelularWhatsapp = (numero) => {
@@ -11,7 +11,7 @@ const formatarCelularWhatsapp = (numero) => {
 };
 
 class PacienteSyncService {
-    
+
     async syncPacientes(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
@@ -21,44 +21,46 @@ class PacienteSyncService {
                 // ============================================================
                 // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA
                 // ============================================================
-                if (
-                    String(extPatient.oncological_navigation) !== '1' ||
-                    String(extPatient.immunobiological) === '1' ||
-                    String(extPatient.oncological) === '1'
-                ) {
-                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Não é exclusivo de navegação oncológica)`);
-                    continue; 
+                if (String(extPatient.treatment_type_id) !== '4') {
+                    console.log(`[SYNC] Ignorado: ${extPatient.name} (treatment_type_id não é 4)`);
+                    continue;
                 }
-                
+
                 console.log(`[SYNC] ⏳ Processando paciente: ${extPatient.name}...`);
-                
+
                 // ==========================================
                 // PASSO 1: SINCRONIZAR A OPERADORA
                 // ==========================================
                 let operadora = null;
-                
+
                 if (extPatient.company) {
+                    // ---> LÓGICA DE ALTERAÇÃO DE NOME ADICIONADA AQUI <---
+                    const nameOperadora = extPatient.company.name === 'CLÍNICA DE INFUSÃO COMPARTILHADA'
+                        ? 'CICFARMA'
+                        : extPatient.company.name;
+
                     if (extPatient.company.id !== undefined && extPatient.company.id !== null) {
-                        operadora = await Operadora.findOne({ 
-                            where: { external_id: extPatient.company.id } 
+                        operadora = await Operadora.findOne({
+                            where: { external_id: extPatient.company.id }
                         });
                     }
 
-                    if (operadora && extPatient.company.name) {
-                        await operadora.update({ nome: extPatient.company.name });
-                    } 
-                    else if (!operadora && extPatient.company.name) {
-                        operadora = await Operadora.findOne({ where: { nome: extPatient.company.name } });
-                        
+                    // Usando a variável nameOperadora nas validações e criações
+                    if (operadora && nameOperadora) {
+                        await operadora.update({ nome: nameOperadora });
+                    }
+                    else if (!operadora && nameOperadora) {
+                        operadora = await Operadora.findOne({ where: { nome: nameOperadora } });
+
                         if (operadora) {
                             await operadora.update({ external_id: extPatient.company.id || null });
                         } else {
                             operadora = await Operadora.create({
                                 external_id: extPatient.company.id || null,
-                                nome: extPatient.company.name,
-                                cnpj: '00000000000000', 
-                                telefone: '00000000000', 
-                                email: [], 
+                                nome: nameOperadora, // <-- Aplicado aqui também
+                                cnpj: '00000000000000',
+                                telefone: '00000000000',
+                                email: [],
                                 is_active: true
                             });
                         }
@@ -72,40 +74,33 @@ class PacienteSyncService {
                 let extMed = null;
                 let eventPrice = null;
 
-                // 1. Tenta pegar o medicamento da chave raiz, se não, tenta do primeiro evento
                 if (extPatient.medicament1) {
                     extMed = extPatient.medicament1;
                 } else if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].medicament) {
                     extMed = extPatient.events[0].medicament;
                 }
 
-                // 2. Tenta pegar o preço do array de events (se ele existir)
                 if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].price) {
                     eventPrice = extPatient.events[0].price;
                 }
 
-                // 3. Se encontrou dados de medicamento, salva no banco
                 if (extMed) {
                     let medicamento = null;
 
-                    // Tenta achar pelo ID externo primeiro
                     if (extMed.id) {
                         medicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
                     }
 
-                    // Se não achar, tenta pelo código TUSS
                     if (!medicamento && extMed.tusscode) {
                         medicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
                     }
 
-                    // Tratar o ENUM de tipo_dosagem
                     let tipoDosagemFormatado = extMed.measurement ? String(extMed.measurement).toUpperCase().trim() : null;
                     const dosagensPermitidas = ['MG', 'G', 'MCG', 'UI', 'ML', 'MG/ML'];
                     if (tipoDosagemFormatado && !dosagensPermitidas.includes(tipoDosagemFormatado)) {
-                        tipoDosagemFormatado = null; 
+                        tipoDosagemFormatado = null;
                     }
 
-                    // Extrair quantidade de cápsulas (apenas números) do dosage para o Telemonitoramento
                     let qtdCapsulaExtraida = null;
                     if (extMed.dosage) {
                         const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
@@ -120,14 +115,14 @@ class PacienteSyncService {
                         nome: extMed.name,
                         nome_comercial: extMed.commercial_name,
                         principio_ativo: extMed.active_principle,
-                        qtd_capsula: qtdCapsulaExtraida, // <-- Extraído do dosage (comprimidos)
+                        qtd_capsula: qtdCapsulaExtraida,
                         dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
                         tipo_dosagem: tipoDosagemFormatado,
                         apresentacao: extMed.apresentation,
                         via_administracao: extMed.way_administration,
                         tipo_matmed: extMed.typematmed,
                         tipo_medicamento: extMed.type_medicament,
-                        price: eventPrice ? parseFloat(eventPrice) : null // <-- Preço do evento aplicado aqui
+                        price: eventPrice ? parseFloat(eventPrice) : null
                     };
 
                     if (medicamento) {
@@ -148,7 +143,6 @@ class PacienteSyncService {
 
                 const cpfLimpo = extPatient.cpf ? String(extPatient.cpf).replace(/\D/g, '') : null;
 
-                // Captura a data de entrega do medicamento
                 let dateDeliveryExtraido = null;
                 if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].date_delivery) {
                     dateDeliveryExtraido = extPatient.events[0].date_delivery;
@@ -175,9 +169,12 @@ class PacienteSyncService {
                     contato_cuidador: extPatient.phone_responsible ? formatarCelularWhatsapp(extPatient.phone_responsible) : null,
                     operadora_id: operadora ? operadora.id : null,
                     medicamento_id: medicamento_id,
-                    data_entrega_medicamento: dateDeliveryExtraido, // <-- CAMPO ADICIONADO AQUI
-                    is_active: extPatient.status === 0,
-                    is_new_user: true 
+                    data_entrega_medicamento: dateDeliveryExtraido,
+
+                    // ---> STATUS AJUSTADO AQUI (Garante que funcione com número 0 ou string '0') <---
+                    is_active: String(extPatient.status) === '0',
+
+                    is_new_user: true
                 };
 
                 // ==========================================
@@ -195,15 +192,11 @@ class PacienteSyncService {
 
                 if (paciente) {
                     await paciente.update(dadosPaciente);
-                    
-                     await AuditService.log(userId, 'Edição', 'Pacientes', paciente.id, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} atualizado via sincronização.`);
+                    await AuditService.log(userId, 'Edição', 'Pacientes', paciente.id, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} atualizado via sincronização.`);
 
                 } else {
                     await Pacientes.create(dadosPaciente);
                     await AuditService.log(userId, 'Criação', 'Pacientes', null, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} criado via sincronização.`);
-                    
-                  
-                    
                 }
 
                 successes.push({ nome: extPatient.name, cpf: extPatient.cpf });

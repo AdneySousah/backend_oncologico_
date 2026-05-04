@@ -178,8 +178,8 @@ class PacientesController {
             const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
             let todosPacientes = [];
 
-            
-            const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
+
+            const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
 
             console.log(`[BACKEND] 2. Buscando pacientes (Filtro aplicado na URL)...`);
 
@@ -218,7 +218,7 @@ class PacientesController {
             console.log(`[BACKEND] 3. Download concluído! Total de pacientes encontrados: ${todosPacientes.length}`);
 
             if (todosPacientes.length === 0) {
-                return res.json({ message: "Nenhum paciente de navegação oncológica encontrado." });
+                return res.status(404).json({ message: "Nenhum paciente do tipo 4 encontrado." });
             }
 
             console.log(`[BACKEND] 4. Iniciando sincronização no banco local...`);
@@ -251,7 +251,7 @@ class PacientesController {
             }
 
             const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
-            const baseUrl = `${process.env.END_POINT}/api/patients?oncological_navigation=1`;
+            const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
             let todosPacientesExternos = [];
 
             const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
@@ -280,9 +280,7 @@ class PacientesController {
 
             // FORÇANDO A CONVERSÃO PARA STRING PARA EVITAR BUGS DE COMPARAÇÃO
             const pacientesValidosParaSync = todosPacientesExternos.filter(extPatient => {
-                return String(extPatient.oncological_navigation) === '1' &&
-                    String(extPatient.immunobiological) !== '1' &&
-                    String(extPatient.oncological) !== '1';
+                return String(extPatient.treatment_type_id) === '4';
             });
 
             const externalIds = pacientesValidosParaSync.map(p => String(p.id));
