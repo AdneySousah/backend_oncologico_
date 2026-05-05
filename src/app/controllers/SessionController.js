@@ -42,27 +42,29 @@ class SessionController {
             // 3. SINCRONIZAR A OPERADORA
             // ==========================================
             let operadora = null;
+            const operadora_external = externalCompany.name === 'CLÍNICA DE INFUSÃO COMPARTILHADA' ? 'CICFARMA' : externalCompany.name;
 
             if (externalCompany && externalCompany.id) {
-                operadora = await Operadora.findOne({ 
-                    where: { external_id: externalCompany.id } 
+                operadora = await Operadora.findOne({
+                    where: { external_id: externalCompany.id }
                 });
 
                 if (operadora) {
-                    await operadora.update({ nome: externalCompany.name });
+                    // MUDANÇA AQUI: usar operadora_external em vez de externalCompany.name
+                    await operadora.update({ nome: operadora_external });
                 } else {
                     // Fallback: procura pelo nome
-                    operadora = await Operadora.findOne({ where: { nome: externalCompany.name } });
-                    
+                    operadora = await Operadora.findOne({ where: { nome: operadora_external } }); // MUDANÇA AQUI TAMBÉM
+
                     if (operadora) {
                         await operadora.update({ external_id: externalCompany.id });
                     } else {
                         // Cria a operadora caso não exista de forma alguma
                         operadora = await Operadora.create({
                             external_id: externalCompany.id,
-                            nome: externalCompany.name,
-                            cnpj: '00000000000000', 
-                            telefone: '00000000000', 
+                            nome: operadora_external,
+                            cnpj: '00000000000000',
+                            telefone: '00000000000',
                             email: []
                         });
                     }
@@ -82,6 +84,7 @@ class SessionController {
                 });
             }
 
+            const permission_user = operadora_external === 'CICFARMA' ? 2 : 1;
             // Se o usuário existir, atualiza
             if (user) {
                 await user.update({
@@ -91,7 +94,7 @@ class SessionController {
                     active: externalUser.status === 0 ? true : false,
                     external_token: response.data.token.token
                 });
-            } 
+            }
             // Se não existir, cria
             else {
                 user = await User.create({
@@ -101,8 +104,8 @@ class SessionController {
                     email: externalUser.email,
                     active: externalUser.status === 0 ? true : false,
                     is_profissional: false,
-                    is_admin: true, 
-                    perfil_id: 2, 
+                    is_admin: operadora_external === 'CICFARMA' ? true : false,
+                    perfil_id: permission_user,
                     password_hash: 'EXTERNAL_AUTH_' + Date.now(),
                     external_token: response.data.token.token
                 });
@@ -113,10 +116,8 @@ class SessionController {
             // ==========================================
             // O Sequelize gera os métodos de associação dinamicamente baseado no "as: 'operadoras'"
             if (operadora && user) {
-                // addOperadora cria o vínculo na tabela pivô (user_operadoras) se ele não existir
-                // Se a intenção for que o usuário tenha *apenas* a operadora que veio no login (apagando outras possíveis), 
-                // você pode usar: await user.setOperadoras([operadora.id]);
-                await user.addOperadora(operadora);
+
+                await user.setOperadoras([operadora]);
             }
 
             // ==========================================

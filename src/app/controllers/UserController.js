@@ -254,7 +254,6 @@ class UserController {
 
 
   // GET ME (Busca os dados do usuário logado)
-  // GET ME (Busca os dados do usuário logado)
   async profile(req, res) {
     try {
       const user = await User.findByPk(req.userId, {
