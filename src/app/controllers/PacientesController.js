@@ -10,6 +10,7 @@ import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
 import axios from 'axios';
 import PacienteSyncService from '../../services/SyncService.js';
+import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
@@ -343,8 +344,25 @@ class PacientesController {
                     { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'dosagem', 'price'] }
                 ]
             });
-            return res.json(paciente);
+
+            if (!paciente) {
+                return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+
+            // 👇 A MÁGICA ACONTECE AQUI 👇
+            // Busca se o paciente já tem ALGUM registro na tabela de monitoramento
+            const temMonitoramento = await MonitoramentoMedicamento.findOne({
+                where: { paciente_id: id }
+            });
+
+            // Retorna os dados do paciente + a nossa flag booleana
+            return res.json({
+                ...paciente.toJSON(),
+                ja_tem_monitoramento: !!temMonitoramento // Se achou = true, se não achou = false
+            });
+
         } catch (err) {
+            console.error("Erro no show paciente:", err);
             return res.status(500).json({ error: 'Erro ao buscar paciente' });
         }
     }

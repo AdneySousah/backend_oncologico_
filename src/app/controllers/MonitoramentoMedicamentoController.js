@@ -320,6 +320,38 @@ class MonitoramentoMedicamentoController {
       return res.status(500).json({ error: 'Erro ao buscar dados da timeline' });
     }
   }
+
+  // 👇 NOVA FUNÇÃO: Atualiza a avaliação sem precisar preencher a caixa de remédio novamente
+  async vincularAvaliacaoSilencioso(req, res) {
+    const { paciente_id, patient_evaluation_id } = req.body;
+
+    if (!paciente_id || !patient_evaluation_id) {
+      return res.status(400).json({ error: 'IDs do paciente e da avaliação são obrigatórios.' });
+    }
+
+    try {
+      // Atualiza todos os monitoramentos 'PENDENTE' desse paciente 
+      // vinculando o ID da nova avaliação (que contém a nova pontuação)
+      const [updatedRows] = await MonitoramentoMedicamento.update(
+        { patient_evaluation_id },
+        { 
+          where: { 
+            paciente_id, 
+            status: 'PENDENTE' 
+          } 
+        }
+      );
+
+      return res.status(200).json({ 
+        message: 'Avaliação vinculada ao monitoramento ativo.',
+        registros_atualizados: updatedRows
+      });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao vincular avaliação silenciosamente.', details: error.message });
+    }
+  }
+
+  
 }
 
 export default new MonitoramentoMedicamentoController();

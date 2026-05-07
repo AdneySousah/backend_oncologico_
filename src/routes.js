@@ -197,6 +197,8 @@ router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento
 router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
 router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline)
 
+router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
+
 /* Rotas de ficha ram */
 router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.store);
 router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), ReacaoAdversaController.index);

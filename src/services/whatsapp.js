@@ -127,7 +127,6 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, us
 
         const textoRealDoTemplateNps = `Olá ${pacienteNome}, somos da ${operadora}, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`;
 
-        console.log(`Olá ${pacienteNome}, somos da ${operadora}, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`)
         await Message.create({
             conversation_id: conversation.id,
             user_id: userId || null,

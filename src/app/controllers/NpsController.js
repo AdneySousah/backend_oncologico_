@@ -99,12 +99,11 @@ class NpsController {
             nota: notaFinal
         });
 
-        console.log(`✅ NPS Registrado: ${paciente.nome} deu nota ${notaFinal}`);
 
         res.set('Content-Type', 'text/xml');
         return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
             <Response>
-                <Message>A ${paciente.operadoras.nome} agradece o seu feedback! Sua nota ${notaFinal} foi registrada com sucesso.</Message>
+                <Message>Agradecemos o seu feedback! Sua nota ${notaFinal} foi registrada com sucesso.</Message>
             </Response>`);
 
     } catch (error) {
