@@ -21,8 +21,14 @@ class PacienteSyncService {
                 // ============================================================
                 // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA
                 // ============================================================
-                if (String(extPatient.treatment_type_id) !== '4') {
-                    console.log(`[SYNC] Ignorado: ${extPatient.name} (treatment_type_id não é 4)`);
+
+                const isTreatment4 = String(extPatient.treatment_type_id) === '4';
+                const hasValidEvent = extPatient.events &&
+                    Array.isArray(extPatient.events) &&
+                    extPatient.events.some(e => String(e.eventtype_id) === '2');
+
+                if (!isTreatment4 || !hasValidEvent) {
+                    console.log(`[SYNC] Ignorado: ${extPatient.name} (treatment_type_id != 4 ou sem evento eventtype_id = 2)`);
                     continue;
                 }
 

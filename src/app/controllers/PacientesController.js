@@ -279,9 +279,14 @@ class PacientesController {
                 }
             }
 
-            // FORÇANDO A CONVERSÃO PARA STRING PARA EVITAR BUGS DE COMPARAÇÃO
+            // FORÇANDO A CONVERSÃO PARA STRING E VERIFICANDO EVENTOS PARA EVITAR BUGS
             const pacientesValidosParaSync = todosPacientesExternos.filter(extPatient => {
-                return String(extPatient.treatment_type_id) === '4';
+                const isTreatment4 = String(extPatient.treatment_type_id) === '4';
+                const hasValidEvent = extPatient.events &&
+                    Array.isArray(extPatient.events) &&
+                    extPatient.events.some(e => String(e.eventtype_id) === '2');
+
+                return isTreatment4 && hasValidEvent;
             });
 
             const externalIds = pacientesValidosParaSync.map(p => String(p.id));
