@@ -23,6 +23,7 @@
     "nodemailer": "^6.9.1",
     "openai": "^6.26.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.18.0",
     "pg": "^8.18.0",
     "pg-hstore": "^2.3.4",
     "qrcode-terminal": "^0.12.0",

@@ -154,7 +154,7 @@ class PacientesController {
                     { model: PacientesAnexos, as: 'anexos', attributes: ['id', 'nome', 'file_path', 'original_name'] },
                     { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'dosagem'] }
                 ],
-                order: [['nome', 'ASC']] // Removida a ordenação por is_new_user
+                order: [['nome', 'ASC']]
             });
             return res.json(pacientes);
         } catch (err) {
@@ -179,12 +179,10 @@ class PacientesController {
             const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
             let todosPacientes = [];
 
-
             const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
 
             console.log(`[BACKEND] 2. Buscando pacientes (Filtro aplicado na URL)...`);
 
-            // Busca a primeira página
             const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
             const dataP1 = responseP1.data;
 
@@ -193,11 +191,10 @@ class PacientesController {
 
             const lastPage = (dataP1.meta && dataP1.meta.last_page) ? dataP1.meta.last_page : 1;
 
-            // Se tiver mais de uma página de pacientes oncológicos, busca o resto
             if (lastPage > 1) {
                 console.log(`[BACKEND] Total de páginas com pacientes oncológicos: ${lastPage}. Buscando o resto...`);
 
-                const BATCH_SIZE = 5; // Lotes de 5 em 5 requisições paralelas
+                const BATCH_SIZE = 5; 
 
                 for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
                     const batchPromises = [];
@@ -279,14 +276,26 @@ class PacientesController {
                 }
             }
 
-            // FORÇANDO A CONVERSÃO PARA STRING E VERIFICANDO EVENTOS PARA EVITAR BUGS
+            // ============================================================
+            // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA ATUALIZADO (RIGOROSO)
+            // ============================================================
             const pacientesValidosParaSync = todosPacientesExternos.filter(extPatient => {
-                const isTreatment4 = String(extPatient.treatment_type_id) === '4';
-                const hasValidEvent = extPatient.events &&
-                    Array.isArray(extPatient.events) &&
-                    extPatient.events.some(e => String(e.eventtype_id) === '2');
-
-                return isTreatment4 && hasValidEvent;
+                
+                // 1. Verifica no array principal
+                const hasTreatmentType4 = extPatient.treatmentTypes && 
+                    Array.isArray(extPatient.treatmentTypes) && 
+                    extPatient.treatmentTypes.some(t => String(t.id) === '4');
+            
+                // 2. O paciente TEM que ter um evento de compra (2) cujo medicamento seja tipo 4
+                const hasValidPurchaseEventWithMed = extPatient.events && 
+                    Array.isArray(extPatient.events) && 
+                    extPatient.events.some(e => 
+                        String(e.eventtype_id) === '2' && 
+                        e.medicament && 
+                        String(e.medicament.treatment_types_id) === '4'
+                    );
+            
+                return hasTreatmentType4 && hasValidPurchaseEventWithMed;
             });
 
             const externalIds = pacientesValidosParaSync.map(p => String(p.id));
@@ -296,7 +305,6 @@ class PacientesController {
                 where: { external_id: { [Op.not]: null } }
             });
 
-            // FORÇANDO A CONVERSÃO AQUI TAMBÉM
             const localIds = pacientesLocais.map(p => String(p.external_id));
 
             const pendentes = externalIds.filter(id => !localIds.includes(id));
@@ -354,16 +362,13 @@ class PacientesController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            // 👇 A MÁGICA ACONTECE AQUI 👇
-            // Busca se o paciente já tem ALGUM registro na tabela de monitoramento
             const temMonitoramento = await MonitoramentoMedicamento.findOne({
                 where: { paciente_id: id }
             });
 
-            // Retorna os dados do paciente + a nossa flag booleana
             return res.json({
                 ...paciente.toJSON(),
-                ja_tem_monitoramento: !!temMonitoramento // Se achou = true, se não achou = false
+                ja_tem_monitoramento: !!temMonitoramento 
             });
 
         } catch (err) {

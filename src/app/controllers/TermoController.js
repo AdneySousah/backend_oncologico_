@@ -2,6 +2,9 @@ import Pacientes from '../models/Pacientes.js';
 import User from '../models/User.js';
 import { enviarMensagemWhatsApp } from '../../services/whatsapp.js';
 import AuditService from '../../services/AuditService.js';
+import { gerarPdfTermoNavegacao } from '../../utils/gerarTermoPdf.js';
+import TermosHistorico from '../models/TermosHistorico.js';
+import path from 'path';
 
 class TermoController {
     // Disparado pelo usuário do sistema (Médico/Atendente)
@@ -11,7 +14,7 @@ class TermoController {
 
         try {
             const user = await User.findByPk(req.userId);
-            const paciente = await Pacientes.findByPk(paciente_id,{
+            const paciente = await Pacientes.findByPk(paciente_id, {
                 include: ['operadoras']
             });
 
@@ -48,19 +51,19 @@ class TermoController {
             // ---------------------------------------------
             // LÓGICA DO LOG DETALHADO E IMPECÁVEL AQUI
             // ---------------------------------------------
-            const nomeDestinoFinal = destino_tipo === 'cuidador' && paciente.nome_cuidador 
-                                    ? paciente.nome_cuidador 
-                                    : paciente.nome;
+            const nomeDestinoFinal = destino_tipo === 'cuidador' && paciente.nome_cuidador
+                ? paciente.nome_cuidador
+                : paciente.nome;
             const papelDestino = destino_tipo === 'cuidador' ? 'Cuidador/Responsável' : 'Paciente';
 
             const mensagemLog = `Disparou o termo de acompanhamento para o(a) ${papelDestino} (${nomeDestinoFinal}) no número ${numeroDestino}.`;
 
             // O seu AuditService.log() sendo chamado perfeitamente como você idealizou:
             await AuditService.log(
-                req.userId, 
-                'Envio', 
-                'Termo WhatsApp', 
-                paciente.id, 
+                req.userId,
+                'Envio',
+                'Termo WhatsApp',
+                paciente.id,
                 mensagemLog
             );
 
@@ -73,6 +76,7 @@ class TermoController {
     }
 
     // Acessado publicamente pelo paciente clicando no link
+
     async answerTerm(req, res) {
         const { id } = req.params;
         const { aceite } = req.body; // boolean
@@ -84,11 +88,40 @@ class TermoController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
+            // Atualiza os dados principais
             paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
+
+            let pdfSalvoPath = null;
+            const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+            const userAgent = req.headers['user-agent'];
+
+            if (aceite) {
+                // Gera o PDF e salva fisicamente no servidor (uploads/anexos)
+                pdfSalvoPath = await gerarPdfTermoNavegacao(paciente);
+
+                // Grava os rastros no cadastro do paciente
+                paciente.termo_data_aceite = new Date();
+                paciente.termo_ip = ip;
+                paciente.termo_user_agent = userAgent;
+                paciente.termo_versao = '1.0';
+            } else {
+                paciente.termo_data_aceite = null;
+            }
+
             await paciente.save();
+
+            // Salva o registro imutável na tabela de histórico
+            await TermosHistorico.create({
+                paciente_id: paciente.id,
+                status: paciente.status_termo,
+                arquivo_path: pdfSalvoPath ? path.basename(pdfSalvoPath) : null, // Salva apenas o nome do arquivo, ex: termo_1_xxx.pdf
+                ip: ip,
+                user_agent: userAgent
+            });
 
             return res.json({ message: 'Resposta registrada com sucesso', status_termo: paciente.status_termo });
         } catch (error) {
+            console.error(error);
             return res.status(500).json({ error: 'Erro ao processar resposta' });
         }
     }
@@ -111,17 +144,33 @@ class TermoController {
         const { id } = req.params
         try {
             const paciente = await Pacientes.findByPk(id,
-                 { 
+                {
                     include: ['operadoras'],
                     attributes: ['id', 'status_termo']
-                 }
-                );
+                }
+            );
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
             return res.json({ paciente });
         } catch (error) {
             return res.status(500).json({ error: 'Erro ao checar status' });
+        }
+    }
+
+    async previewPdf(req, res) {
+        const { id } = req.params;
+        try {
+            const paciente = await Pacientes.findByPk(id);
+            if (!paciente) {
+                return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+
+            // Passa o "res" para a função. Ela vai gerar e enviar direto para o navegador
+            await gerarPdfTermoNavegacao(paciente, res);
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ error: 'Erro ao gerar visualização do termo' });
         }
     }
 }

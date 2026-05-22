@@ -12,7 +12,6 @@ export default function checkPermission(modulo, acao) {
                 return res.status(401).json({ error: 'Usuário não encontrado.' });
             }
 
-            // REMOVIDO O BLOCO DO is_admin QUE DAVA PASSE LIVRE AQUI!
 
             // Verifica se o usuário tem um perfil vinculado e se existem permissões
             if (!user.perfil || !user.perfil.permissoes) {

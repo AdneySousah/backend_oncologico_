@@ -19,16 +19,26 @@ class PacienteSyncService {
         for (const extPatient of pacientesExternos) {
             try {
                 // ============================================================
-                // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA
+                // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA (RIGOROSO)
                 // ============================================================
 
-                const isTreatment4 = String(extPatient.treatment_type_id) === '4';
-                const hasValidEvent = extPatient.events &&
-                    Array.isArray(extPatient.events) &&
-                    extPatient.events.some(e => String(e.eventtype_id) === '2');
+                // 1. Verifica se o array 'treatmentTypes' do paciente possui o ID 4
+                const hasTreatmentType4 = extPatient.treatmentTypes && 
+                    Array.isArray(extPatient.treatmentTypes) && 
+                    extPatient.treatmentTypes.some(t => String(t.id) === '4');
 
-                if (!isTreatment4 || !hasValidEvent) {
-                    console.log(`[SYNC] Ignorado: ${extPatient.name} (treatment_type_id != 4 ou sem evento eventtype_id = 2)`);
+                // 2. Busca ESPECIFICAMENTE um evento de compra (2) que tenha um medicamento do tipo 4 dentro dele
+                const validPurchaseEvent = extPatient.events && Array.isArray(extPatient.events)
+                    ? extPatient.events.find(e => 
+                        String(e.eventtype_id) === '2' && 
+                        e.medicament && 
+                        String(e.medicament.treatment_types_id) === '4'
+                    )
+                    : null;
+
+                // Se não passou no filtro geral OU não tem um evento de compra válido com o medicamento correto, ignora!
+                if (!hasTreatmentType4 || !validPurchaseEvent) {
+                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Sem evento de compra válido com medicamento tipo 4)`);
                     continue;
                 }
 
@@ -40,7 +50,6 @@ class PacienteSyncService {
                 let operadora = null;
 
                 if (extPatient.company) {
-                    // ---> LÓGICA DE ALTERAÇÃO DE NOME ADICIONADA AQUI <---
                     const nameOperadora = extPatient.company.name === 'CLÍNICA DE INFUSÃO COMPARTILHADA'
                         ? 'CICFARMA'
                         : extPatient.company.name;
@@ -51,7 +60,6 @@ class PacienteSyncService {
                         });
                     }
 
-                    // Usando a variável nameOperadora nas validações e criações
                     if (operadora && nameOperadora) {
                         await operadora.update({ nome: nameOperadora });
                     }
@@ -63,7 +71,7 @@ class PacienteSyncService {
                         } else {
                             operadora = await Operadora.create({
                                 external_id: extPatient.company.id || null,
-                                nome: nameOperadora, // <-- Aplicado aqui também
+                                nome: nameOperadora, 
                                 cnpj: '00000000000000',
                                 telefone: '00000000000',
                                 email: [],
@@ -77,23 +85,16 @@ class PacienteSyncService {
                 // PASSO 2: SINCRONIZAR O MEDICAMENTO E O PREÇO
                 // ==========================================
                 let medicamento_id = null;
-                let extMed = null;
-                let eventPrice = null;
-
-                if (extPatient.medicament1) {
-                    extMed = extPatient.medicament1;
-                } else if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].medicament) {
-                    extMed = extPatient.events[0].medicament;
-                }
-
-                if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].price) {
-                    eventPrice = extPatient.events[0].price;
-                }
-
+                let type_tratment_med = 4;
+                
+                // Pegamos o medicamento ESTRITAMENTE do evento de compra que validamos!
+                let extMed = validPurchaseEvent.medicament;
+                let eventPrice = validPurchaseEvent.price || null;
+                
                 if (extMed) {
-                    let medicamento = null;
+                    let medicamento = null; 
 
-                    if (extMed.id) {
+                    if (extMed.id && type_tratment_med === 3) {
                         medicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
                     }
 
@@ -149,10 +150,8 @@ class PacienteSyncService {
 
                 const cpfLimpo = extPatient.cpf ? String(extPatient.cpf).replace(/\D/g, '') : null;
 
-                let dateDeliveryExtraido = null;
-                if (extPatient.events && extPatient.events.length > 0 && extPatient.events[0].date_delivery) {
-                    dateDeliveryExtraido = extPatient.events[0].date_delivery;
-                }
+                // Extrai a data de entrega estritamente do evento que validamos
+                let dateDeliveryExtraido = validPurchaseEvent.date_delivery || null;
 
                 const dadosPaciente = {
                     external_id: extPatient.id || null,
@@ -177,7 +176,6 @@ class PacienteSyncService {
                     medicamento_id: medicamento_id,
                     data_entrega_medicamento: dateDeliveryExtraido,
 
-                    // ---> STATUS AJUSTADO AQUI (Garante que funcione com número 0 ou string '0') <---
                     is_active: String(extPatient.status) === '0',
 
                     is_new_user: true

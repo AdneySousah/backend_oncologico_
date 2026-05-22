@@ -52,6 +52,8 @@ router.post('/webhooks/twilio/whatsapp', ChatController.receiveWebhook);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 router.get('/pacientes/:id', TermoController.verifyResponse);
+router.get('/termos/paciente/:id/preview-pdf', TermoController.previewPdf);
+
 
 
 

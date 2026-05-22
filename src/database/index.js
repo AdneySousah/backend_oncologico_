@@ -34,15 +34,15 @@ import AuditLog from '../app/models/AuditLog.js';
 import NpsResponse from '../app/models/NpsResponse.js';
 import Conversation from '../app/models/Conversation.js';
 import Message from '../app/models/Message.js';
+import TermosHistorico from '../app/models/TermosHistorico.js';
 
 const models = [
   User, OncologyProfessional, Especiality, Operadora, Pacientes, 
   PrestadorMedico, Diagnostico, Exames, InfosComorbidade, EntrevistaMedica,
-  // Novos
   EvaluationTemplate, EvaluationQuestion, EvaluationOption, 
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
-  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message
+  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico
 ];
 
 class Database {
