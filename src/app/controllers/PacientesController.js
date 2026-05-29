@@ -240,7 +240,7 @@ class PacientesController {
     // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE
     // =========================================================================
 
-    async checkSync(req, res) {
+   async checkSync(req, res) {
         try {
             const currentUser = await User.findByPk(req.userId);
 
@@ -286,16 +286,22 @@ class PacientesController {
                     Array.isArray(extPatient.treatmentTypes) && 
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
             
-                // 2. O paciente TEM que ter um evento de compra (2) cujo medicamento seja tipo 4
+                // 2. O paciente TEM que ter um evento de compra (2) cujo medicamento seja tipo 4 E recebido (1)
                 const hasValidPurchaseEventWithMed = extPatient.events && 
                     Array.isArray(extPatient.events) && 
                     extPatient.events.some(e => 
                         String(e.eventtype_id) === '2' && 
+                        String(e.medicament_received) === '1' && 
                         e.medicament && 
                         String(e.medicament.treatment_types_id) === '4'
                     );
+
+                // 3. Verifica se a operadora é a FUNDAÇÃO LIBERTAS (bloqueio de sync)
+                const isFundacaoLibertas = extPatient.company && 
+                    extPatient.company.name && 
+                    String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
             
-                return hasTreatmentType4 && hasValidPurchaseEventWithMed;
+                return hasTreatmentType4 && hasValidPurchaseEventWithMed && !isFundacaoLibertas;
             });
 
             const externalIds = pacientesValidosParaSync.map(p => String(p.id));

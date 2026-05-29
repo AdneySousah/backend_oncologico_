@@ -80,7 +80,7 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, operad
 }
 
 
-export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, userId) {
+export async function enviarLinkNPS(numeroDestino, pacienteNome, operadora, userId, linkNps) {
     try {
         const numeroLimpo = String(numeroDestino).replace(/\D/g, '');
         const numeroFormatado = `+${numeroLimpo.startsWith('55') ? numeroLimpo : '55' + numeroLimpo}`;
@@ -88,16 +88,18 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, us
         const message = await client.messages.create({
             from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
             to: `whatsapp:${numeroFormatado}`,
-            contentSid: 'HXf7e522282d3d9179f0bebdfcf134f3c4',
+            // ⚠️ IMPORTANTE: Substitua o SID abaixo pelo SID do seu NOVO template aprovado na Twilio
+            // Este novo template precisa ter espaço para receber o linkNps (ex: variável '3')
+            contentSid: 'HX7f996cbf5fbef95556c5e6f3e58ff0e5', 
             contentVariables: JSON.stringify({
                 '1': pacienteNome,
-                '2': operadora
+                '2': operadora,
+                '3': linkNps // A nova variável que enviará a URL para o paciente
             })
         });
 
         const ultimos8 = numeroLimpo.slice(-8);
 
-        // ✅ NOVO: Busca o paciente no banco usando os últimos 8 dígitos do telefone
         const paciente = await Pacientes.findOne({
             where: {
                 [Op.or]: [
@@ -115,7 +117,7 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, us
             conversation = await Conversation.create({
                 phone_number: numeroFormatado,
                 assigned_user_id: userId || null,
-                paciente_id: paciente ? paciente.id : null // ✅ Salva o ID do paciente na conversa!
+                paciente_id: paciente ? paciente.id : null
             });
         } else if (!conversation.paciente_id && paciente) {
             await conversation.update({ paciente_id: paciente.id });
@@ -125,7 +127,8 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, us
         expireDate.setHours(expireDate.getHours() + 24);
         await conversation.update({ window_expires_at: expireDate });
 
-        const textoRealDoTemplateNps = `Olá ${pacienteNome}, somos da ${operadora}, Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nDe 0 a 10, qual seria a sua avaliação? (Sendo 0 para insatisfeito e 10 para muito satisfeito).\n\nPor favor, responda apenas com o números.`;
+        // Ajustamos o texto de fallback para espelhar a mensagem com o link
+        const textoRealDoTemplateNps = `Olá ${pacienteNome}, somos da ${operadora}. Gostaríamos de saber sua opinião sobre nosso atendimento.\n\nPor favor, acesse o link abaixo para registrar sua avaliação:\n${linkNps}\n\nAgradecemos a sua atenção!`;
 
         await Message.create({
             conversation_id: conversation.id,
@@ -136,6 +139,7 @@ export async function enviarEnqueteNPS(numeroDestino, pacienteNome,operadora, us
             is_read: true
         });
 
+        console.log(`✅ Sucesso Twilio NPS SID: ${message.sid}`);
         return true;
     } catch (error) {
         console.error('❌ Erro Twilio NPS:', error);

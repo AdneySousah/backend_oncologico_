@@ -76,16 +76,9 @@ export const gerarPdfTermoNavegacao = (paciente, res = null) => {
             doc.font('Helvetica-Bold').text('Telefone autorizado para contato via WhatsApp: ', { continued: true }).font('Helvetica').text(celular);
             doc.moveDown(2);
 
-            doc.text('Por ser verdade, firmo o presente termo.');
-            doc.moveDown(3);
 
-            // Assinatura e Data
-            const dataAtual = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'long' }).format(new Date());
             
-            doc.text('_________________________________________________', { align: 'center' });
-            doc.text('Nome do paciente / responsável legal', { align: 'center' });
-            doc.moveDown();
-            doc.text(`Local e data: Sabará, ${dataAtual}`, { align: 'center' });
+        
 
             doc.end();
 

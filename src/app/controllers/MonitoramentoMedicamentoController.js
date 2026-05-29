@@ -33,8 +33,10 @@ class MonitoramentoMedicamentoController {
         Yup.object().shape({
           medicamento_id: Yup.number().integer().required('ID do medicamento é obrigatório.'),
           posologia_diaria: Yup.number().integer().required('A posologia é obrigatória.'),
-          date_delivery: Yup.date().required('A data de entrega do medicamento é obrigatória.'),
-          qtd_capsula_manual: Yup.number().integer().nullable() // <-- NOVO CAMPO
+          data_entrega: Yup.date().required('A data de entrega do medicamento é obrigatória.'),
+          data_telemonitoramento: Yup.date().required('A data do telemonitoramento é obrigatória.'),
+          qtd_capsula_manual: Yup.number().integer().nullable(),
+          qtd_caixas: Yup.number().integer().nullable() // 👇 NOVO: Validação da qtd de caixas
         })
       ).min(1, 'É necessário enviar pelo menos um medicamento.').required('A lista de medicamentos é obrigatória.')
     });
@@ -57,11 +59,9 @@ class MonitoramentoMedicamentoController {
           return res.status(404).json({ error: `Medicamento ID ${item.medicamento_id} não encontrado.` });
         }
 
-        // Verifica a quantidade da caixa: usa a enviada pelo front ou a do banco
-        const qtdCaixa = item.qtd_capsula_manual || medicamento.qtd_capsula;
+        const qtdPorCaixa = item.qtd_capsula_manual || medicamento.qtd_capsula;
 
-        // SE NÃO TIVER EM NENHUM DOS DOIS LUGARES, BARRA E AVISA O FRONTEND
-        if (!qtdCaixa) {
+        if (!qtdPorCaixa) {
           return res.status(400).json({
             error: 'MISSING_QTD_CAPSULA',
             needs_qtd_capsula: true,
@@ -70,28 +70,34 @@ class MonitoramentoMedicamentoController {
           });
         }
 
-        // Se o front enviou a quantidade manualmente e o banco estava vazio, salva no banco para as próximas vezes!
         if (item.qtd_capsula_manual && !medicamento.qtd_capsula) {
           await medicamento.update({ qtd_capsula: item.qtd_capsula_manual });
         }
 
-        // 1. Converte a data de entrega que veio do front
-        const dataEntrega = parseISO(item.date_delivery);
+        // 👇 NOVO: Cálculo das cápsulas totais baseado na qtd de caixas
+        const qtdCaixas = item.qtd_caixas || 1;
+        const totalCapsulas = qtdPorCaixa * qtdCaixas;
 
-        // 2. Calcula a data final da caixa
-        const diasDuracao = Math.floor(qtdCaixa / item.posologia_diaria);
+        // 1. Data de entrega validada recebida do frontend
+        const dataEntrega = parseISO(item.data_entrega);
+
+        // 2. Calcula a data final usando o TOTAL DE CÁPSULAS reais
+        const diasDuracao = Math.floor(totalCapsulas / item.posologia_diaria);
         const dataFimCaixa = addDays(dataEntrega, diasDuracao);
 
-        // 3. Regra do primeiro contato: Data da Entrega + 2 dias
-        const dataProximoContato = addDays(dataEntrega, 2);
+        // 3. O próximo contato utilizará a data já processada e definida no frontend
+        const dataProximoContato = parseISO(item.data_telemonitoramento);
 
         const novoMonitoramento = await MonitoramentoMedicamento.create({
           paciente_id,
           patient_evaluation_id,
           medicamento_id: item.medicamento_id,
           posologia_diaria: item.posologia_diaria,
+          data_entrega: dataEntrega, 
           data_calculada_fim_caixa: dataFimCaixa,
           data_proximo_contato: dataProximoContato,
+          qtd_caixas: qtdCaixas, // 👇 Salvando no banco
+          qtd_total_capsulas: totalCapsulas, // 👇 Salvando no banco
           status: 'PENDENTE'
         });
 
@@ -175,17 +181,18 @@ class MonitoramentoMedicamentoController {
           {
             model: Pacientes,
             as: 'paciente',
-            attributes: ['id', 'nome', 'sobrenome','celular','telefone', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
+            attributes: ['id', 'nome', 'sobrenome', 'celular', 'telefone', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
             include: [
               { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] },
-              // 👇 ADICIONE ESTA LINHA PARA TRAZER O HISTÓRICO 👇
-              { model: PatientEvaluation, as: 'avaliacoes', attributes: ['id', 'total_score', 'createdAt'], required: false }
+              { model: PatientEvaluation, as: 'avaliacoes', attributes: ['id', 'total_score', 'createdAt'], required: false },
             ]
           },
           { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
           { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
-        ]
-      });
+        ],
+        // 👇 NOVA LINHA: Garante que o histórico venha ordenado do mais recente para o mais antigo
+        order: [['createdAt', 'DESC']]
+      }); 
 
       return res.json({
         data: allRecordsForPage,
@@ -208,7 +215,7 @@ class MonitoramentoMedicamentoController {
       data_abertura_nova_caixa: Yup.date().nullable(),
       is_reacao: Yup.boolean().nullable(),
       reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable(),
-      observacao: Yup.string().nullable() 
+      observacao: Yup.string().nullable()
     });
 
     try {
@@ -261,33 +268,43 @@ class MonitoramentoMedicamentoController {
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: monitoramentoAtual.posologia_diaria,
+          data_entrega: monitoramentoAtual.data_entrega, 
           data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa,
           data_proximo_contato: proximaData,
-          status: 'PENDENTE'
+          status: 'PENDENTE',
+          // 👇 Adicionado para não perder as caixas no reagendamento
+          qtd_caixas: monitoramentoAtual.qtd_caixas,
+          qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas
         });
 
         return res.json({ message: 'Contato sem sucesso. Reagendado para o próximo dia útil.' });
       }
 
       if (data_abertura_nova_caixa) {
-        const dataAbertura = parseISO(data_abertura_nova_caixa);
+        const dataProximoContatoEnviada = parseISO(data_abertura_nova_caixa);
         const posologia = monitoramentoAtual.posologia_diaria;
-        const qtdCapsulas = monitoramentoAtual.medicamento.qtd_capsula;
 
-        const diasDuracaoNovo = Math.floor(qtdCapsulas / posologia);
-        const novaDataFimCaixa = addDays(dataAbertura, diasDuracaoNovo);
-        const novaDataContato = subDays(novaDataFimCaixa, 10);
+        let novaDataFimCaixa = monitoramentoAtual.data_calculada_fim_caixa;
+        if (qtd_informada_caixa != null) {
+          const diasRestantes = Math.floor(qtd_informada_caixa / posologia);
+          novaDataFimCaixa = addDays(new Date(), diasRestantes);
+        }
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: posologia,
+          data_entrega: monitoramentoAtual.data_entrega, 
           data_calculada_fim_caixa: novaDataFimCaixa,
-          data_proximo_contato: novaDataContato,
-          status: 'PENDENTE'
+          data_proximo_contato: dataProximoContatoEnviada,
+          status: 'PENDENTE',
+          // 👇 Adicionado para carregar as informações para o próximo contato do ciclo
+          qtd_caixas: monitoramentoAtual.qtd_caixas,
+          qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas
         });
       }
+
       await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato de monitoramento. Adesão: ${nivel_adesao || 'Não adere'}. Contato efetivo: ${contato_efetivo}`);
       return res.json({ message: 'Contato registrado e próximo monitoramento agendado com sucesso!' });
     } catch (error) {
@@ -334,15 +351,15 @@ class MonitoramentoMedicamentoController {
       // vinculando o ID da nova avaliação (que contém a nova pontuação)
       const [updatedRows] = await MonitoramentoMedicamento.update(
         { patient_evaluation_id },
-        { 
-          where: { 
-            paciente_id, 
-            status: 'PENDENTE' 
-          } 
+        {
+          where: {
+            paciente_id,
+            status: 'PENDENTE'
+          }
         }
       );
 
-      return res.status(200).json({ 
+      return res.status(200).json({
         message: 'Avaliação vinculada ao monitoramento ativo.',
         registros_atualizados: updatedRows
       });
@@ -351,7 +368,7 @@ class MonitoramentoMedicamentoController {
     }
   }
 
-  
+
 }
 
 export default new MonitoramentoMedicamentoController();

@@ -12,7 +12,7 @@ const formatarCelularWhatsapp = (numero) => {
 
 class PacienteSyncService {
 
-    async syncPacientes(pacientesExternos, userId) {
+   async syncPacientes(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
 
@@ -27,18 +27,24 @@ class PacienteSyncService {
                     Array.isArray(extPatient.treatmentTypes) && 
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
 
-                // 2. Busca ESPECIFICAMENTE um evento de compra (2) que tenha um medicamento do tipo 4 dentro dele
+                // 2. Busca ESPECIFICAMENTE um evento de compra (2) com medicamento tipo 4 E recebido (1)
                 const validPurchaseEvent = extPatient.events && Array.isArray(extPatient.events)
                     ? extPatient.events.find(e => 
                         String(e.eventtype_id) === '2' && 
+                        String(e.medicament_received) === '1' && 
                         e.medicament && 
                         String(e.medicament.treatment_types_id) === '4'
                     )
                     : null;
 
-                // Se não passou no filtro geral OU não tem um evento de compra válido com o medicamento correto, ignora!
-                if (!hasTreatmentType4 || !validPurchaseEvent) {
-                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Sem evento de compra válido com medicamento tipo 4)`);
+                // 3. Verifica se a operadora é a FUNDAÇÃO LIBERTAS (bloqueio de sync)
+                const isFundacaoLibertas = extPatient.company && 
+                    extPatient.company.name && 
+                    String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
+
+                // Se não passou no filtro geral, não tem evento válido, ou a operadora bloqueada
+                if (!hasTreatmentType4 || !validPurchaseEvent || isFundacaoLibertas) {
+                    console.log(`[SYNC] Ignorado: ${extPatient.name} (Motivo: Filtro não atendido ou operadora Fundação Libertas)`);
                     continue;
                 }
 
@@ -152,8 +158,12 @@ class PacienteSyncService {
 
                 // Extrai a data de entrega estritamente do evento que validamos
                 let dateDeliveryExtraido = validPurchaseEvent.date_delivery || null;
+                
+                // 👇 NOVO: Extrai a quantidade de caixas compradas no evento
+                let qtdCaixasExtraida = validPurchaseEvent.qtd_medicament ? parseInt(validPurchaseEvent.qtd_medicament, 10) : 1;
 
-                const dadosPaciente = {
+                
+                const dadosPaciente = { 
                     external_id: extPatient.id || null,
                     nome: primeiroNome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
                     sobrenome: restoSobrenome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
@@ -175,9 +185,11 @@ class PacienteSyncService {
                     operadora_id: operadora ? operadora.id : null,
                     medicamento_id: medicamento_id,
                     data_entrega_medicamento: dateDeliveryExtraido,
+                    
+                    // 👇 NOVO: Salva a quantidade de caixas do último evento
+                    qtd_caixas: qtdCaixasExtraida,
 
                     is_active: String(extPatient.status) === '0',
-
                     is_new_user: true
                 };
 

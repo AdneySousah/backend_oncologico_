@@ -13,6 +13,12 @@ class MonitoramentoMedicamento extends Model {
       contato_efetivo: Sequelize.BOOLEAN,
       nivel_adesao: Sequelize.STRING,
       observacao: Sequelize.TEXT,
+      data_entrega: Sequelize.DATEONLY,
+      
+      // Novas colunas adicionadas 👇
+      qtd_caixas: Sequelize.INTEGER,
+      qtd_total_capsulas: Sequelize.INTEGER,
+      
     }, {
       sequelize,
       tableName: 'monitoramento_medicamentos',
@@ -26,7 +32,6 @@ class MonitoramentoMedicamento extends Model {
     this.belongsTo(models.PatientEvaluation, { foreignKey: 'patient_evaluation_id', as: 'avaliacao' });
     this.belongsTo(models.Medicamentos, { foreignKey: 'medicamento_id', as: 'medicamento' });
 
-    // Novo relacionamento N:N
     this.belongsToMany(models.ReacaoAdversa, { 
       through: 'monitoramento_reacoes_adversas',
       foreignKey: 'monitoramento_id', 

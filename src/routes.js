@@ -47,6 +47,11 @@ const uploadAnexos = multer(multerConfigAnexos);
 router.post('/session', SessionController.store)
 /* router.post('/nps/resposta', NpsController.registerResponse); */
 
+
+router.get('/nps/paciente/:paciente_id/atendimento/:monitoramento_id', NpsController.verifyNpsPatient);
+router.post('/nps/paciente/:paciente_id/atendimento/:monitoramento_id/responder', NpsController.answerNps);
+
+
 /* rota publica chat ativo */
 router.post('/webhooks/twilio/whatsapp', ChatController.receiveWebhook);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
@@ -189,7 +194,7 @@ router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), 
 
 router.post('/nps/send', checkPermission('avaliacoes', 'editar'), NpsController.sendNps); 
 router.get('/nps', checkPermission('dashboard', 'acessar'), NpsController.index); 
-router.get('/nps/paciente/:id/status', NpsController.checkPatientStatus);
+router.get('/nps/paciente/:id/atendimento/:monitoramento_id/status', NpsController.checkPatientStatus);
 
 
 
@@ -228,5 +233,7 @@ router.get('/chat/conversations/:id', checkPermission('chat', 'acessar'), ChatCo
 router.post('/chat/send', checkPermission('chat', 'editar'), ChatController.sendMessage);
 router.post('/chat/reopen', checkPermission('chat', 'editar'), ChatController.reopenWindow);
 router.get('/chat/unread', checkPermission('chat', 'acessar'), ChatController.getUnreadCounts);
+
+
 
 export default router;
