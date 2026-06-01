@@ -111,6 +111,8 @@ class EvaluationResponseController {
   }
 
   async index(req, res) {
+
+    console.log("Iniciando index de EvaluationResponseController...");
     const operadoraQueryId = req.query.operadora_id;
     const permission = await getOperadoraFilter(req.userId, operadoraQueryId);
 

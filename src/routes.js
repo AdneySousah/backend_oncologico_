@@ -168,7 +168,7 @@ router.get('/evaluations/paciente/:paciente_id/history', EvaluationResponseContr
 router.get('/evaluations/pendentes-alerta', EvaluationResponseController.pendentesAlerta);
 
 // --- TIMELINE DE AVALIAÇÕES ---
-router.get('/avaliacoes', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
+router.get('/avaliacoes',  EvaluationResponseController.index);
 
 
 // --- ROTAS DE MÉDICOS ---
