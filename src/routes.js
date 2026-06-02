@@ -203,6 +203,7 @@ router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 
 router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
 router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
 router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline)
+router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.informarDataAdministracao);
 
 router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
 

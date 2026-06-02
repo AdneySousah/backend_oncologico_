@@ -14,6 +14,7 @@ class MonitoramentoMedicamento extends Model {
       nivel_adesao: Sequelize.STRING,
       observacao: Sequelize.TEXT,
       data_entrega: Sequelize.DATEONLY,
+      data_administracao: Sequelize.DATEONLY,
       
       // Novas colunas adicionadas 👇
       qtd_caixas: Sequelize.INTEGER,

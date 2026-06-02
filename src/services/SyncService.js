@@ -157,7 +157,7 @@ class PacienteSyncService {
                 const cpfLimpo = extPatient.cpf ? String(extPatient.cpf).replace(/\D/g, '') : null;
 
                 // Extrai a data de entrega estritamente do evento que validamos
-                let dateDeliveryExtraido = validPurchaseEvent.date_delivery || null;
+                let dateDeliveryExtraido = validPurchaseEvent.administration_date_prev || null;
                 
                 // 👇 NOVO: Extrai a quantidade de caixas compradas no evento
                 let qtdCaixasExtraida = validPurchaseEvent.qtd_medicament ? parseInt(validPurchaseEvent.qtd_medicament, 10) : 1;

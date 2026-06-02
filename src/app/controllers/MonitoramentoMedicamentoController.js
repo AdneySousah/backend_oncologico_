@@ -269,6 +269,7 @@ class MonitoramentoMedicamentoController {
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: monitoramentoAtual.posologia_diaria,
           data_entrega: monitoramentoAtual.data_entrega, 
+          data_administracao: monitoramentoAtual.data_administracao,
           data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa,
           data_proximo_contato: proximaData,
           status: 'PENDENTE',
@@ -296,6 +297,7 @@ class MonitoramentoMedicamentoController {
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: posologia,
           data_entrega: monitoramentoAtual.data_entrega, 
+          data_administracao: monitoramentoAtual.data_administracao,
           data_calculada_fim_caixa: novaDataFimCaixa,
           data_proximo_contato: dataProximoContatoEnviada,
           status: 'PENDENTE',
@@ -365,6 +367,40 @@ class MonitoramentoMedicamentoController {
       });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao vincular avaliação silenciosamente.', details: error.message });
+    }
+  }
+
+  async informarDataAdministracao(req, res) {
+    const { id } = req.params;
+    const { data_administracao } = req.body;
+
+    if (!data_administracao) {
+      return res.status(400).json({ error: 'A data de administração é obrigatória.' });
+    }
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id);
+      if (!monitoramento) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
+
+      const dataAdminParsed = parseISO(data_administracao);
+      
+      // Recalcula a data de fim da caixa baseada na data real informada pelo paciente
+      const diasDuracao = Math.floor(monitoramento.qtd_total_capsulas / monitoramento.posologia_diaria);
+      const novaDataFimCaixa = addDays(dataAdminParsed, diasDuracao);
+
+      await monitoramento.update({
+        data_administracao: dataAdminParsed,
+        data_calculada_fim_caixa: novaDataFimCaixa
+      });
+
+      return res.json({ 
+        message: 'Data de administração registrada com sucesso!', 
+        monitoramento 
+      });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao registrar data de administração.', details: error.message });
     }
   }
 
