@@ -19,6 +19,7 @@ class MonitoramentoMedicamento extends Model {
       // Novas colunas adicionadas 👇
       qtd_caixas: Sequelize.INTEGER,
       qtd_total_capsulas: Sequelize.INTEGER,
+      evento_externo_id: Sequelize.INTEGER
       
     }, {
       sequelize,

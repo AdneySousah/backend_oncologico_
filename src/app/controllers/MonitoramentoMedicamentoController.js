@@ -8,6 +8,9 @@ import { Op } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
+import User from '../models/User.js'; // Ajuste o caminho de pastas conforme sua estrutura se necessário
+import axios from 'axios';
+import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
 
 const obterProximoDiaUtil = (dataBase) => {
   const proximoDia = addDays(dataBase, 1);
@@ -25,7 +28,7 @@ const obterProximoDiaUtil = (dataBase) => {
 
 class MonitoramentoMedicamentoController {
 
- async store(req, res) {
+  async store(req, res) {
     const schema = Yup.object().shape({
       paciente_id: Yup.number().integer().required('O ID do paciente é obrigatório.'),
       patient_evaluation_id: Yup.number().integer().nullable(),
@@ -36,7 +39,7 @@ class MonitoramentoMedicamentoController {
           data_entrega: Yup.date().required('A data de entrega do medicamento é obrigatória.'),
           data_telemonitoramento: Yup.date().required('A data do telemonitoramento é obrigatória.'),
           qtd_capsula_manual: Yup.number().integer().nullable(),
-          qtd_caixas: Yup.number().integer().nullable() // 👇 NOVO: Validação da qtd de caixas
+          qtd_caixas: Yup.number().integer().nullable()
         })
       ).min(1, 'É necessário enviar pelo menos um medicamento.').required('A lista de medicamentos é obrigatória.')
     });
@@ -50,6 +53,70 @@ class MonitoramentoMedicamentoController {
     const { paciente_id, patient_evaluation_id, medicamentos_confirmados } = req.body;
 
     try {
+      // =========================================================================
+      // BUSCA AUTOMÁTICA DO ID DO EVENTO EXTERNO NO NASCIMENTO DO CICLO
+      // =========================================================================
+      const paciente = await Pacientes.findByPk(paciente_id);
+      let externalEventId = null;
+
+      if (paciente && paciente.external_id) {
+        console.log(`\n[STORE DEBUG] Iniciando busca do evento externo para o paciente: ${paciente.external_id}`);
+
+        const currentUser = await User.findByPk(req.userId);
+
+        if (currentUser && currentUser.external_token) {
+          try {
+            const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+            const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
+
+            let extPatient = null;
+            let currentPage = 1;
+            let lastPage = 1;
+
+            do {
+              const response = await axios.get(`${baseUrl}&page=${currentPage}`, { headers });
+              const resData = response.data;
+              const pacs = resData.data || resData;
+
+              extPatient = pacs.find(p => String(p.id) === String(paciente.external_id));
+              if (extPatient) {
+                console.log(`[STORE DEBUG] Paciente encontrado na página ${currentPage}!`);
+                break;
+              }
+
+              lastPage = (resData.meta && resData.meta.last_page) ? resData.meta.last_page : 1;
+              currentPage++;
+            } while (currentPage <= lastPage);
+
+            if (extPatient && extPatient.events && Array.isArray(extPatient.events)) {
+              let comprasValidas = extPatient.events.filter(e =>
+                String(e.eventtype_id) === '2' &&
+                String(e.medicament_received) === '1' &&
+                e.medicament &&
+                String(e.medicament.treatment_types_id) === '4'
+              );
+
+              if (comprasValidas.length > 0) {
+                comprasValidas.sort((a, b) => {
+                  const dataA = new Date(a.administration_date_prev || 0);
+                  const dataB = new Date(b.administration_date_prev || 0);
+                  return dataB - dataA;
+                });
+                externalEventId = comprasValidas[0].id;
+                console.log(`[STORE DEBUG] Sucesso! ID do Evento mais recente capturado: ${externalEventId}`);
+              } else {
+                console.log(`[STORE DEBUG] Nenhum evento de compra concluído encontrado.`);
+              }
+            }
+          } catch (extErr) {
+            console.error("[STORE DEBUG] ERRO INTERNO na busca externa:", extErr.message);
+          }
+        } else {
+          console.log(`[STORE DEBUG] Usuário sem token externo. Ignorando busca.`);
+        }
+      }
+      // =========================================================================
+
       const agendamentos = [];
 
       for (let item of medicamentos_confirmados) {
@@ -65,7 +132,7 @@ class MonitoramentoMedicamentoController {
           return res.status(400).json({
             error: 'MISSING_QTD_CAPSULA',
             needs_qtd_capsula: true,
-            message: `Quantidade de cápsulas na caixa não encontrada para o medicamento ${medicamento.nome}. Por favor, informe a quantidade manualmente para prosseguir.`,
+            message: `Quantidade de cápsulas na caixa não encontrada.`,
             medicamento_id: item.medicamento_id
           });
         }
@@ -74,42 +141,39 @@ class MonitoramentoMedicamentoController {
           await medicamento.update({ qtd_capsula: item.qtd_capsula_manual });
         }
 
-        // 👇 NOVO: Cálculo das cápsulas totais baseado na qtd de caixas
         const qtdCaixas = item.qtd_caixas || 1;
         const totalCapsulas = qtdPorCaixa * qtdCaixas;
 
-        // 1. Data de entrega validada recebida do frontend
         const dataEntrega = parseISO(item.data_entrega);
-
-        // 2. Calcula a data final usando o TOTAL DE CÁPSULAS reais
         const diasDuracao = Math.floor(totalCapsulas / item.posologia_diaria);
         const dataFimCaixa = addDays(dataEntrega, diasDuracao);
-
-        // 3. O próximo contato utilizará a data já processada e definida no frontend
         const dataProximoContato = parseISO(item.data_telemonitoramento);
+
+        console.log(`[STORE DEBUG] Gravando no banco. evento_externo_id = ${externalEventId}`);
 
         const novoMonitoramento = await MonitoramentoMedicamento.create({
           paciente_id,
           patient_evaluation_id,
           medicamento_id: item.medicamento_id,
           posologia_diaria: item.posologia_diaria,
-          data_entrega: dataEntrega, 
+          data_entrega: dataEntrega,
           data_calculada_fim_caixa: dataFimCaixa,
           data_proximo_contato: dataProximoContato,
-          qtd_caixas: qtdCaixas, // 👇 Salvando no banco
-          qtd_total_capsulas: totalCapsulas, // 👇 Salvando no banco
+          qtd_caixas: qtdCaixas,
+          qtd_total_capsulas: totalCapsulas,
+          evento_externo_id: externalEventId, // 👈 Se chegar aqui com número e salvar NULL, o problema é o Model.
           status: 'PENDENTE'
         });
 
         agendamentos.push(novoMonitoramento);
       }
 
+      console.log(`[STORE DEBUG] Processo finalizado com sucesso!\n`);
       return res.status(201).json(agendamentos);
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao gerar monitoramento', details: error.message });
     }
   }
-
 
 
   async index(req, res) {
@@ -162,19 +226,11 @@ class MonitoramentoMedicamentoController {
         return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
       }
 
-      const uniquePairs = [];
-      const map = new Set();
-      for (const p of pendentesPagina) {
-        const key = `${p.paciente_id}_${p.medicamento_id}`;
-        if (!map.has(key)) {
-          map.add(key);
-          uniquePairs.push({ paciente_id: p.paciente_id, medicamento_id: p.medicamento_id });
-        }
-      }
+      const uniquePatientIds = [...new Set(pendentesPagina.map(p => p.paciente_id))];
 
       const allRecordsForPage = await MonitoramentoMedicamento.findAll({
         where: {
-          [Op.or]: uniquePairs,
+          paciente_id: { [Op.in]: uniquePatientIds }, // Puxa TODO o histórico do paciente
           status: { [Op.ne]: 'CANCELADO' }
         },
         include: [
@@ -192,7 +248,7 @@ class MonitoramentoMedicamentoController {
         ],
         // 👇 NOVA LINHA: Garante que o histórico venha ordenado do mais recente para o mais antigo
         order: [['createdAt', 'DESC']]
-      }); 
+      });
 
       return res.json({
         data: allRecordsForPage,
@@ -215,7 +271,11 @@ class MonitoramentoMedicamentoController {
       data_abertura_nova_caixa: Yup.date().nullable(),
       is_reacao: Yup.boolean().nullable(),
       reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable(),
-      observacao: Yup.string().nullable()
+      observacao: Yup.string().nullable(),
+      aplicar_nova_compra: Yup.boolean().nullable(),
+      dados_nova_compra: Yup.object().nullable(),
+      data_inicio_nova_caixa: Yup.date().nullable(),
+      posologia_nova_caixa: Yup.number().integer().nullable()
     });
 
     try {
@@ -232,13 +292,15 @@ class MonitoramentoMedicamentoController {
       data_abertura_nova_caixa,
       is_reacao,
       reacoes_adversas,
-      observacao
+      observacao,
+      aplicar_nova_compra,
+      dados_nova_compra,
+      data_inicio_nova_caixa,
+      posologia_nova_caixa
     } = req.body;
 
     try {
-      const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id, {
-        include: [{ model: Medicamentos, as: 'medicamento' }]
-      });
+      const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id);
 
       if (!monitoramentoAtual) {
         return res.status(404).json({ error: 'Monitoramento não encontrado.' });
@@ -268,47 +330,132 @@ class MonitoramentoMedicamentoController {
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: monitoramentoAtual.posologia_diaria,
-          data_entrega: monitoramentoAtual.data_entrega, 
+          data_entrega: monitoramentoAtual.data_entrega,
           data_administracao: monitoramentoAtual.data_administracao,
           data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa,
           data_proximo_contato: proximaData,
           status: 'PENDENTE',
-          // 👇 Adicionado para não perder as caixas no reagendamento
           qtd_caixas: monitoramentoAtual.qtd_caixas,
-          qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas
+          qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas,
+          evento_externo_id: monitoramentoAtual.evento_externo_id
         });
 
         return res.json({ message: 'Contato sem sucesso. Reagendado para o próximo dia útil.' });
       }
 
+      let proximoMedicamentoId = monitoramentoAtual.medicamento_id;
+      let proximasCaixas = monitoramentoAtual.qtd_caixas;
+      let proximasCapsulasTotais = monitoramentoAtual.qtd_total_capsulas;
+      let proximaDataEntrega = monitoramentoAtual.data_entrega;
+      let proximaDataFimCaixa = monitoramentoAtual.data_calculada_fim_caixa;
+      let proximaDataAdministracao = monitoramentoAtual.data_administracao;
+      let proximoEventoExternoId = monitoramentoAtual.evento_externo_id;
+      let proximaPosologia = monitoramentoAtual.posologia_diaria;
+
+      if (qtd_informada_caixa != null) {
+        const diasRestantes = Math.floor(qtd_informada_caixa / monitoramentoAtual.posologia_diaria);
+        proximaDataFimCaixa = addDays(new Date(), diasRestantes);
+      }
+
+      if (aplicar_nova_compra && dados_nova_compra) {
+        proximoMedicamentoId = dados_nova_compra.medicamento_novo.id;
+        proximasCaixas = dados_nova_compra.qtd_caixas;
+        proximaDataEntrega = parseISO(dados_nova_compra.data_entrega);
+        proximoEventoExternoId = dados_nova_compra.evento_externo_id;
+        proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
+
+        proximaDataAdministracao = data_inicio_nova_caixa
+          ? parseISO(data_inicio_nova_caixa)
+          : parseISO(dados_nova_compra.data_novo_inicio);
+
+        let sobraNoDiaDoInicio = 0;
+
+        if (!dados_nova_compra.mudou_medicamento) {
+          if (contato_efetivo && qtd_informada_caixa != null) {
+            
+            let dataFimEstimadaObj;
+            const dataInicioAtual = monitoramentoAtual.data_administracao || monitoramentoAtual.data_entrega;
+            const dataInicioAtualObj = dataInicioAtual ? new Date(dataInicioAtual) : new Date();
+            dataInicioAtualObj.setHours(0, 0, 0, 0);
+
+            const dataHoje = new Date();
+            dataHoje.setHours(0, 0, 0, 0);
+
+            const isAntesDoInicioBack = dataHoje < dataInicioAtualObj;
+
+            if (isAntesDoInicioBack) {
+              const diasAutonomia = qtd_informada_caixa / monitoramentoAtual.posologia_diaria;
+              dataFimEstimadaObj = new Date(dataInicioAtualObj.getTime());
+              dataFimEstimadaObj.setDate(dataFimEstimadaObj.getDate() + Math.floor(diasAutonomia));
+            } else {
+              const diasAutonomia = qtd_informada_caixa / monitoramentoAtual.posologia_diaria;
+              dataFimEstimadaObj = new Date(dataHoje.getTime());
+              dataFimEstimadaObj.setDate(dataFimEstimadaObj.getDate() + Math.floor(diasAutonomia));
+            }
+
+            const dataInicioNova = new Date(proximaDataAdministracao.getTime());
+            dataInicioNova.setHours(0, 0, 0, 0);
+
+            const diffDays = (dataInicioNova - dataFimEstimadaObj) / (1000 * 60 * 60 * 24);
+
+            if (diffDays <= 0) {
+              sobraNoDiaDoInicio = Math.floor(Math.abs(diffDays) * monitoramentoAtual.posologia_diaria);
+              if (sobraNoDiaDoInicio > qtd_informada_caixa) sobraNoDiaDoInicio = qtd_informada_caixa;
+            } else {
+              sobraNoDiaDoInicio = 0;
+            }
+
+          } else {
+            if (monitoramentoAtual.data_calculada_fim_caixa) {
+              const dataFimAtual = parseISO(monitoramentoAtual.data_calculada_fim_caixa);
+              const dataInicioNova = new Date(proximaDataAdministracao.getTime());
+              dataInicioNova.setHours(0, 0, 0, 0);
+
+              if (dataFimAtual > dataInicioNova) {
+                const diffDays = Math.floor((dataFimAtual - dataInicioNova) / (1000 * 60 * 60 * 24));
+                sobraNoDiaDoInicio = diffDays * monitoramentoAtual.posologia_diaria;
+              }
+            }
+          }
+        }
+
+        proximasCapsulasTotais = dados_nova_compra.total_capsulas_novas + sobraNoDiaDoInicio;
+
+        const totalDiasDuracao = Math.floor(proximasCapsulasTotais / proximaPosologia);
+        proximaDataFimCaixa = addDays(proximaDataAdministracao, totalDiasDuracao);
+
+        if (dados_nova_compra.mudou_medicamento) {
+          await HistoricoTrocaMedicamento.create({
+            paciente_id: monitoramentoAtual.paciente_id,
+            medicamento_antigo_id: dados_nova_compra.medicamento_atual.id,
+            medicamento_novo_id: proximoMedicamentoId,
+            data_troca: proximaDataEntrega,
+            monitoramento_id: monitoramentoAtual.id
+          });
+        }
+      }
+
       if (data_abertura_nova_caixa) {
         const dataProximoContatoEnviada = parseISO(data_abertura_nova_caixa);
-        const posologia = monitoramentoAtual.posologia_diaria;
-
-        let novaDataFimCaixa = monitoramentoAtual.data_calculada_fim_caixa;
-        if (qtd_informada_caixa != null) {
-          const diasRestantes = Math.floor(qtd_informada_caixa / posologia);
-          novaDataFimCaixa = addDays(new Date(), diasRestantes);
-        }
 
         await MonitoramentoMedicamento.create({
           paciente_id: monitoramentoAtual.paciente_id,
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
-          medicamento_id: monitoramentoAtual.medicamento_id,
-          posologia_diaria: posologia,
-          data_entrega: monitoramentoAtual.data_entrega, 
-          data_administracao: monitoramentoAtual.data_administracao,
-          data_calculada_fim_caixa: novaDataFimCaixa,
+          medicamento_id: proximoMedicamentoId,
+          posologia_diaria: proximaPosologia,
+          data_entrega: proximaDataEntrega,
+          data_administracao: proximaDataAdministracao,
+          data_calculada_fim_caixa: proximaDataFimCaixa,
           data_proximo_contato: dataProximoContatoEnviada,
           status: 'PENDENTE',
-          // 👇 Adicionado para carregar as informações para o próximo contato do ciclo
-          qtd_caixas: monitoramentoAtual.qtd_caixas,
-          qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas
+          qtd_caixas: proximasCaixas,
+          qtd_total_capsulas: proximasCapsulasTotais,
+          evento_externo_id: proximoEventoExternoId
         });
       }
 
-      await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato de monitoramento. Adesão: ${nivel_adesao || 'Não adere'}. Contato efetivo: ${contato_efetivo}`);
-      return res.json({ message: 'Contato registrado e próximo monitoramento agendado com sucesso!' });
+      await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato de monitoramento. Nova compra aplicada: ${aplicar_nova_compra}`);
+      return res.json({ message: 'Contato registrado e ciclo atualizado com sucesso!' });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao registrar contato', details: error.message });
     }
@@ -340,17 +487,16 @@ class MonitoramentoMedicamentoController {
     }
   }
 
-  // 👇 NOVA FUNÇÃO: Atualiza a avaliação sem precisar preencher a caixa de remédio novamente
+  
   async vincularAvaliacaoSilencioso(req, res) {
     const { paciente_id, patient_evaluation_id } = req.body;
 
     if (!paciente_id || !patient_evaluation_id) {
       return res.status(400).json({ error: 'IDs do paciente e da avaliação são obrigatórios.' });
     }
+    
 
     try {
-      // Atualiza todos os monitoramentos 'PENDENTE' desse paciente 
-      // vinculando o ID da nova avaliação (que contém a nova pontuação)
       const [updatedRows] = await MonitoramentoMedicamento.update(
         { patient_evaluation_id },
         {
@@ -366,7 +512,13 @@ class MonitoramentoMedicamentoController {
         registros_atualizados: updatedRows
       });
     } catch (error) {
-      return res.status(500).json({ error: 'Erro ao vincular avaliação silenciosamente.', details: error.message });
+      // 🛑 AGORA O ERRO APARECE NO SEU TERMINAL DO BACKEND:
+      console.error("🔥 [ERRO BANCO DE DADOS] Falha ao atualizar MonitoramentoMedicamento:", error);
+
+      return res.status(500).json({ 
+        error: 'Erro ao vincular avaliação silenciosamente.', 
+        details: error.message 
+      });
     }
   }
 
@@ -385,7 +537,7 @@ class MonitoramentoMedicamentoController {
       }
 
       const dataAdminParsed = parseISO(data_administracao);
-      
+
       // Recalcula a data de fim da caixa baseada na data real informada pelo paciente
       const diasDuracao = Math.floor(monitoramento.qtd_total_capsulas / monitoramento.posologia_diaria);
       const novaDataFimCaixa = addDays(dataAdminParsed, diasDuracao);
@@ -395,15 +547,192 @@ class MonitoramentoMedicamentoController {
         data_calculada_fim_caixa: novaDataFimCaixa
       });
 
-      return res.json({ 
-        message: 'Data de administração registrada com sucesso!', 
-        monitoramento 
+      return res.json({
+        message: 'Data de administração registrada com sucesso!',
+        monitoramento
       });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao registrar data de administração.', details: error.message });
     }
   }
 
+ async verificarNovaCompra(req, res) {
+    const { id } = req.params; 
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'external_id', 'nome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }
+        ]
+      });
+
+      if (!monitoramento) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
+
+      if (!monitoramento.paciente.external_id) {
+        return res.json({ novaCompraDetectada: false });
+      }
+
+      const currentUser = await User.findByPk(req.userId);
+      if (!currentUser || !currentUser.external_token) {
+        return res.status(401).json({ error: 'Token externo não encontrado.' });
+      }
+
+      const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+      const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
+
+      let extPatient = null;
+      let currentPage = 1;
+      let lastPage = 1;
+
+      do {
+        const response = await axios.get(`${baseUrl}&page=${currentPage}`, { headers });
+        const resData = response.data;
+        const pacs = resData.data || resData;
+
+        extPatient = pacs.find(p => String(p.id) === String(monitoramento.paciente.external_id));
+
+        if (extPatient) {
+          break; 
+        }
+
+        lastPage = (resData.meta && resData.meta.last_page) ? resData.meta.last_page : 1;
+        currentPage++;
+      } while (currentPage <= lastPage);
+
+      if (!extPatient || !extPatient.events || !Array.isArray(extPatient.events)) {
+        return res.json({ novaCompraDetectada: false });
+      }
+
+      let comprasValidas = extPatient.events.filter(e =>
+        String(e.eventtype_id) === '2' &&
+        String(e.medicament_received) === '1' &&
+        e.medicament &&
+        String(e.medicament.treatment_types_id) === '4'
+      );
+
+      if (comprasValidas.length === 0) {
+        return res.json({ novaCompraDetectada: false });
+      }
+
+      comprasValidas.sort((a, b) => {
+        const dataA = new Date(a.administration_date_prev || 0);
+        const dataB = new Date(b.administration_date_prev || 0);
+        return dataB - dataA;
+      });
+
+      const validPurchaseEvent = comprasValidas[0];
+
+      if (monitoramento.evento_externo_id && String(validPurchaseEvent.id) === String(monitoramento.evento_externo_id)) {
+        return res.json({ novaCompraDetectada: false });
+      }
+
+      const dataEntregaExternaReal = validPurchaseEvent.date_delivery ? validPurchaseEvent.date_delivery.split('T')[0] : null;
+      
+      // Correção inserida aqui: conversão segura da data local para string antes de comparar
+      if (!monitoramento.evento_externo_id && dataEntregaExternaReal && monitoramento.data_entrega) {
+        const dataEntregaLocal = monitoramento.data_entrega.toISOString().split('T')[0];
+        if (dataEntregaExternaReal <= dataEntregaLocal) {
+          return res.json({ novaCompraDetectada: false });
+        }
+      }
+
+      const dataAdminExterna = validPurchaseEvent.administration_date_prev ? validPurchaseEvent.administration_date_prev.split('T')[0] : null;
+      if (!dataAdminExterna) {
+        return res.json({ novaCompraDetectada: false });
+      }
+
+      let extMed = validPurchaseEvent.medicament;
+      let novoMedicamento = null;
+
+      if (extMed) {
+        if (extMed.id) {
+          novoMedicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
+        }
+        if (!novoMedicamento && extMed.tusscode) {
+          novoMedicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
+        }
+
+        let tipoDosagemFormatado = extMed.measurement ? String(extMed.measurement).toUpperCase().trim() : null;
+        const dosagensPermitidas = ['MG', 'G', 'MCG', 'UI', 'ML', 'MG/ML'];
+        if (tipoDosagemFormatado && !dosagensPermitidas.includes(tipoDosagemFormatado)) {
+          tipoDosagemFormatado = null;
+        }
+
+        let qtdCapsulaExtraida = null;
+        if (extMed.dosage) {
+          const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+          if (apenasNumeros) {
+            qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+          }
+        }
+
+        const medData = {
+          external_id: extMed.id || null,
+          codigo_tuss: extMed.tusscode || null,
+          nome: extMed.name,
+          nome_comercial: extMed.commercial_name,
+          principio_ativo: extMed.active_principle,
+          qtd_capsula: qtdCapsulaExtraida,
+          dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
+          tipo_dosagem: tipoDosagemFormatado,
+          apresentacao: extMed.apresentation,
+          via_administracao: extMed.way_administration,
+          tipo_matmed: extMed.typematmed,
+          tipo_medicamento: extMed.type_medicament,
+          price: validPurchaseEvent.price ? parseFloat(validPurchaseEvent.price) : null
+        };
+
+        if (novoMedicamento) {
+          await novoMedicamento.update(medData);
+        } else {
+          novoMedicamento = await Medicamentos.create(medData);
+        }
+      }
+
+      if (!novoMedicamento) {
+        return res.status(400).json({ error: `Falha ao processar e sincronizar o medicamento da nova compra no banco local.` });
+      }
+
+      const qtdCaixasNova = validPurchaseEvent.qtd_medicament ? parseInt(validPurchaseEvent.qtd_medicament, 10) : 1;
+      const totalCapsulasNovas = (novoMedicamento.qtd_capsula || 0) * qtdCaixasNova;
+
+      const dataAdminParsed = parseISO(dataAdminExterna);
+      const dataNovoInicio = addDays(dataAdminParsed, 5);
+
+      let sobraComprimidos = 0;
+      if (monitoramento.data_calculada_fim_caixa) {
+        const dataFimAtual = parseISO(monitoramento.data_calculada_fim_caixa);
+        if (dataFimAtual > dataNovoInicio) {
+          const diffDays = Math.max(0, Math.floor((dataFimAtual - dataNovoInicio) / (1000 * 60 * 60 * 24)));
+          sobraComprimidos = diffDays * monitoramento.posologia_diaria;
+        }
+      }
+
+      return res.json({
+        novaCompraDetectada: true,
+        detalhes: {
+          evento_externo_id: validPurchaseEvent.id,
+          data_entrega: dataEntregaExternaReal,
+          data_previsao_administracao: dataAdminExterna,
+          data_novo_inicio: dataNovoInicio,
+          qtd_caixas: qtdCaixasNova,
+          total_capsulas_novas: totalCapsulasNovas,
+          sobra_comprimidos: sobraComprimidos,
+          total_estoque_calculado: totalCapsulasNovas + sobraComprimidos,
+          mudou_medicamento: monitoramento.medicamento_id !== novoMedicamento.id,
+          medicamento_novo: { id: novoMedicamento.id, nome: novoMedicamento.nome },
+          medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome }
+        }
+      });
+
+    } catch (error) {
+      console.error("ERRO NO VERIFICAR NOVA COMPRA:", error);
+      return res.status(500).json({ error: 'Erro ao verificar nova compra.', details: error.message });
+    }
+  }
 
 }
 

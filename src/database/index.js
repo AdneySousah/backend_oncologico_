@@ -35,6 +35,7 @@ import NpsResponse from '../app/models/NpsResponse.js';
 import Conversation from '../app/models/Conversation.js';
 import Message from '../app/models/Message.js';
 import TermosHistorico from '../app/models/TermosHistorico.js';
+import HistoricoTrocaMedicamento from '../app/models/HistoricoTrocaMedicamento.js';
 
 const models = [
   User, OncologyProfessional, Especiality, Operadora, Pacientes, 
@@ -42,7 +43,7 @@ const models = [
   EvaluationTemplate, EvaluationQuestion, EvaluationOption, 
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
-  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico
+  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento
 ];
 
 class Database {
