@@ -65,7 +65,8 @@ class PacientesController {
             numero: Yup.string().required(),
             bairro: Yup.string().required(),
             cidade: Yup.string().required(),
-            estado: Yup.string().required()
+            estado: Yup.string().required(),
+            matricula: Yup.string().nullable()
         });
 
         try {

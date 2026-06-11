@@ -28,6 +28,7 @@ class Pacientes extends Model {
             external_id: Sequelize.INTEGER,
             data_entrega_medicamento: Sequelize.DATEONLY,
             qtd_caixas: Sequelize.INTEGER,
+            matricula: Sequelize.STRING, // Adicionado aqui
         },{
             sequelize,
             tableName: 'pacientes',

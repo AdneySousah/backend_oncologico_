@@ -5,9 +5,11 @@ import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
 import Operadora from '../models/Operadora.js';
-import NpsResponse from '../models/NpsResponse.js'; // <-- IMPORT DO NPS ADICIONADO AQUI
+import NpsResponse from '../models/NpsResponse.js';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
+import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
+import Medicamentos from '../models/Medicamentos.js';
 
 class DashboardController {
   async index(req, res) {
@@ -26,7 +28,8 @@ class DashboardController {
         totalPacientes: { chart: [], report: [], total: 0 },
         pacientesMonitorados: { chart: [], report: [], total: 0 },
         pacientesElegiveis: { chart: [], report: [], total: 0 },
-        nps: { chart: [], report: [] } // <-- ADICIONADO AQUI PARA PREVENIR ERROS
+        nps: { chart: [], report: [] },
+        historicoTrocas: { table: [], report: [] }
       };
 
       if (!permission.authorized) {
@@ -263,7 +266,7 @@ class DashboardController {
       })).sort((a, b) => b.value - a.value).slice(0, 10);
 
       // =========================================================
-      // 6. NPS - ÍNDICE DE SATISFAÇÃO (NOVO)
+      // 6. NPS - ÍNDICE DE SATISFAÇÃO
       // =========================================================
       const npsResponses = await NpsResponse.findAll({
         include: [{
@@ -280,19 +283,63 @@ class DashboardController {
       let npsReport = [];
 
       npsResponses.forEach(nps => {
-        // Formato para o gráfico (só precisa da nota)
         npsChart.push({
           nota: nps.nota,
           paciente_id: nps.paciente_id
         });
 
-        // Formato para o relatório em Excel
         npsReport.push({
           paciente_id: nps.paciente_id,
           nome_paciente: `${nps.paciente?.nome} ${nps.paciente?.sobrenome || ''}`.trim(),
           operadora: nps.paciente?.operadoras?.nome || 'N/A',
           nota: nps.nota,
           created_at: nps.createdAt ? nps.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+        });
+      });
+
+      // =========================================================
+      // 7. HISTÓRICO DE TROCA DE MEDICAMENTOS (MOVIDO PARA CÁ!)
+      // =========================================================
+      let dateFilterTroca = {};
+      if (data_inicio && data_fim) {
+        dateFilterTroca.data_troca = { [Op.between]: [data_inicio, data_fim] };
+      }
+
+      const trocasMedicamentos = await HistoricoTrocaMedicamento.findAll({
+        include: [
+          {
+            model: Pacientes, as: 'paciente',
+            where: includePacienteWhere, 
+            attributes: ['id', 'nome', 'sobrenome'],
+            include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
+          },
+          { model: Medicamentos, as: 'medicamentoAntigo', attributes: ['nome'] },
+          { model: Medicamentos, as: 'medicamentoNovo', attributes: ['nome'] }
+        ],
+        where: { ...dateFilterTroca },
+        order: [['data_troca', 'DESC']]
+      });
+
+      let historicoTrocasReport = [];
+
+      trocasMedicamentos.forEach(troca => {
+        const nomeCompleto = `${troca.paciente?.nome} ${troca.paciente?.sobrenome || ''}`.trim();
+        const nomeOperadora = troca.paciente?.operadoras?.nome || 'N/A';
+        const medAntigo = troca.medicamentoAntigo?.nome || 'Não informado';
+        const medNovo = troca.medicamentoNovo?.nome || 'Não informado';
+
+        let dataFormatada = 'N/A';
+        if (troca.data_troca) {
+          dataFormatada = new Date(troca.data_troca + 'T12:00:00Z').toLocaleDateString('pt-BR');
+        }
+
+        historicoTrocasReport.push({
+          paciente_id: troca.paciente?.id,
+          nome_paciente: nomeCompleto,
+          operadora: nomeOperadora,
+          medicamento_antigo: medAntigo,
+          medicamento_novo: medNovo,
+          data_troca: dataFormatada
         });
       });
 
@@ -378,7 +425,8 @@ class DashboardController {
           report: aderenciaOpcoesReport
         },
         fichaRam: { chart: fichaRamChart, report: ramReport },
-        nps: { chart: npsChart, report: npsReport } // <-- NPS RETORNADO AQUI PARA O FRONTEND
+        nps: { chart: npsChart, report: npsReport },
+        historicoTrocas: { table: historicoTrocasReport, report: historicoTrocasReport }
       });
 
     } catch (error) {

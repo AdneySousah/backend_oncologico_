@@ -165,6 +165,7 @@ class PacienteSyncService {
                 
                 const dadosPaciente = { 
                     external_id: extPatient.id || null,
+                    matricula: extPatient.matriculation || null,
                     nome: primeiroNome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
                     sobrenome: restoSobrenome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
                     cpf: cpfLimpo,
@@ -185,7 +186,7 @@ class PacienteSyncService {
                     operadora_id: operadora ? operadora.id : null,
                     medicamento_id: medicamento_id,
                     data_entrega_medicamento: dateDeliveryExtraido,
-                    
+
                     // 👇 NOVO: Salva a quantidade de caixas do último evento
                     qtd_caixas: qtdCaixasExtraida,
 
@@ -193,6 +194,7 @@ class PacienteSyncService {
                     is_new_user: true
                 };
 
+                console.log('[SYNC] Dados formatados para paciente:', dadosPaciente);
                 // ==========================================
                 // PASSO 4: SALVAR NO BANCO LOCAL
                 // ==========================================

@@ -34,6 +34,7 @@ import AuditLogController from "./app/controllers/AuditLogController.js";
 import NpsController from "./app/controllers/NpsController.js";
 import NpsHealthController from "./app/controllers/NpsHealthController.js";
 import ChatController from "./app/controllers/ChatController.js";
+import FaturamentoController from "./app/controllers/FaturamentoController.js";
 
 
 
@@ -241,5 +242,6 @@ router.post('/chat/reopen', checkPermission('chat', 'editar'), ChatController.re
 router.get('/chat/unread', checkPermission('chat', 'acessar'), ChatController.getUnreadCounts);
 
 
+router.get('/faturamento', FaturamentoController.index);
 
 export default router;

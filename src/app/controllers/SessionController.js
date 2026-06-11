@@ -135,6 +135,7 @@ class SessionController {
                     username: user.username,
                     is_admin: user.is_admin,
                     is_profissional: user.is_profissional,
+                    operadora: operadora_external,
                     perfil_id: user.perfil_id
                 },
                 token: localToken
