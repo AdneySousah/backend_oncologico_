@@ -24,11 +24,16 @@ class Pacientes extends Model {
             status_termo: Sequelize.ENUM('aceito', 'recusado', 'pendente'),
             is_active: Sequelize.BOOLEAN,
             is_new_user: Sequelize.BOOLEAN,
-            medicamento_id: Sequelize.INTEGER, // Adicionado aqui
+            medicamento_id: Sequelize.INTEGER, 
             external_id: Sequelize.INTEGER,
             data_entrega_medicamento: Sequelize.DATEONLY,
             qtd_caixas: Sequelize.INTEGER,
-            matricula: Sequelize.STRING, // Adicionado aqui
+            matricula: Sequelize.STRING, 
+            email: Sequelize.STRING,
+            termo_data_aceite: Sequelize.DATE,
+            termo_ip: Sequelize.STRING,
+            termo_user_agent: Sequelize.STRING,
+            termo_versao: Sequelize.STRING,
         },{
             sequelize,
             tableName: 'pacientes',
