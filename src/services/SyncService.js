@@ -12,7 +12,7 @@ const formatarCelularWhatsapp = (numero) => {
 
 class PacienteSyncService {
 
-   async syncPacientes(pacientesExternos, userId) {
+    async syncPacientes(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
 
@@ -23,23 +23,23 @@ class PacienteSyncService {
                 // ============================================================
 
                 // 1. Verifica se o array 'treatmentTypes' do paciente possui o ID 4
-                const hasTreatmentType4 = extPatient.treatmentTypes && 
-                    Array.isArray(extPatient.treatmentTypes) && 
+                const hasTreatmentType4 = extPatient.treatmentTypes &&
+                    Array.isArray(extPatient.treatmentTypes) &&
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
 
                 // 2. Busca ESPECIFICAMENTE um evento de compra (2) com medicamento tipo 4 E recebido (1)
                 const validPurchaseEvent = extPatient.events && Array.isArray(extPatient.events)
-                    ? extPatient.events.find(e => 
-                        String(e.eventtype_id) === '2' && 
-                        String(e.medicament_received) === '1' && 
-                        e.medicament && 
+                    ? extPatient.events.find(e =>
+                        String(e.eventtype_id) === '2' &&
+                        String(e.medicament_received) === '1' &&
+                        e.medicament &&
                         String(e.medicament.treatment_types_id) === '4'
                     )
                     : null;
 
                 // 3. Verifica se a operadora é a FUNDAÇÃO LIBERTAS (bloqueio de sync)
-                const isFundacaoLibertas = extPatient.company && 
-                    extPatient.company.name && 
+                const isFundacaoLibertas = extPatient.company &&
+                    extPatient.company.name &&
                     String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
 
                 // Se não passou no filtro geral, não tem evento válido, ou a operadora bloqueada
@@ -77,7 +77,7 @@ class PacienteSyncService {
                         } else {
                             operadora = await Operadora.create({
                                 external_id: extPatient.company.id || null,
-                                nome: nameOperadora, 
+                                nome: nameOperadora,
                                 cnpj: '00000000000000',
                                 telefone: '00000000000',
                                 email: [],
@@ -92,13 +92,16 @@ class PacienteSyncService {
                 // ==========================================
                 let medicamento_id = null;
                 let type_tratment_med = 4;
-                
+
                 // Pegamos o medicamento ESTRITAMENTE do evento de compra que validamos!
                 let extMed = validPurchaseEvent.medicament;
                 let eventPrice = validPurchaseEvent.price || null;
-                
+                let fornecedorExtraido = validPurchaseEvent.prices && validPurchaseEvent.prices.company
+                    ? validPurchaseEvent.prices.company.name
+                    : null;
+
                 if (extMed) {
-                    let medicamento = null; 
+                    let medicamento = null;
 
                     if (extMed.id && type_tratment_med === 3) {
                         medicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
@@ -133,9 +136,11 @@ class PacienteSyncService {
                         tipo_dosagem: tipoDosagemFormatado,
                         apresentacao: extMed.apresentation,
                         via_administracao: extMed.way_administration,
+                        fornecedor: extMed.supplier,
                         tipo_matmed: extMed.typematmed,
                         tipo_medicamento: extMed.type_medicament,
-                        price: eventPrice ? parseFloat(eventPrice) : null
+                        price: eventPrice ? parseFloat(eventPrice) : null,
+                        fornecedor: fornecedorExtraido
                     };
 
                     if (medicamento) {
@@ -158,12 +163,12 @@ class PacienteSyncService {
 
                 // Extrai a data de entrega estritamente do evento que validamos
                 let dateDeliveryExtraido = validPurchaseEvent.administration_date_prev || null;
-                
+
                 // 👇 NOVO: Extrai a quantidade de caixas compradas no evento
                 let qtdCaixasExtraida = validPurchaseEvent.qtd_medicament ? parseInt(validPurchaseEvent.qtd_medicament, 10) : 1;
 
-                
-                const dadosPaciente = { 
+
+                const dadosPaciente = {
                     external_id: extPatient.id || null,
                     matricula: extPatient.matriculation || null,
                     nome: primeiroNome.toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
