@@ -6,6 +6,7 @@ import { gerarPdfTermoNavegacao } from '../../utils/gerarTermoPdf.js';
 import TermosHistorico from '../models/TermosHistorico.js';
 import path from 'path';
 import Mail from '../../services/Mail.js';
+import PacienteTermoAnexo from '../models/PacienteTermoAnexo.js';
 
 class TermoController {
 
@@ -148,60 +149,74 @@ class TermoController {
     // Acessado publicamente pelo paciente clicando no link
 
     async answerTerm(req, res) {
-        const { id } = req.params;
-        const { aceite } = req.body; // boolean
+    const { id } = req.params;
+    const { aceite } = req.body; // boolean
 
-        try {
-            const paciente = await Pacientes.findByPk(id);
+    try {
+        const paciente = await Pacientes.findByPk(id);
 
-            if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
-            }
-
-            // Atualiza os dados principais
-            paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
-
-            let pdfSalvoPath = null;
-            const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-            const userAgent = req.headers['user-agent'];
-
-            if (aceite) {
-                // Gera o PDF e salva fisicamente no servidor (uploads/anexos)
-                pdfSalvoPath = await gerarPdfTermoNavegacao(paciente);
-
-                // Grava os rastros no cadastro do paciente
-                paciente.termo_data_aceite = new Date();
-                paciente.termo_ip = ip;
-                paciente.termo_user_agent = userAgent;
-                paciente.termo_versao = '1.0';
-            } else {
-                paciente.termo_data_aceite = null;
-                paciente.termo_ip = null;
-                paciente.termo_user_agent = null;
-                paciente.termo_versao = null;
-            }
-
-            await paciente.save();
-
-            // Salva o registro imutável na tabela de histórico
-            await TermosHistorico.create({
-                paciente_id: paciente.id,
-                status: paciente.status_termo,
-                arquivo_path: pdfSalvoPath ? path.basename(pdfSalvoPath) : null,
-                ip: ip,
-                user_agent: userAgent
-            });
-
-            return res.json({ 
-                message: 'Resposta registrada com sucesso', 
-                status_termo: paciente.status_termo,
-                termo_data_aceite: paciente.termo_data_aceite // ✅ NOVO: Retorna a data
-            });
-        } catch (error) {
-            console.error(error);
-            return res.status(500).json({ error: 'Erro ao processar resposta' });
+        if (!paciente) {
+            return res.status(404).json({ error: 'Paciente não encontrado' });
         }
+
+        // Atualiza os dados principais
+        paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
+
+        let pdfSalvoPath = null;
+        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        const userAgent = req.headers['user-agent'];
+
+        if (aceite) {
+            // Gera o PDF e salva fisicamente no servidor (uploads/anexos)
+            pdfSalvoPath = await gerarPdfTermoNavegacao(paciente);
+
+            // Grava os rastros no cadastro do paciente
+            paciente.termo_data_aceite = new Date();
+            paciente.termo_ip = ip;
+            paciente.termo_user_agent = userAgent;
+            paciente.termo_versao = '1.0';
+        } else {
+            paciente.termo_data_aceite = null;
+            paciente.termo_ip = null;
+            paciente.termo_user_agent = null;
+            paciente.termo_versao = null;
+        }
+
+        await paciente.save();
+
+        // Salva o registro imutável na tabela de histórico
+        await TermosHistorico.create({
+            paciente_id: paciente.id,
+            status: paciente.status_termo,
+            arquivo_path: pdfSalvoPath ? path.basename(pdfSalvoPath) : null,
+            ip: ip,
+            user_agent: userAgent
+        });
+
+        // =================================================================
+        // 👇 NOVO: GRAVAÇÃO AUTOMÁTICA NA TABELA 'paciente_termos_anexos'
+        // =================================================================
+        if (aceite && pdfSalvoPath) {
+            const nomeArquivo = path.basename(pdfSalvoPath);
+            
+            await PacienteTermoAnexo.create({
+                paciente_id: paciente.id,
+                arquivo_path: nomeArquivo,
+                nome_original: `Termo_Navegacao_${paciente.nome.trim().replace(/\s+/g, '_')}.pdf`
+            });
+        }
+        // =================================================================
+
+        return res.json({ 
+            message: 'Resposta registrada com sucesso', 
+            status_termo: paciente.status_termo,
+            termo_data_aceite: paciente.termo_data_aceite
+        });
+    } catch (error) {
+        console.error(error);
+        return res.status(500).json({ error: 'Erro ao processar resposta' });
     }
+}
 
     async verifyResponse(req, res) {
         const { id } = req.params;

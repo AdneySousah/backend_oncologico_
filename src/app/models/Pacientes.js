@@ -46,6 +46,7 @@ class Pacientes extends Model {
         this.belongsTo(models.Medicamentos, { foreignKey: 'medicamento_id', as: 'medicamento' }); // Nova relação
         this.hasMany(models.PacientesAnexos, { foreignKey: 'paciente_id', as: 'anexos' });
         this.hasMany(models.PatientEvaluation, { foreignKey: 'paciente_id', as: 'avaliacoes' });
+        this.hasMany(models.PacienteTermoAnexo, { foreignKey: 'paciente_id', as: 'termos_anexos' });
     }
 }
 

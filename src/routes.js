@@ -35,7 +35,7 @@ import NpsController from "./app/controllers/NpsController.js";
 import NpsHealthController from "./app/controllers/NpsHealthController.js";
 import ChatController from "./app/controllers/ChatController.js";
 import FaturamentoController from "./app/controllers/FaturamentoController.js";
-
+import PacienteTermoAnexoController from './app/controllers/PacienteTermoAnexoController.js';
 
 
 
@@ -57,6 +57,9 @@ router.post('/nps/paciente/:paciente_id/atendimento/:monitoramento_id/responder'
 router.post('/webhooks/twilio/whatsapp', ChatController.receiveWebhook);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
+
+router.post('/pacientes/:paciente_id/termos-anexos', upload.single('file'), PacienteTermoAnexoController.store);
+
 router.get('/pacientes/:id', TermoController.verifyResponse);
 router.get('/termos/paciente/:id/preview-pdf', TermoController.previewPdf);
 
@@ -73,6 +76,7 @@ router.post('/reset-password', PasswordResetController.resetPassword);
 // ==========================================
 router.post('/users'/* , checkPermission('usuarios', 'editar') */, UserController.store);
 router.use(authMiddleware)
+
 
 
 // --- ROTAS DE USUÁRIOS E PERFIS ---
@@ -243,5 +247,8 @@ router.get('/chat/unread', checkPermission('chat', 'acessar'), ChatController.ge
 
 
 router.get('/faturamento', FaturamentoController.index);
+
+
+router.get('/termos-anexos/todos', PacienteTermoAnexoController.index);
 
 export default router;
