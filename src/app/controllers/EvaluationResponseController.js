@@ -200,7 +200,16 @@ class EvaluationResponseController {
         where: { paciente_id },
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['nome', 'sobrenome'] },
-          { model: EvaluationTemplate, as: 'template', attributes: ['title'] }
+          { model: EvaluationTemplate, as: 'template', attributes: ['title'] },
+         
+          {
+            model: EvaluationAnswer,
+            as: 'answers',
+            include: [
+              { model: EvaluationQuestion, as: 'question' },
+              { model: EvaluationOption, as: 'option' }
+            ]
+          }
         ],
         order: [['createdAt', 'DESC']]
       });

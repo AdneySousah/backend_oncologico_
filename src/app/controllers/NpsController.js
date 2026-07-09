@@ -248,5 +248,51 @@ class NpsController {
             return res.status(500).json({ error: 'Erro ao verificar paciente' });
         }
     }
+
+    /**
+     * INSERÇÃO MANUAL DE NPS (Atendente insere a nota relatada pelo paciente/cuidador)
+     */
+    async manualSubmit(req, res) {
+        const { paciente_id, monitoramento_id, nota, destino_tipo } = req.body;
+
+        try {
+            const paciente = await Pacientes.findByPk(paciente_id);
+
+            if (!paciente) {
+                return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+
+            const notaFinal = parseInt(nota);
+
+            if (isNaN(notaFinal) || notaFinal < 0 || notaFinal > 10) {
+                return res.status(400).json({ error: 'Nota inválida fornecida' });
+            }
+
+            // Registra a nota no banco
+            await NpsResponse.create({
+                paciente_id: paciente_id,
+                monitoramento_id: monitoramento_id,
+                nota: notaFinal
+            });
+
+            // Registra a ação no log de auditoria
+            const papelDestino = destino_tipo === 'cuidador' ? 'Cuidador/Responsável' : 'Paciente';
+            const mensagemLog = `Inseriu manualmente a nota NPS (${notaFinal}) referente ao ${papelDestino}.`;
+
+            await AuditService.log(
+                req.userId,
+                'Inserção Manual',
+                'NPS',
+                paciente.id,
+                mensagemLog
+            );
+
+            return res.json({ message: 'Nota registrada manualmente com sucesso!' });
+
+        } catch (error) {
+            console.error("Erro ao registrar NPS manual:", error);
+            return res.status(500).json({ error: 'Erro interno ao salvar nota manual' });
+        }
+    }
 }
 export default new NpsController();

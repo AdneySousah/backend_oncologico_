@@ -26,6 +26,7 @@ class DashboardController {
         aderenciaOpcoes: { chart: [], report: [] },
         fichaRam: { chart: [], report: [] },
         totalPacientes: { chart: [], report: [], total: 0 },
+        pacientesAtivos: { chart: [], report: [], total: 0 },
         pacientesMonitorados: { chart: [], report: [], total: 0 },
         pacientesElegiveis: { chart: [], report: [], total: 0 },
         nps: { chart: [], report: [] },
@@ -50,7 +51,7 @@ class DashboardController {
       }
 
       // =========================================================
-      // DADOS GERAIS DE PACIENTES (Lista Base para todos os relatórios)
+      // DADOS GERAIS DE PACIENTES (Buscamos todos)
       // =========================================================
       const pacientes = await Pacientes.findAll({
         attributes: ['id', 'nome', 'sobrenome', 'status_termo', 'is_active', 'createdAt'],
@@ -58,43 +59,57 @@ class DashboardController {
         where: { ...includePacienteWhere, ...dateFilterCreatedAt }
       });
 
-      // Lista base formatada que usaremos para fazer o "Left Join" nos relatórios
-      const basePatientsList = pacientes.map(p => ({
+      // Separação: Todos vs Apenas Ativos
+      const pacientesAtivos = pacientes.filter(p => p.is_active);
+
+      // Lista base com APENAS os pacientes ativos para os relatórios padrão
+      const basePatientsListActive = pacientesAtivos.map(p => ({
         paciente_id: p.id,
         nome_paciente: `${p.nome} ${p.sobrenome || ''}`.trim(),
         operadora: p.operadoras?.nome || 'N/A',
-        data_registro_paciente: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+        data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
       }));
 
-      let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0 };
+      // =========================================================
+      // INDICADOR 1: TOTAL DE PACIENTES (Usa TODOS os pacientes)
+      // =========================================================
       let ativosCount = 0, inativosCount = 0;
-      let elegiveisCount = 0, naoElegiveisCount = 0;
-
-      let termosReport = [];
       let totalPacientesReport = [];
-      let elegiveisReport = [];
 
       pacientes.forEach(p => {
-        const statusTermo = p.status_termo || 'Pendente';
         const isAtivo = p.is_active;
-        const nomeOperadora = p.operadoras?.nome || 'N/A';
-        const nomeCompleto = `${p.nome} ${p.sobrenome || ''}`.trim();
-
-        if (termosCount[statusTermo] !== undefined) termosCount[statusTermo]++;
-        if (statusTermo === 'Aceito') elegiveisCount++; else naoElegiveisCount++;
         if (isAtivo) ativosCount++; else inativosCount++;
 
+        totalPacientesReport.push({
+          paciente_id: p.id,
+          nome_paciente: `${p.nome} ${p.sobrenome || ''}`.trim(),
+          operadora: p.operadoras?.nome || 'N/A',
+          data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A',
+          status_ativo: isAtivo ? 'Ativo' : 'Inativo'
+        });
+      });
+
+      // =========================================================
+      // TERMOS E ELEGÍVEIS (Usa APENAS pacientes ativos)
+      // =========================================================
+      let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0 };
+      let elegiveisCount = 0, naoElegiveisCount = 0;
+      let termosReport = [];
+      let elegiveisReport = [];
+
+      pacientesAtivos.forEach(p => {
+        const statusTermo = p.status_termo || 'Pendente';
         const baseReport = {
           paciente_id: p.id,
-          nome_paciente: nomeCompleto,
-          operadora: nomeOperadora,
+          nome_paciente: `${p.nome} ${p.sobrenome || ''}`.trim(),
+          operadora: p.operadoras?.nome || 'N/A',
           data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
         };
 
+        if (termosCount[statusTermo] !== undefined) termosCount[statusTermo]++;
+        if (statusTermo === 'Aceito') elegiveisCount++; else naoElegiveisCount++;
+
         termosReport.push({ ...baseReport, status_termo: statusTermo });
-        totalPacientesReport.push({ ...baseReport, status_ativo: isAtivo ? 'Ativo' : 'Inativo' });
-        
-        // AGORA TODOS ENTRAM NO RELATÓRIO DE ELEGÍVEIS COM SIM/NÃO
         elegiveisReport.push({ 
           ...baseReport, 
           status_elegibilidade: statusTermo === 'Aceito' ? 'Sim (Termo Aceito)' : `Não (${statusTermo})` 
@@ -124,8 +139,7 @@ class DashboardController {
       const naoMonitorados = ativosCount - totalMonitorados;
 
       let monitoradosReport = [];
-      // Mapeando contra TODOS os pacientes para ter Sim/Não
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         const isMonitored = monitoradosMap.has(bp.paciente_id);
         monitoradosReport.push({
           ...bp,
@@ -135,11 +149,11 @@ class DashboardController {
       });
 
       // =========================================================
-      // 2. Pontuação de aderência por categoria (Template)
+      // PONTUAÇÃO DE ADERÊNCIA POR CATEGORIA (Apenas Ativos)
       // =========================================================
       const avaliacoes = await PatientEvaluation.findAll({
         include: [
-          { model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id'] },
+          { model: Pacientes, as: 'paciente', where: { ...includePacienteWhere, is_active: true }, attributes: ['id'] },
           { model: EvaluationTemplate, as: 'template', attributes: ['title'] }
         ],
         where: { total_score: { [Op.not]: null }, ...dateFilterCreatedAt }
@@ -147,8 +161,7 @@ class DashboardController {
 
       let categoriasMap = {};
       let adesaoAlta = 0, adesaoMedia = 0, adesaoBaixa = 0;
-      
-      let avaliacoesData = {}; // Agrupar avaliações por paciente
+      let avaliacoesData = {}; 
 
       avaliacoes.forEach(av => {
         const categoria = av.template?.title || 'Sem Categoria';
@@ -181,24 +194,23 @@ class DashboardController {
       let adesaoScoreReport = [];
       let categoriaReport = [];
 
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         if (avaliacoesData[bp.paciente_id]) {
           avaliacoesData[bp.paciente_id].forEach(av => {
             adesaoScoreReport.push({ ...bp, score_total: av.score_total, nivel_classificado: av.nivel_classificado, data_avaliacao: av.data_avaliacao });
             categoriaReport.push({ ...bp, categoria: av.categoria, score: av.score_total, data_avaliacao: av.data_avaliacao });
           });
         } else {
-          // Se não tem avaliação, exporta todos com status vazio/N/A
           adesaoScoreReport.push({ ...bp, score_total: 'N/A', nivel_classificado: 'Sem Avaliação', data_avaliacao: 'N/A' });
           categoriaReport.push({ ...bp, categoria: 'Sem Avaliação', score: 'N/A', data_avaliacao: 'N/A' });
         }
       });
 
       // =========================================================
-      // 4. % Nível de Aderência (Opções do MonitoramentoMedicamento)
+      // NÍVEL DE ADERÊNCIA (Apenas Ativos)
       // =========================================================
       const monitoramentosAderencia = await MonitoramentoMedicamento.findAll({
-        include: [{ model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id'] }],
+        include: [{ model: Pacientes, as: 'paciente', where: { ...includePacienteWhere, is_active: true }, attributes: ['id'] }],
         where: { nivel_adesao: { [Op.not]: null }, status: 'CONCLUIDO', ...dateFilter }
       });
 
@@ -217,7 +229,7 @@ class DashboardController {
       });
 
       let aderenciaOpcoesReport = [];
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         if (aderenciaMapData[bp.paciente_id]) {
           aderenciaMapData[bp.paciente_id].forEach(ad => aderenciaOpcoesReport.push({ ...bp, ...ad }));
         } else {
@@ -226,11 +238,11 @@ class DashboardController {
       });
 
       // =========================================================
-      // 5. Quantidade de pacientes por Ficha RAM
+      // FICHAS RAM (Apenas Ativos) + Correção de data_registro
       // =========================================================
       const monitoramentosRam = await MonitoramentoMedicamento.findAll({
         include: [
-          { model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id'] },
+          { model: Pacientes, as: 'paciente', where: { ...includePacienteWhere, is_active: true }, attributes: ['id'] },
           { model: ReacaoAdversa, as: 'reacoesAdversas', attributes: ['name'], required: true }
         ],
         where: { is_reacao: true, ...dateFilter }
@@ -249,7 +261,8 @@ class DashboardController {
             if (!ramPatientData[mon.paciente_id]) ramPatientData[mon.paciente_id] = [];
             ramPatientData[mon.paciente_id].push({
               reacao_adversa: reacao,
-              data_registro_ram: mon.updatedAt ? mon.updatedAt.toLocaleDateString('pt-BR') : 'N/A'
+              // CORREÇÃO: Propriedade agora se chama data_registro para dar match com o export do frontend
+              data_registro: mon.updatedAt ? mon.updatedAt.toLocaleDateString('pt-BR') : 'N/A'
             });
           });
         }
@@ -260,19 +273,19 @@ class DashboardController {
       })).sort((a, b) => b.value - a.value).slice(0, 10);
 
       let ramReport = [];
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         if (ramPatientData[bp.paciente_id]) {
           ramPatientData[bp.paciente_id].forEach(ram => ramReport.push({ ...bp, ...ram }));
         } else {
-          ramReport.push({ ...bp, reacao_adversa: 'Nenhuma Reação', data_registro_ram: 'N/A' });
+          ramReport.push({ ...bp, reacao_adversa: 'Nenhuma Reação', data_registro: 'N/A' });
         }
       });
 
       // =========================================================
-      // 6. NPS - ÍNDICE DE SATISFAÇÃO
+      // NPS - ÍNDICE DE SATISFAÇÃO (Apenas Ativos)
       // =========================================================
       const npsResponses = await NpsResponse.findAll({
-        include: [{ model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id'] }],
+        include: [{ model: Pacientes, as: 'paciente', where: { ...includePacienteWhere, is_active: true }, attributes: ['id'] }],
         where: { ...dateFilterCreatedAt },
         order: [['createdAt', 'DESC']]
       });
@@ -291,7 +304,7 @@ class DashboardController {
       });
 
       let npsReport = [];
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         if (npsPatientData[bp.paciente_id]) {
           npsPatientData[bp.paciente_id].forEach(nps => npsReport.push({ ...bp, ...nps }));
         } else {
@@ -300,7 +313,7 @@ class DashboardController {
       });
 
       // =========================================================
-      // 7. HISTÓRICO DE TROCA DE MEDICAMENTOS
+      // HISTÓRICO DE TROCA DE MEDICAMENTOS (Apenas Ativos)
       // =========================================================
       let dateFilterTroca = {};
       if (data_inicio && data_fim) {
@@ -309,7 +322,7 @@ class DashboardController {
 
       const trocasMedicamentos = await HistoricoTrocaMedicamento.findAll({
         include: [
-          { model: Pacientes, as: 'paciente', where: includePacienteWhere, attributes: ['id'] },
+          { model: Pacientes, as: 'paciente', where: { ...includePacienteWhere, is_active: true }, attributes: ['id'] },
           { model: Medicamentos, as: 'medicamentoAntigo', attributes: ['nome'] },
           { model: Medicamentos, as: 'medicamentoNovo', attributes: ['nome'] }
         ],
@@ -329,7 +342,7 @@ class DashboardController {
       });
 
       let historicoTrocasReport = [];
-      basePatientsList.forEach(bp => {
+      basePatientsListActive.forEach(bp => {
         if (trocasPatientData[bp.paciente_id]) {
           trocasPatientData[bp.paciente_id].forEach(troca => historicoTrocasReport.push({ ...bp, ...troca }));
         } else {
@@ -338,7 +351,7 @@ class DashboardController {
       });
 
       // =========================================================
-      // REGISTRO DE AUDITORIA COM NOME DA OPERADORA
+      // REGISTRO DE AUDITORIA
       // =========================================================
       let nomeOperadoraLog = 'Cic Oncologia (Todas)';
       const idParaBuscar = operadora_id || (permission.whereClause && permission.whereClause.operadora_id);
@@ -350,8 +363,6 @@ class DashboardController {
         });
         if (operadoraBusca) nomeOperadoraLog = operadoraBusca.nome;
       }
-
-      console.log(`Auditoria -> Operadora: ${nomeOperadoraLog} | Usuário: ${req.userId}`);
 
       await AuditService.log(
         req.userId,
@@ -372,6 +383,13 @@ class DashboardController {
             { name: 'Inativos', value: inativosCount }
           ],
           report: totalPacientesReport
+        },
+        pacientesAtivos: { // NOVO INDICADOR
+          total: ativosCount,
+          chart: [
+            { name: 'Ativos', value: ativosCount }
+          ],
+          report: basePatientsListActive
         },
         pacientesMonitorados: {
           total: totalMonitorados,

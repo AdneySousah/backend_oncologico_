@@ -48,9 +48,10 @@ const uploadAnexos = multer(multerConfigAnexos);
 router.post('/session', SessionController.store)
 /* router.post('/nps/resposta', NpsController.registerResponse); */
 
-
+router.post('/nps/manual',  NpsController.manualSubmit); // <-- ADICIONE ESTA LINHA
 router.get('/nps/paciente/:paciente_id/atendimento/:monitoramento_id', NpsController.verifyNpsPatient);
 router.post('/nps/paciente/:paciente_id/atendimento/:monitoramento_id/responder', NpsController.answerNps);
+
 
 
 /* rota publica chat ativo */
@@ -213,9 +214,18 @@ router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timelin
 router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
 
 
+// Rotas de sincronização em tempo real do evento atual
+router.get('/monitoramento-medicamentos/:id/verificar-sincronizacao-atual', MonitoramentoMedicamentoController.verificarSincronizacaoAtual);
+router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', MonitoramentoMedicamentoController.confirmarSincronizacaoAtual);
 router.get('/monitoramento-medicamentos/:id/verificar-compra', MonitoramentoMedicamentoController.verificarNovaCompra);
 router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.informarDataAdministracao);
 router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
+
+// Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
+router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);
+
+// Edição retroativa de um contato já concluído
+router.put('/monitoramento-medicamentos/:id/edicao-retroativa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.updateRetroativo);
 
 /* Rotas de ficha ram */
 router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.store);

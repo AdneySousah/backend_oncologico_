@@ -11,6 +11,7 @@ import AuditService from '../../services/AuditService.js';
 import User from '../models/User.js'; // Ajuste o caminho de pastas conforme sua estrutura se necessário
 import axios from 'axios';
 import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
+import ReacaoAdversa from '../models/ReacaoAdversa.js';
 
 const obterProximoDiaUtil = (dataBase) => {
   const proximoDia = addDays(dataBase, 1);
@@ -733,6 +734,440 @@ class MonitoramentoMedicamentoController {
       return res.status(500).json({ error: 'Erro ao verificar nova compra.', details: error.message });
     }
   }
+
+  async sincronizarEventoAtual(req, res) {
+    const { id } = req.params;
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'external_id'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'external_id', 'qtd_capsula'] }
+        ]
+      });
+
+      if (!monitoramento || !monitoramento.evento_externo_id || !monitoramento.paciente.external_id) {
+        return res.json({ atualizado: false });
+      }
+
+      const currentUser = await User.findByPk(req.userId);
+      if (!currentUser || !currentUser.external_token) {
+        return res.status(401).json({ error: 'Token externo não encontrado.' });
+      }
+
+      const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+      const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
+
+      let extPatient = null;
+      let currentPage = 1;
+      let lastPage = 1;
+
+      // Busca paginada do paciente externo
+      do {
+        const response = await axios.get(`${baseUrl}&page=${currentPage}`, { headers });
+        const resData = response.data;
+        const pacs = resData.data || resData;
+
+        extPatient = pacs.find(p => String(p.id) === String(monitoramento.paciente.external_id));
+
+        if (extPatient) break;
+
+        lastPage = (resData.meta && resData.meta.last_page) ? resData.meta.last_page : 1;
+        currentPage++;
+      } while (currentPage <= lastPage);
+
+      if (!extPatient || !extPatient.events || !Array.isArray(extPatient.events)) {
+        return res.json({ atualizado: false });
+      }
+
+      // Encontra o evento específico que gerou este monitoramento
+      const currentEvent = extPatient.events.find(e => String(e.id) === String(monitoramento.evento_externo_id));
+
+      if (!currentEvent) {
+        return res.json({ atualizado: false });
+      }
+
+      let houveMudanca = false;
+      let novoMedicamentoId = monitoramento.medicamento_id;
+      let novaQtdCaixas = currentEvent.qtd_medicament ? parseInt(currentEvent.qtd_medicament, 10) : monitoramento.qtd_caixas;
+      let novaQtdCapsulaPorCaixa = monitoramento.medicamento.qtd_capsula || 0;
+
+      const extMed = currentEvent.medicament;
+      
+      // 1. Verifica se o medicamento mudou ou precisa ser atualizado localmente
+      if (extMed) {
+        if (String(extMed.id) !== String(monitoramento.medicamento.external_id)) {
+          houveMudanca = true;
+          
+          let novoMedicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
+          if (!novoMedicamento && extMed.tusscode) {
+            novoMedicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
+          }
+
+          let qtdCapsulaExtraida = null;
+          if (extMed.dosage) {
+            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+            if (apenasNumeros) qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+          }
+
+          const medData = {
+            external_id: extMed.id || null,
+            codigo_tuss: extMed.tusscode || null,
+            nome: extMed.name,
+            nome_comercial: extMed.commercial_name,
+            principio_ativo: extMed.active_principle,
+            qtd_capsula: qtdCapsulaExtraida,
+            dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
+            apresentacao: extMed.apresentation,
+            via_administracao: extMed.way_administration,
+            tipo_matmed: extMed.typematmed,
+            tipo_medicamento: extMed.type_medicament
+          };
+
+          if (novoMedicamento) {
+            await novoMedicamento.update(medData);
+          } else {
+            novoMedicamento = await Medicamentos.create(medData);
+          }
+
+          novoMedicamentoId = novoMedicamento.id;
+          novaQtdCapsulaPorCaixa = novoMedicamento.qtd_capsula || 0;
+        } else {
+          // Mesmo medicamento, mas vamos ver se a dosagem (cápsulas) mudou silenciosamente no outro sistema
+          let qtdCapsulaExtraida = monitoramento.medicamento.qtd_capsula;
+          if (extMed.dosage) {
+            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+            if (apenasNumeros && parseInt(apenasNumeros, 10) !== monitoramento.medicamento.qtd_capsula) {
+              qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+              houveMudanca = true;
+              await monitoramento.medicamento.update({ qtd_capsula: qtdCapsulaExtraida });
+              novaQtdCapsulaPorCaixa = qtdCapsulaExtraida;
+            }
+          }
+        }
+      }
+
+      // 2. Verifica se a quantidade de caixas compradas mudou
+      if (novaQtdCaixas !== monitoramento.qtd_caixas) {
+        houveMudanca = true;
+      }
+
+      // Se nada mudou, encerra e avisa o frontend
+      if (!houveMudanca) {
+        return res.json({ atualizado: false });
+      }
+
+      // Recalcula os totais
+      const novaQtdTotalCapsulas = novaQtdCapsulaPorCaixa * novaQtdCaixas;
+      
+      let novaDataFimCaixa = monitoramento.data_calculada_fim_caixa;
+      if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
+        const diasDuracao = Math.floor(novaQtdTotalCapsulas / monitoramento.posologia_diaria);
+        const baseDate = monitoramento.data_administracao || monitoramento.data_entrega || monitoramento.createdAt;
+        novaDataFimCaixa = addDays(new Date(baseDate), diasDuracao);
+      }
+
+      // Salva no banco
+      await monitoramento.update({
+        medicamento_id: novoMedicamentoId,
+        qtd_caixas: novaQtdCaixas,
+        qtd_total_capsulas: novaQtdTotalCapsulas,
+        data_calculada_fim_caixa: novaDataFimCaixa
+      });
+
+      // Recarrega o objeto completo com as associações para devolver pro frontend
+      const monitoramentoAtualizado = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }
+        ]
+      });
+
+      return res.json({ 
+        atualizado: true, 
+        monitoramento: monitoramentoAtualizado 
+      });
+
+    } catch (error) {
+      console.error("ERRO AO SINCRONIZAR EVENTO ATUAL:", error);
+      return res.status(500).json({ error: 'Erro ao sincronizar evento atual', details: error.message });
+    }
+  }
+
+  async verificarSincronizacaoAtual(req, res) {
+    const { id } = req.params;
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'external_id'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'external_id', 'nome', 'qtd_capsula'] }
+        ]
+      });
+
+      if (!monitoramento || !monitoramento.evento_externo_id || !monitoramento.paciente.external_id) {
+        return res.json({ requiresConfirmation: false });
+      }
+
+      const currentUser = await User.findByPk(req.userId);
+      if (!currentUser || !currentUser.external_token) {
+        return res.status(401).json({ error: 'Token externo não encontrado.' });
+      }
+
+      const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+      const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
+
+      let extPatient = null;
+      let currentPage = 1;
+      let lastPage = 1;
+
+      do {
+        const response = await axios.get(`${baseUrl}&page=${currentPage}`, { headers });
+        const resData = response.data;
+        const pacs = resData.data || resData;
+
+        extPatient = pacs.find(p => String(p.id) === String(monitoramento.paciente.external_id));
+        if (extPatient) break;
+
+        lastPage = (resData.meta && resData.meta.last_page) ? resData.meta.last_page : 1;
+        currentPage++;
+      } while (currentPage <= lastPage);
+
+      if (!extPatient || !extPatient.events || !Array.isArray(extPatient.events)) {
+        return res.json({ requiresConfirmation: false });
+      }
+
+      const currentEvent = extPatient.events.find(e => String(e.id) === String(monitoramento.evento_externo_id));
+
+      if (!currentEvent) {
+        return res.json({ requiresConfirmation: false });
+      }
+
+      let mudouMedicamento = false;
+      let mudouQtd = false;
+      let novoMedicamentoId = monitoramento.medicamento_id;
+      let novoMedicamentoNome = monitoramento.medicamento.nome;
+      let novaQtdCaixas = currentEvent.qtd_medicament ? parseInt(currentEvent.qtd_medicament, 10) : monitoramento.qtd_caixas;
+      let novaQtdCapsulaPorCaixa = monitoramento.medicamento.qtd_capsula || 0;
+
+      const extMed = currentEvent.medicament;
+      
+      if (extMed) {
+        if (String(extMed.id) !== String(monitoramento.medicamento.external_id)) {
+          mudouMedicamento = true;
+          
+          let novoMedicamento = await Medicamentos.findOne({ where: { external_id: extMed.id } });
+          if (!novoMedicamento && extMed.tusscode) {
+            novoMedicamento = await Medicamentos.findOne({ where: { codigo_tuss: extMed.tusscode } });
+          }
+
+          let qtdCapsulaExtraida = null;
+          if (extMed.dosage) {
+            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+            if (apenasNumeros) qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+          }
+
+          const medData = {
+            external_id: extMed.id || null,
+            codigo_tuss: extMed.tusscode || null,
+            nome: extMed.name,
+            nome_comercial: extMed.commercial_name,
+            principio_ativo: extMed.active_principle,
+            qtd_capsula: qtdCapsulaExtraida,
+            dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
+            apresentacao: extMed.apresentation,
+            via_administracao: extMed.way_administration,
+            tipo_matmed: extMed.typematmed,
+            tipo_medicamento: extMed.type_medicament
+          };
+
+          if (novoMedicamento) {
+            await novoMedicamento.update(medData);
+          } else {
+            novoMedicamento = await Medicamentos.create(medData);
+          }
+
+          novoMedicamentoId = novoMedicamento.id;
+          novoMedicamentoNome = novoMedicamento.nome;
+          novaQtdCapsulaPorCaixa = novoMedicamento.qtd_capsula || 0;
+        } else {
+          // Mesmo medicamento, verifica se mudou só a quantidade de cápsulas na caixa no sistema externo
+          let qtdCapsulaExtraida = monitoramento.medicamento.qtd_capsula;
+          if (extMed.dosage) {
+            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+            if (apenasNumeros && parseInt(apenasNumeros, 10) !== monitoramento.medicamento.qtd_capsula) {
+              qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
+              mudouQtd = true;
+              await monitoramento.medicamento.update({ qtd_capsula: qtdCapsulaExtraida });
+              novaQtdCapsulaPorCaixa = qtdCapsulaExtraida;
+            }
+          }
+        }
+      }
+
+      if (novaQtdCaixas !== monitoramento.qtd_caixas) {
+        mudouQtd = true;
+      }
+
+      if (mudouMedicamento || mudouQtd) {
+        return res.json({
+          requiresConfirmation: true,
+          details: {
+            medicamentoAntigo: monitoramento.medicamento.nome,
+            medicamentoNovo: novoMedicamentoNome,
+            novoMedicamentoId: novoMedicamentoId,
+            qtdCaixasAntiga: monitoramento.qtd_caixas,
+            qtdCaixasNova: novaQtdCaixas,
+            novaQtdCapsulaPorCaixa: novaQtdCapsulaPorCaixa,
+            mudouMedicamento: mudouMedicamento
+          }
+        });
+      }
+
+      return res.json({ requiresConfirmation: false });
+
+    } catch (error) {
+      console.error("ERRO AO VERIFICAR SINCRONIZAÇÃO ATUAL:", error);
+      return res.status(500).json({ error: 'Erro ao verificar sincronização atual', details: error.message });
+    }
+  }
+
+
+  async confirmarSincronizacaoAtual(req, res) {
+    const { id } = req.params;
+    const { novo_medicamento_id, nova_qtd_caixas, nova_qtd_capsula_por_caixa, mudou_medicamento } = req.body;
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id);
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado' });
+
+      const novaQtdTotalCapsulas = nova_qtd_capsula_por_caixa * nova_qtd_caixas;
+      
+      const updateData = {
+        medicamento_id: novo_medicamento_id,
+        qtd_caixas: nova_qtd_caixas,
+        qtd_total_capsulas: novaQtdTotalCapsulas
+      };
+
+      // Se o medicamento mudou, zeramos a data de administração.
+      // Isso forçará o frontend a exibir o <PreMonitoramento> pedindo a nova data de início do ciclo!
+      if (mudou_medicamento) {
+        updateData.data_administracao = null;
+      }
+
+      // Recalcula a data fim caixa provisória
+      if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
+        const diasDuracao = Math.floor(novaQtdTotalCapsulas / monitoramento.posologia_diaria);
+        const baseDate = updateData.data_administracao === null ? monitoramento.data_entrega : (monitoramento.data_administracao || monitoramento.data_entrega);
+        updateData.data_calculada_fim_caixa = addDays(new Date(baseDate), diasDuracao);
+      }
+
+      await monitoramento.update(updateData);
+
+      const monitoramentoAtualizado = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
+          { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
+        ]
+      });
+
+      return res.json({ monitoramento: monitoramentoAtualizado });
+    } catch (error) {
+      console.error("ERRO AO APLICAR SINCRONIZAÇÃO ATUAL:", error);
+      return res.status(500).json({ error: 'Erro ao aplicar atualização no monitoramento' });
+    }
+  }
+
+  async show(req, res) {
+    const { id } = req.params;
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] },
+          { 
+            model: ReacaoAdversa, 
+            as: 'reacoesAdversas', // 👈 CORREÇÃO: Usando o camelCase exato que o Sequelize pediu
+            through: { attributes: [] }
+          }
+        ]
+      });
+
+      if (!monitoramento) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
+
+      // 👈 Converte a resposta do banco para JSON e cria a chave no padrão 
+      // snake_case para não termos que alterar nada lá no React
+      const resposta = monitoramento.toJSON();
+      resposta.reacoes_adversas = resposta.reacoesAdversas; 
+
+      return res.json(resposta);
+    } catch (error) {
+      console.error("ERRO AO BUSCAR MONITORAMENTO:", error);
+      return res.status(500).json({ error: 'Erro ao buscar detalhes do monitoramento.', details: error.message });
+    }
+  }
+
+  async updateRetroativo(req, res) {
+    const schema = Yup.object().shape({
+      qtd_informada_caixa: Yup.number().integer().nullable(),
+      is_reacao: Yup.boolean().nullable(),
+      reacoes_adversas: Yup.array().of(Yup.number().integer()).nullable(),
+      observacao: Yup.string().nullable()
+    });
+
+    try {
+      await schema.validate(req.body, { abortEarly: false });
+    } catch (err) {
+      return res.status(400).json({ error: 'Falha na validação', messages: err.inner });
+    }
+
+    const { id } = req.params;
+    const { qtd_informada_caixa, is_reacao, reacoes_adversas, observacao } = req.body;
+
+    try {
+      const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id);
+
+      if (!monitoramentoAtual) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
+
+      if (monitoramentoAtual.status !== 'CONCLUIDO') {
+        return res.status(400).json({ error: 'Apenas monitoramentos já concluídos podem sofrer edição retroativa.' });
+      }
+
+      // Atualiza os dados básicos
+      await monitoramentoAtual.update({
+        qtd_informada_caixa,
+        is_reacao,
+        observacao
+      });
+
+      // Atualiza a tabela pivô de reações adversas
+      if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
+        await monitoramentoAtual.setReacoesAdversas(reacoes_adversas);
+      } else {
+        await monitoramentoAtual.setReacoesAdversas([]);
+      }
+
+      // Dispara o log de auditoria explícito para edição de histórico
+      await AuditService.log(
+        req.userId, 
+        'Edição Retroativa', 
+        'Monitoramento', 
+        monitoramentoAtual.id, 
+        `Editou informações de um telemonitoramento passado (ID: ${monitoramentoAtual.id}).`
+      );
+
+      return res.json({ message: 'Histórico de contato atualizado com sucesso!' });
+    } catch (error) {
+      console.error("ERRO NA EDIÇÃO RETROATIVA:", error);
+      return res.status(500).json({ error: 'Erro ao atualizar histórico de contato', details: error.message });
+    }
+  }
+
 
 }
 
