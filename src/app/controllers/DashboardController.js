@@ -94,6 +94,11 @@ class DashboardController {
         data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
       }));
 
+      // NOVA LINHA: Criar lista apenas com quem aceitou o termo para ser base do monitoramento
+      const basePatientsListElegiveis = basePatientsListActive.filter(p =>
+        elegiveisIds.includes(p.paciente_id)
+      );
+
       // INDICADOR: PACIENTES SINCRONIZADOS (Antigo Ativos)
       let ativosCount = 0;
       pacientesCadastro.forEach(p => {
@@ -123,7 +128,7 @@ class DashboardController {
       const monitoramentos = await MonitoramentoMedicamento.findAll({
         attributes: ['paciente_id', 'updatedAt'],
         where: {
-          paciente_id: { [Op.in]: safeActiveIds },
+          paciente_id: { [Op.in]: safeElegiveisIds }, // <-- TROCADO PARA safeElegiveisIds
           status: 'CONCLUIDO',
           contato_efetivo: true,
           ...dateFilterUpdatedAt
@@ -138,10 +143,12 @@ class DashboardController {
       });
 
       const totalMonitorados = monitoradosMap.size;
-      const naoMonitorados = basePatientsListActive.length - totalMonitorados;
+      // <-- TROCADO PARA basePatientsListElegiveis
+      const naoMonitorados = basePatientsListElegiveis.length - totalMonitorados;
 
       let monitoradosReport = [];
-      basePatientsListActive.forEach(bp => {
+      // <-- TROCADO PARA basePatientsListElegiveis
+      basePatientsListElegiveis.forEach(bp => {
         const isMonitored = monitoradosMap.has(bp.paciente_id);
         monitoradosReport.push({
           ...bp,
@@ -265,7 +272,7 @@ class DashboardController {
         }
       });
 
-      
+
       const monitoramentosRam = await MonitoramentoMedicamento.findAll({
         include: [{
           model: ReacaoAdversa,
