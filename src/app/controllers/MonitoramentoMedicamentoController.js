@@ -314,7 +314,9 @@ class MonitoramentoMedicamentoController {
         data_abertura_nova_caixa,
         is_reacao,
         status: 'CONCLUIDO',
-        observacao
+        observacao,
+        // 👇 Registra a data/hora exata em que o contato foi efetivado
+        data_telemonitoramento_efetivado: new Date()
       });
 
       if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {

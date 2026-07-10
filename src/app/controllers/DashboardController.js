@@ -39,7 +39,7 @@ class DashboardController {
       let includePacienteWhere = { ...permission.whereClause };
 
       // 2. CRIANDO OS FILTROS DE DATA HÍBRIDOS
-      let dateFilterUpdatedAt = {};
+      let dateFilterEfetivado = {}; // Substituiu o dateFilterUpdatedAt
       let dateFilterCreatedAt = {};
       let dateFilterTroca = {};
 
@@ -50,7 +50,8 @@ class DashboardController {
         start = new Date(`${data_inicio}T00:00:00.000Z`);
         end = new Date(`${data_fim}T23:59:59.999Z`);
 
-        dateFilterUpdatedAt.updatedAt = { [Op.between]: [start, end] };
+        // 👇 Agora filtra baseado na data em que o atendimento de fato aconteceu
+        dateFilterEfetivado.data_telemonitoramento_efetivado = { [Op.between]: [start, end] };
         dateFilterCreatedAt.createdAt = { [Op.between]: [start, end] };
         dateFilterTroca.data_troca = { [Op.between]: [data_inicio, data_fim] };
 
@@ -94,7 +95,6 @@ class DashboardController {
         data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
       }));
 
-      // NOVA LINHA: Criar lista apenas com quem aceitou o termo para ser base do monitoramento
       const basePatientsListElegiveis = basePatientsListActive.filter(p =>
         elegiveisIds.includes(p.paciente_id)
       );
@@ -105,9 +105,9 @@ class DashboardController {
         if (p.is_active) ativosCount++;
       });
 
-      // STATUS DOS TERMOS (Agora visualmente "Pacientes Elegíveis")
+      // STATUS DOS TERMOS
       let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0 };
-      let elegiveisCount = 0; // Mantido apenas para cálculo interno de "Sem Avaliação"
+      let elegiveisCount = 0; 
       let termosReport = [];
 
       pacientesAtivosTermo.forEach(p => {
@@ -124,30 +124,35 @@ class DashboardController {
         });
       });
 
-      // PACIENTES MONITORADOS
+      // ==========================================
+      // PACIENTES MONITORADOS (CORRIGIDO A DATA)
+      // ==========================================
       const monitoramentos = await MonitoramentoMedicamento.findAll({
-        attributes: ['paciente_id', 'updatedAt'],
+        attributes: ['paciente_id', 'data_telemonitoramento_efetivado'], // 👇 Nova coluna
         where: {
-          paciente_id: { [Op.in]: safeElegiveisIds }, // <-- TROCADO PARA safeElegiveisIds
+          paciente_id: { [Op.in]: safeElegiveisIds },
           status: 'CONCLUIDO',
           contato_efetivo: true,
-          ...dateFilterUpdatedAt
+          ...dateFilterEfetivado // 👇 Filtro novo
         }
       });
 
       let monitoradosMap = new Map();
       monitoramentos.forEach(mon => {
         if (!monitoradosMap.has(mon.paciente_id)) {
-          monitoradosMap.set(mon.paciente_id, mon.updatedAt ? mon.updatedAt.toLocaleDateString('pt-BR') : 'N/A');
+          monitoradosMap.set(
+            mon.paciente_id, 
+            mon.data_telemonitoramento_efetivado 
+              ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') 
+              : 'N/A'
+          );
         }
       });
 
       const totalMonitorados = monitoradosMap.size;
-      // <-- TROCADO PARA basePatientsListElegiveis
       const naoMonitorados = basePatientsListElegiveis.length - totalMonitorados;
 
       let monitoradosReport = [];
-      // <-- TROCADO PARA basePatientsListElegiveis
       basePatientsListElegiveis.forEach(bp => {
         const isMonitored = monitoradosMap.has(bp.paciente_id);
         monitoradosReport.push({
@@ -227,16 +232,18 @@ class DashboardController {
         }
       });
 
-      // NÍVEL DE ADERÊNCIA
+      // ==========================================
+      // NÍVEL DE ADERÊNCIA (CORRIGIDO A DATA E ORDENAÇÃO)
+      // ==========================================
       const monitoramentosAderencia = await MonitoramentoMedicamento.findAll({
-        attributes: ['paciente_id', 'nivel_adesao', 'updatedAt'],
+        attributes: ['paciente_id', 'nivel_adesao', 'data_telemonitoramento_efetivado'], // 👇
         where: {
-          paciente_id: { [Op.in]: safeElegiveisIds }, // <-- 1. TROQUE safeActiveIds POR safeElegiveisIds
+          paciente_id: { [Op.in]: safeElegiveisIds },
           nivel_adesao: { [Op.not]: null },
           status: 'CONCLUIDO',
-          ...dateFilterUpdatedAt
+          ...dateFilterEfetivado // 👇
         },
-        order: [['updatedAt', 'DESC']]
+        order: [['data_telemonitoramento_efetivado', 'DESC']] // 👇
       });
 
       let aderenciaOpcoesCount = { COMPLETAMENTE: 0, PARCIALMENTE: 0, NAO_ADERE: 0 };
@@ -256,7 +263,9 @@ class DashboardController {
 
         aderenciaMapData[mon.paciente_id].push({
           nivel_adesao_informado: nivel ? nivel.replace('_', ' ') : 'Não Informado',
-          data_monitoramento: mon.updatedAt ? mon.updatedAt.toLocaleDateString('pt-BR') : 'N/A'
+          data_monitoramento: mon.data_telemonitoramento_efetivado // 👇
+            ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') 
+            : 'N/A'
         });
       });
 
@@ -264,8 +273,6 @@ class DashboardController {
       if (aderenciaPendente < 0) aderenciaPendente = 0;
 
       let aderenciaOpcoesReport = [];
-      
-      // <-- 2. TROQUE basePatientsListActive POR basePatientsListElegiveis
       basePatientsListElegiveis.forEach(bp => { 
         if (aderenciaMapData[bp.paciente_id]) {
           aderenciaMapData[bp.paciente_id].forEach(ad => aderenciaOpcoesReport.push({ ...bp, ...ad }));
@@ -282,13 +289,12 @@ class DashboardController {
           attributes: ['name'],
           required: true,
           through: {
-            attributes: ['createdAt'] // Aqui o mapeamento automático funciona no SELECT
+            attributes: ['createdAt'] 
           }
         }],
         where: {
           paciente_id: { [Op.in]: safeActiveIds },
           is_reacao: true,
-          // Alterado para buscar diretamente a coluna física 'created_at' no banco
           ...(start && end ? {
             '$reacoesAdversas.monitoramento_reacoes_adversas.created_at$': { [Op.between]: [start, end] }
           } : {})
@@ -302,8 +308,6 @@ class DashboardController {
         if (mon.reacoesAdversas && mon.reacoesAdversas.length > 0) {
           mon.reacoesAdversas.forEach(reacaoObj => {
             const reacao = reacaoObj.name;
-
-            // O Sequelize agrupa os campos da tabela pivô em um objeto com o mesmo nome da tabela intermediária
             const dataCriacaoRam = reacaoObj.monitoramento_reacoes_adversas?.createdAt;
 
             if (!ramChartMap[reacao]) ramChartMap[reacao] = new Set();
