@@ -231,7 +231,7 @@ class DashboardController {
       const monitoramentosAderencia = await MonitoramentoMedicamento.findAll({
         attributes: ['paciente_id', 'nivel_adesao', 'updatedAt'],
         where: {
-          paciente_id: { [Op.in]: safeActiveIds },
+          paciente_id: { [Op.in]: safeElegiveisIds }, // <-- 1. TROQUE safeActiveIds POR safeElegiveisIds
           nivel_adesao: { [Op.not]: null },
           status: 'CONCLUIDO',
           ...dateFilterUpdatedAt
@@ -264,7 +264,9 @@ class DashboardController {
       if (aderenciaPendente < 0) aderenciaPendente = 0;
 
       let aderenciaOpcoesReport = [];
-      basePatientsListActive.forEach(bp => {
+      
+      // <-- 2. TROQUE basePatientsListActive POR basePatientsListElegiveis
+      basePatientsListElegiveis.forEach(bp => { 
         if (aderenciaMapData[bp.paciente_id]) {
           aderenciaMapData[bp.paciente_id].forEach(ad => aderenciaOpcoesReport.push({ ...bp, ...ad }));
         } else {
