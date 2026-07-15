@@ -11,6 +11,8 @@ import AuditService from '../../services/AuditService.js';
 import axios from 'axios';
 import PacienteSyncService from '../../services/SyncService.js';
 import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
+import EventosPaciente from '../models/EventosPaciente.js';
+
 
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
@@ -241,7 +243,10 @@ class PacientesController {
     // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE
     // =========================================================================
 
-   async checkSync(req, res) {
+   // =========================================================================
+    // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE (ATUALIZADO PARA EVENTOS)
+    // =========================================================================
+    async checkSync(req, res) {
         try {
             const currentUser = await User.findByPk(req.userId);
 
@@ -277,51 +282,58 @@ class PacientesController {
                 }
             }
 
-            // ============================================================
-            // FILTRO DE NAVEGAÇÃO ONCOLÓGICA EXCLUSIVA ATUALIZADO (RIGOROSO)
-            // ============================================================
-            const pacientesValidosParaSync = todosPacientesExternos.filter(extPatient => {
-                
-                // 1. Verifica no array principal
+            const externalEventIds = [];
+            const externalPatientIds = [];
+
+            // Varre os pacientes e extrai TODOS os IDs de eventos válidos
+            todosPacientesExternos.forEach(extPatient => {
                 const hasTreatmentType4 = extPatient.treatmentTypes && 
                     Array.isArray(extPatient.treatmentTypes) && 
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
-            
-                // 2. O paciente TEM que ter um evento de compra (2) cujo medicamento seja tipo 4 E recebido (1)
-                const hasValidPurchaseEventWithMed = extPatient.events && 
-                    Array.isArray(extPatient.events) && 
-                    extPatient.events.some(e => 
+
+                const isFundacaoLibertas = extPatient.company && 
+                    extPatient.company.name && 
+                    String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
+
+                if (hasTreatmentType4 && !isFundacaoLibertas) {
+                    const validEvents = extPatient.events && Array.isArray(extPatient.events) ? extPatient.events.filter(e => 
                         String(e.eventtype_id) === '2' && 
                         String(e.medicament_received) === '1' && 
                         e.medicament && 
                         String(e.medicament.treatment_types_id) === '4'
-                    );
+                    ) : [];
 
-                // 3. Verifica se a operadora é a FUNDAÇÃO LIBERTAS (bloqueio de sync)
-                const isFundacaoLibertas = extPatient.company && 
-                    extPatient.company.name && 
-                    String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
-            
-                return hasTreatmentType4 && hasValidPurchaseEventWithMed && !isFundacaoLibertas;
+                    if (validEvents.length > 0) {
+                        externalPatientIds.push(String(extPatient.id));
+                        validEvents.forEach(e => externalEventIds.push(String(e.id)));
+                    }
+                }
             });
 
-            const externalIds = pacientesValidosParaSync.map(p => String(p.id));
-
+            // Busca IDs que já temos no banco local (Pacientes)
             const pacientesLocais = await Pacientes.findAll({
                 attributes: ['external_id'],
                 where: { external_id: { [Op.not]: null } }
             });
+            const localPatientIds = pacientesLocais.map(p => String(p.external_id));
 
-            const localIds = pacientesLocais.map(p => String(p.external_id));
+            // Busca IDs que já temos no banco local (Eventos)
+            const eventosLocais = await EventosPaciente.findAll({
+                attributes: ['external_id'],
+                where: { external_id: { [Op.not]: null } }
+            });
+            const localEventIds = eventosLocais.map(e => String(e.external_id));
 
-            const pendentes = externalIds.filter(id => !localIds.includes(id));
+            // Calcula quem está faltando
+            const pacientesPendentes = externalPatientIds.filter(id => !localPatientIds.includes(id));
+            const eventosPendentes = externalEventIds.filter(id => !localEventIds.includes(id));
 
-            console.log(`[CHECK SYNC] Externos: ${externalIds.length} | Locais: ${localIds.length} | Pendentes: ${pendentes.length}`);
+            console.log(`[CHECK SYNC] Pacientes Pendentes: ${pacientesPendentes.length} | Eventos Pendentes: ${eventosPendentes.length}`);
 
+            // Retorna para o front-end a soma de pacientes novos + eventos novos de pacientes antigos
             return res.json({
-                pendentes: pendentes.length,
-                total_externo: externalIds.length,
-                total_local: localIds.length
+                pendentes: pacientesPendentes.length + eventosPendentes.length,
+                total_externo: externalPatientIds.length
             });
 
         } catch (err) {

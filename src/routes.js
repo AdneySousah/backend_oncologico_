@@ -215,6 +215,7 @@ router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedica
 
 
 // Rotas de sincronização em tempo real do evento atual
+router.get('/monitoramento-medicamentos/:id/historico-compras', MonitoramentoMedicamentoController.historicoCompras);
 router.get('/monitoramento-medicamentos/:id/verificar-sincronizacao-atual', MonitoramentoMedicamentoController.verificarSincronizacaoAtual);
 router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', MonitoramentoMedicamentoController.confirmarSincronizacaoAtual);
 router.get('/monitoramento-medicamentos/:id/verificar-compra', MonitoramentoMedicamentoController.verificarNovaCompra);

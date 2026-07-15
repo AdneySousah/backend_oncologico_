@@ -3,7 +3,6 @@ import Medicamentos from '../models/Medicamentos.js';
 import Pacientes from '../models/Pacientes.js';
 import Operadora from '../models/Operadora.js';
 import { Op } from 'sequelize';
-import { startOfDay, endOfDay, parseISO } from 'date-fns';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 
 class FaturamentoController {
@@ -17,7 +16,6 @@ class FaturamentoController {
         comissao_percentual = 0
       } = req.query;
 
-      // 1. Aplica a regra de permissão
       const permission = await getOperadoraFilter(req.userId, operadora_id);
 
       if (!permission.authorized) {
@@ -25,18 +23,19 @@ class FaturamentoController {
         return res.status(permission.status).json({ error: permission.error });
       }
 
-      // 2. Filtros de Data de Administração (Obrigatório para faturamento)
+      // 1. REGRA DE NEGÓCIO: Faturamento baseado na Administração
       let monitoramentoWhere = {
         data_administracao: { [Op.not]: null }
       };
 
       if (data_inicio && data_fim) {
+        // No Postgres, passar a string YYYY-MM-DD direto no between é a forma 
+        // mais segura de evitar que o Sequelize injete fusos horários errados na query.
         monitoramentoWhere.data_administracao = {
-          [Op.between]: [startOfDay(parseISO(data_inicio)), endOfDay(parseISO(data_fim))]
+          [Op.between]: [data_inicio, data_fim] 
         };
       }
 
-      // 3. Filtro de Busca (Nome do Paciente)
       let pacienteWhere = { ...permission.whereClause };
       if (search) {
         const termosPesquisa = search.trim().split(/\s+/);
@@ -50,7 +49,6 @@ class FaturamentoController {
         pacienteWhere = { ...pacienteWhere, [Op.and]: condicoesBusca };
       }
 
-      // 4. Busca todos os registros elegíveis no período
       const monitoramentos = await MonitoramentoMedicamento.findAll({
         where: monitoramentoWhere,
         include: [
@@ -65,27 +63,23 @@ class FaturamentoController {
           {
             model: Medicamentos,
             as: 'medicamento',
-            attributes: ['id', 'nome', 'price','codigo_tuss','fornecedor'], // Supondo que 'price' seja o preço unitário
+            attributes: ['id', 'nome', 'price','codigo_tuss','fornecedor'], 
             required: true
           }
         ],
         order: [['data_administracao', 'ASC']]
       });
 
-      // 5. Regra de Negócio: Deduplicar paciente + medicamento no mês
       const mapDeduplicacao = new Map();
 
       monitoramentos.forEach(item => {
         const chaveUnica = `${item.paciente_id}-${item.medicamento_id}`;
-        // Se o paciente ainda não apareceu com este medicamento neste período, adicionamos
         if (!mapDeduplicacao.has(chaveUnica)) {
           mapDeduplicacao.set(chaveUnica, item);
         }
       });
 
       const registrosUnicos = Array.from(mapDeduplicacao.values());
-
-      // 6. Formatação final e cálculos de comissão
       const taxaComissao = parseFloat(comissao_percentual) / 100;
       let totalGeralFaturado = 0;
       let totalGeralComissao = 0;
@@ -107,8 +101,8 @@ class FaturamentoController {
           operadora: registro.paciente.operadoras?.nome || 'Sem Operadora',
           codigo_tuss: registro.medicamento.codigo_tuss || 'Sem TUSS',
           medicamento: registro.medicamento.nome,
-          fornecedor: 'Não Informado', // Substitua caso tenha relação de fornecedor no DB
-          data_administracao: registro.data_administracao,
+          fornecedor: 'Não Informado', 
+          data_administracao: registro.data_administracao, // REGRA APLICADA AQUI
           quantidade: quantidade,
           preco_unitario: precoUnitario,
           preco_total: precoTotal,

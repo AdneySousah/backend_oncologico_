@@ -6,6 +6,7 @@ import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
 import Operadora from '../models/Operadora.js';
 import NpsResponse from '../models/NpsResponse.js';
+import EventosPaciente from '../models/EventosPaciente.js';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
 import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
@@ -37,20 +38,17 @@ class DashboardController {
       }
 
       let includePacienteWhere = { ...permission.whereClause };
-
-      // 2. CRIANDO OS FILTROS DE DATA HÍBRIDOS
-      let dateFilterEfetivado = {}; // Substituiu o dateFilterUpdatedAt
+      let dateFilterEfetivado = {};
       let dateFilterCreatedAt = {};
       let dateFilterTroca = {};
-
       let start = null;
       let end = null;
 
       if (data_inicio && data_fim) {
-        start = new Date(`${data_inicio}T00:00:00.000Z`);
-        end = new Date(`${data_fim}T23:59:59.999Z`);
+        // CORREÇÃO DE FUSO HORÁRIO APLICADA AQUI (-03:00)
+        start = new Date(`${data_inicio}T00:00:00.000-03:00`);
+        end = new Date(`${data_fim}T23:59:59.999-03:00`);
 
-        // 👇 Agora filtra baseado na data em que o atendimento de fato aconteceu
         dateFilterEfetivado.data_telemonitoramento_efetivado = { [Op.between]: [start, end] };
         dateFilterCreatedAt.createdAt = { [Op.between]: [start, end] };
         dateFilterTroca.data_troca = { [Op.between]: [data_inicio, data_fim] };
@@ -61,21 +59,31 @@ class DashboardController {
         ];
       }
 
+      // ====================================================================
+      // REGRA DE NEGÓCIO: PACIENTES SINCRONIZADOS (ONBOARDING COM COALESCE)
+      // ====================================================================
+      // 1. Busca os pacientes que tiveram qualquer evento na janela de tempo informada
+      const todosEventos = await EventosPaciente.findAll({
+        attributes: ['paciente_id'],
+        group: ['paciente_id'],
+        raw: true
+      });
+
+      const pacientesEntrantesNoPeriodo = new Set(todosEventos.map(e => e.paciente_id));
+
       // DADOS GERAIS DE PACIENTES
       const pacientes = await Pacientes.findAll({
         attributes: ['id', 'nome', 'sobrenome', 'status_termo', 'is_active', 'createdAt', 'termo_data_aceite'],
         include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }],
-        where: includePacienteWhere
+        where: { ...permission.whereClause }
       });
 
-      const pacientesCadastro = pacientes.filter(p => {
-        if (!start || !end) return true;
-        return p.createdAt >= start && p.createdAt <= end;
-      });
+      const pacientesCadastro = pacientes.filter(p => pacientesEntrantesNoPeriodo.has(p.id));
 
       const pacientesTermos = pacientes.filter(p => {
         if (!start || !end) return true;
         if (p.status_termo === 'Aceito') {
+          if (!p.termo_data_aceite) return false;
           return p.termo_data_aceite >= start && p.termo_data_aceite <= end;
         }
         return p.createdAt >= start && p.createdAt <= end;
@@ -95,25 +103,22 @@ class DashboardController {
         data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
       }));
 
-      const basePatientsListElegiveis = basePatientsListActive.filter(p =>
-        elegiveisIds.includes(p.paciente_id)
-      );
+      const basePatientsListElegiveis = basePatientsListActive.filter(p => elegiveisIds.includes(p.paciente_id));
 
-      // INDICADOR: PACIENTES SINCRONIZADOS (Antigo Ativos)
-      let ativosCount = 0;
-      pacientesCadastro.forEach(p => {
-        if (p.is_active) ativosCount++;
-      });
-
-      // STATUS DOS TERMOS
+      // ==========================================
+      // STATUS DOS TERMOS E CONTAGEM DE ELEGÍVEIS
+      // ==========================================
       let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0 };
-      let elegiveisCount = 0; 
+      let elegiveisCount = 0;
       let termosReport = [];
 
       pacientesAtivosTermo.forEach(p => {
         const statusTermo = p.status_termo || 'Pendente';
         if (termosCount[statusTermo] !== undefined) termosCount[statusTermo]++;
-        if (statusTermo === 'Aceito') elegiveisCount++;
+
+        if (statusTermo === 'Aceito') {
+          elegiveisCount++;
+        }
 
         termosReport.push({
           paciente_id: p.id,
@@ -125,27 +130,40 @@ class DashboardController {
       });
 
       // ==========================================
-      // PACIENTES MONITORADOS (CORRIGIDO A DATA)
+      // INDICADOR: PACIENTES SINCRONIZADOS
+      // ==========================================
+      let ativosCount = 0;
+      const basePatientsListSincronizados = [];
+
+      pacientesCadastro.forEach(p => {
+        if (p.is_active) {
+          ativosCount++;
+          basePatientsListSincronizados.push({
+            paciente_id: p.id,
+            nome_paciente: `${p.nome} ${p.sobrenome || ''}`.trim(),
+            operadora: p.operadoras?.nome || 'N/A',
+            data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+          });
+        }
+      });
+
+      // ==========================================
+      // PACIENTES MONITORADOS
       // ==========================================
       const monitoramentos = await MonitoramentoMedicamento.findAll({
-        attributes: ['paciente_id', 'data_telemonitoramento_efetivado'], // 👇 Nova coluna
+        attributes: ['paciente_id', 'data_telemonitoramento_efetivado'],
         where: {
           paciente_id: { [Op.in]: safeElegiveisIds },
           status: 'CONCLUIDO',
           contato_efetivo: true,
-          ...dateFilterEfetivado // 👇 Filtro novo
+          ...dateFilterEfetivado
         }
       });
 
       let monitoradosMap = new Map();
       monitoramentos.forEach(mon => {
         if (!monitoradosMap.has(mon.paciente_id)) {
-          monitoradosMap.set(
-            mon.paciente_id, 
-            mon.data_telemonitoramento_efetivado 
-              ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') 
-              : 'N/A'
-          );
+          monitoradosMap.set(mon.paciente_id, mon.data_telemonitoramento_efetivado ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') : 'N/A');
         }
       });
 
@@ -165,11 +183,7 @@ class DashboardController {
       // PONTUAÇÃO DE ADERÊNCIA / ADESÃO SCORE
       const avaliacoes = await PatientEvaluation.findAll({
         include: [{ model: EvaluationTemplate, as: 'template', attributes: ['title'] }],
-        where: {
-          paciente_id: { [Op.in]: safeElegiveisIds },
-          total_score: { [Op.not]: null },
-          ...dateFilterCreatedAt
-        },
+        where: { paciente_id: { [Op.in]: safeElegiveisIds }, total_score: { [Op.not]: null }, ...dateFilterCreatedAt },
         order: [['createdAt', 'DESC']]
       });
 
@@ -202,9 +216,7 @@ class DashboardController {
         }
 
         avaliacoesData[av.paciente_id].push({
-          categoria: categoria,
-          score_total: score,
-          nivel_classificado: nivel,
+          categoria: categoria, score_total: score, nivel_classificado: nivel,
           data_avaliacao: av.createdAt ? av.createdAt.toLocaleDateString('pt-BR') : 'N/A'
         });
       });
@@ -213,8 +225,7 @@ class DashboardController {
       if (semAvaliacao < 0) semAvaliacao = 0;
 
       const aderenciaCategoriaChart = Object.keys(categoriasMap).map(key => ({
-        name: key,
-        value: Number((categoriasMap[key].total / categoriasMap[key].count).toFixed(2))
+        name: key, value: Number((categoriasMap[key].total / categoriasMap[key].count).toFixed(2))
       }));
 
       let adesaoScoreReport = [];
@@ -233,17 +244,17 @@ class DashboardController {
       });
 
       // ==========================================
-      // NÍVEL DE ADERÊNCIA (CORRIGIDO A DATA E ORDENAÇÃO)
+      // NÍVEL DE ADERÊNCIA
       // ==========================================
       const monitoramentosAderencia = await MonitoramentoMedicamento.findAll({
-        attributes: ['paciente_id', 'nivel_adesao', 'data_telemonitoramento_efetivado'], // 👇
+        attributes: ['paciente_id', 'nivel_adesao', 'data_telemonitoramento_efetivado'],
         where: {
           paciente_id: { [Op.in]: safeElegiveisIds },
           nivel_adesao: { [Op.not]: null },
           status: 'CONCLUIDO',
-          ...dateFilterEfetivado // 👇
+          ...dateFilterEfetivado
         },
-        order: [['data_telemonitoramento_efetivado', 'DESC']] // 👇
+        order: [['data_telemonitoramento_efetivado', 'DESC']]
       });
 
       let aderenciaOpcoesCount = { COMPLETAMENTE: 0, PARCIALMENTE: 0, NAO_ADERE: 0 };
@@ -252,7 +263,6 @@ class DashboardController {
 
       monitoramentosAderencia.forEach(mon => {
         const nivel = mon.nivel_adesao;
-
         if (!aderenciaMapData[mon.paciente_id]) {
           aderenciaMapData[mon.paciente_id] = [];
           if (!pacientesComAderencia.has(mon.paciente_id)) {
@@ -260,12 +270,9 @@ class DashboardController {
             if (aderenciaOpcoesCount[nivel] !== undefined) aderenciaOpcoesCount[nivel]++;
           }
         }
-
         aderenciaMapData[mon.paciente_id].push({
           nivel_adesao_informado: nivel ? nivel.replace('_', ' ') : 'Não Informado',
-          data_monitoramento: mon.data_telemonitoramento_efetivado // 👇
-            ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') 
-            : 'N/A'
+          data_monitoramento: mon.data_telemonitoramento_efetivado ? mon.data_telemonitoramento_efetivado.toLocaleDateString('pt-BR') : 'N/A'
         });
       });
 
@@ -273,7 +280,7 @@ class DashboardController {
       if (aderenciaPendente < 0) aderenciaPendente = 0;
 
       let aderenciaOpcoesReport = [];
-      basePatientsListElegiveis.forEach(bp => { 
+      basePatientsListElegiveis.forEach(bp => {
         if (aderenciaMapData[bp.paciente_id]) {
           aderenciaMapData[bp.paciente_id].forEach(ad => aderenciaOpcoesReport.push({ ...bp, ...ad }));
         } else {
@@ -282,77 +289,138 @@ class DashboardController {
       });
 
 
+      // ==========================================
+      // FICHAS RAM
+      // ==========================================
+      let ramWhere = {
+        paciente_id: { [Op.in]: safeActiveIds },
+        status: 'CONCLUIDO',
+        contato_efetivo: true
+      };
+
+      // Se houver filtro de data, busca por monitoramentos do período OU reações do período
+      if (start && end) {
+        ramWhere[Op.or] = [
+          { data_telemonitoramento_efetivado: { [Op.between]: [start, end] } },
+          { '$reacoesAdversas.monitoramento_reacoes_adversas.created_at$': { [Op.between]: [start, end] } }
+        ];
+      }
+
       const monitoramentosRam = await MonitoramentoMedicamento.findAll({
         include: [{
-          model: ReacaoAdversa,
-          as: 'reacoesAdversas',
-          attributes: ['name'],
-          required: true,
-          through: {
-            attributes: ['createdAt'] 
-          }
+          model: ReacaoAdversa, as: 'reacoesAdversas', attributes: ['name'], required: false,
+          through: { attributes: ['createdAt', 'created_at'] }
         }],
-        where: {
-          paciente_id: { [Op.in]: safeActiveIds },
-          is_reacao: true,
-          ...(start && end ? {
-            '$reacoesAdversas.monitoramento_reacoes_adversas.created_at$': { [Op.between]: [start, end] }
-          } : {})
-        }
+        where: ramWhere,
+        subQuery: false
       });
 
       let ramChartMap = {};
       let ramPatientData = {};
+      let monitoramentosSemReacao = 0;
 
       monitoramentosRam.forEach(mon => {
-        if (mon.reacoesAdversas && mon.reacoesAdversas.length > 0) {
+        if (!ramPatientData[mon.paciente_id]) {
+          ramPatientData[mon.paciente_id] = [];
+        }
+
+        let teveReacaoValidaNoPeriodo = false;
+
+        if (mon.is_reacao && mon.reacoesAdversas && mon.reacoesAdversas.length > 0) {
           mon.reacoesAdversas.forEach(reacaoObj => {
+            const dataCriacaoRamStr = reacaoObj.monitoramento_reacoes_adversas?.createdAt || reacaoObj.monitoramento_reacoes_adversas?.created_at;
+
+            // Verifica se a data DA REAÇÃO está dentro do período filtrado
+            if (start && end && dataCriacaoRamStr) {
+              const dataReacao = new Date(dataCriacaoRamStr);
+              if (dataReacao < start || dataReacao > end) {
+                return; // Pula esta reação específica, pois é de outro mês
+              }
+            }
+
+            teveReacaoValidaNoPeriodo = true;
             const reacao = reacaoObj.name;
-            const dataCriacaoRam = reacaoObj.monitoramento_reacoes_adversas?.createdAt;
 
             if (!ramChartMap[reacao]) ramChartMap[reacao] = new Set();
             ramChartMap[reacao].add(mon.paciente_id);
 
-            if (!ramPatientData[mon.paciente_id]) ramPatientData[mon.paciente_id] = [];
             ramPatientData[mon.paciente_id].push({
               reacao_adversa: reacao,
-              data_registro: dataCriacaoRam ? new Date(dataCriacaoRam).toLocaleDateString('pt-BR') : 'N/A'
+              data_registro: dataCriacaoRamStr ? new Date(dataCriacaoRamStr).toLocaleDateString('pt-BR') : 'N/A'
             });
           });
+        }
+
+        // Se a pessoa não teve reações no mês filtrado (ou todas foram puladas por serem de outro mês)
+        // Vamos verificar se o monitoramento em si ocorreu neste mês para contabilizar "Nenhuma Reação"
+        if (!teveReacaoValidaNoPeriodo) {
+          let monitoramentoNoPeriodo = true;
+
+          if (start && end && mon.data_telemonitoramento_efetivado) {
+            const dataMonitoramento = new Date(mon.data_telemonitoramento_efetivado);
+            if (dataMonitoramento < start || dataMonitoramento > end) {
+              monitoramentoNoPeriodo = false; // Monitoramento foi de outro mês
+            }
+          }
+
+          if (monitoramentoNoPeriodo) {
+            monitoramentosSemReacao++;
+            ramPatientData[mon.paciente_id].push({
+              reacao_adversa: 'Nenhuma Reação',
+              data_registro: mon.data_telemonitoramento_efetivado ? new Date(mon.data_telemonitoramento_efetivado).toLocaleDateString('pt-BR') : 'N/A'
+            });
+          }
         }
       });
 
       const fichaRamChart = Object.keys(ramChartMap).map(key => ({
         name: key, value: ramChartMap[key].size
-      })).sort((a, b) => b.value - a.value).slice(0, 10);
+      })).sort((a, b) => b.value - a.value);
+
+      if (monitoramentosSemReacao > 0) {
+        fichaRamChart.push({ name: 'Nenhuma Reação', value: monitoramentosSemReacao });
+      }
+
+      // ==========================================
+      // GERAÇÃO DO RELATÓRIO DA PLANILHA (FICHAS RAM)
+      // ==========================================
+      const dictPacientes = {};
+      pacientes.forEach(p => {
+        dictPacientes[p.id] = {
+          paciente_id: p.id,
+          nome_paciente: `${p.nome} ${p.sobrenome || ''}`.trim(),
+          operadora: p.operadoras?.nome || 'N/A',
+          data_registro: p.createdAt ? p.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+        };
+      });
 
       let ramReport = [];
-      basePatientsListActive.forEach(bp => {
-        if (ramPatientData[bp.paciente_id]) {
-          ramPatientData[bp.paciente_id].forEach(ram => ramReport.push({ ...bp, ...ram }));
-        } else {
-          ramReport.push({ ...bp, reacao_adversa: 'Nenhuma Reação', data_registro: 'N/A' });
+
+      Object.keys(ramPatientData).forEach(pacienteIdStr => {
+        const pId = Number(pacienteIdStr);
+        const dadosPaciente = dictPacientes[pId];
+
+        if (dadosPaciente && ramPatientData[pId].length > 0) {
+          ramPatientData[pId].forEach(ram => {
+            ramReport.push({ ...dadosPaciente, ...ram });
+          });
         }
       });
 
+      
       // NPS
       const npsResponses = await NpsResponse.findAll({
-        where: {
-          paciente_id: { [Op.in]: safeActiveIds },
-          ...dateFilterCreatedAt
-        },
+        where: { paciente_id: { [Op.in]: safeActiveIds }, ...dateFilterCreatedAt },
         order: [['createdAt', 'DESC']]
       });
 
       let npsChart = [];
       let npsPatientData = {};
-
       npsResponses.forEach(nps => {
         npsChart.push({ nota: nps.nota, paciente_id: nps.paciente_id });
         if (!npsPatientData[nps.paciente_id]) npsPatientData[nps.paciente_id] = [];
         npsPatientData[nps.paciente_id].push({
-          nota: nps.nota,
-          data_nps: nps.createdAt ? nps.createdAt.toLocaleDateString('pt-BR') : 'N/A'
+          nota: nps.nota, data_nps: nps.createdAt ? nps.createdAt.toLocaleDateString('pt-BR') : 'N/A'
         });
       });
 
@@ -365,21 +433,17 @@ class DashboardController {
         }
       });
 
-      // HISTORICO TROCAS
+      // HISTÓRICO TROCAS
       const trocasMedicamentos = await HistoricoTrocaMedicamento.findAll({
         include: [
           { model: Medicamentos, as: 'medicamentoAntigo', attributes: ['nome'] },
           { model: Medicamentos, as: 'medicamentoNovo', attributes: ['nome'] }
         ],
-        where: {
-          paciente_id: { [Op.in]: safeActiveIds },
-          ...dateFilterTroca
-        },
+        where: { paciente_id: { [Op.in]: safeActiveIds }, ...dateFilterTroca },
         order: [['data_troca', 'DESC']]
       });
 
       let trocasPatientData = {};
-
       trocasMedicamentos.forEach(troca => {
         if (!trocasPatientData[troca.paciente_id]) trocasPatientData[troca.paciente_id] = [];
         trocasPatientData[troca.paciente_id].push({
@@ -400,12 +464,8 @@ class DashboardController {
 
       let nomeOperadoraLog = 'Cic Oncologia (Todas)';
       const idParaBuscar = operadora_id || (permission.whereClause && permission.whereClause.operadora_id);
-
       if (idParaBuscar) {
-        const operadoraBusca = await Operadora.findOne({
-          where: { id: idParaBuscar },
-          attributes: ['nome']
-        });
+        const operadoraBusca = await Operadora.findOne({ where: { id: idParaBuscar }, attributes: ['nome'] });
         if (operadoraBusca) nomeOperadoraLog = operadoraBusca.nome;
       }
 
@@ -415,48 +475,17 @@ class DashboardController {
         pacientesSincronizados: {
           total: ativosCount,
           chart: [{ name: 'Ativos', value: ativosCount }],
-          report: basePatientsListActive
+          report: basePatientsListSincronizados
         },
-        pacientesMonitorados: {
-          total: totalMonitorados,
-          chart: [
-            { name: 'Monitorados', value: totalMonitorados },
-            { name: 'Não Monitorados', value: naoMonitorados < 0 ? 0 : naoMonitorados }
-          ],
-          report: monitoradosReport
-        },
-        termos: {
-          chart: [
-            { name: 'Aceito', value: termosCount.Aceito },
-            { name: 'Pendente', value: termosCount.Pendente },
-            { name: 'Recusado', value: termosCount.Recusado }
-          ],
-          report: termosReport
-        },
+        pacientesMonitorados: { total: totalMonitorados, chart: [{ name: 'Monitorados', value: totalMonitorados }, { name: 'Não Monitorados', value: naoMonitorados < 0 ? 0 : naoMonitorados }], report: monitoradosReport },
+        termos: { chart: [{ name: 'Aceito', value: termosCount.Aceito }, { name: 'Pendente', value: termosCount.Pendente }, { name: 'Recusado', value: termosCount.Recusado }], report: termosReport },
         aderenciaCategoria: { chart: aderenciaCategoriaChart, report: categoriaReport },
-        adesaoScore: {
-          chart: [
-            { name: 'Alta Adesão', value: adesaoAlta },
-            { name: 'Média Adesão', value: adesaoMedia },
-            { name: 'Baixa Adesão', value: adesaoBaixa },
-            { name: 'Sem Avaliação', value: semAvaliacao }
-          ],
-          report: adesaoScoreReport
-        },
-        aderenciaOpcoes: {
-          chart: [
-            { name: 'Completamente', value: aderenciaOpcoesCount.COMPLETAMENTE },
-            { name: 'Parcialmente', value: aderenciaOpcoesCount.PARCIALMENTE },
-            { name: 'Não Adere', value: aderenciaOpcoesCount.NAO_ADERE },
-            { name: 'Sem Registro', value: aderenciaPendente }
-          ],
-          report: aderenciaOpcoesReport
-        },
+        adesaoScore: { chart: [{ name: 'Alta Adesão', value: adesaoAlta }, { name: 'Média Adesão', value: adesaoMedia }, { name: 'Baixa Adesão', value: adesaoBaixa }, { name: 'Sem Avaliação', value: semAvaliacao }], report: adesaoScoreReport },
+        aderenciaOpcoes: { chart: [{ name: 'Completamente', value: aderenciaOpcoesCount.COMPLETAMENTE }, { name: 'Parcialmente', value: aderenciaOpcoesCount.PARCIALMENTE }, { name: 'Não Adere', value: aderenciaOpcoesCount.NAO_ADERE }, { name: 'Sem Registro', value: aderenciaPendente }], report: aderenciaOpcoesReport },
         fichaRam: { chart: fichaRamChart, report: ramReport },
         nps: { chart: npsChart, report: npsReport },
         historicoTrocas: { table: historicoTrocasReport, report: historicoTrocasReport }
       });
-
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: 'Erro ao gerar dados do dashboard', details: error.message });
