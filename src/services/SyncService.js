@@ -156,6 +156,9 @@ class PacienteSyncService {
                 // ==========================================
                 // PASSO 3: SINCRONIZAR O HISTÓRICO DE EVENTOS
                 // ==========================================
+                // ==========================================
+                // PASSO 3: SINCRONIZAR O HISTÓRICO DE EVENTOS E VINCULAR MEDICAMENTO
+                // ==========================================
                 for (const extEvent of eventosValidos) {
                     let extMed = extEvent.medicament;
                     let medicamentoEventoId = null;
@@ -221,6 +224,13 @@ class PacienteSyncService {
                         await eventoExistente.update(eventoData);
                     } else {
                         await EventosPaciente.create(eventoData);
+                    }
+
+                    // =========================================================
+                    // 🔥 CORREÇÃO: VINCULAR MEDICAMENTO AO PACIENTE
+                    // =========================================================
+                    if (medicamentoEventoId && paciente.medicamento_id !== medicamentoEventoId) {
+                        await paciente.update({ medicamento_id: medicamentoEventoId });
                     }
                 }
 
