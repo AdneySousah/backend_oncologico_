@@ -154,7 +154,6 @@ class MonitoramentoMedicamentoController {
   }
 
   async update(req, res) {
-    // [CÓDIGO ORIGINAL MANTIDO INTACTO POIS A LÓGICA DE DATAS ESTAVA CORRETA]
     const schema = Yup.object().shape({
       contato_efetivo: Yup.boolean().nullable(),
       nivel_adesao: Yup.string().oneOf(['COMPLETAMENTE', 'PARCIALMENTE', 'NAO_ADERE']).nullable(),
@@ -224,49 +223,9 @@ class MonitoramentoMedicamentoController {
         proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
         proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : parseISO(dados_nova_compra.data_novo_inicio);
 
-        let sobraNoDiaDoInicio = 0;
-        if (!dados_nova_compra.mudou_medicamento) {
-          if (contato_efetivo && qtd_informada_caixa != null) {
-            let dataFimEstimadaObj;
-            const dataInicioAtual = monitoramentoAtual.data_administracao || monitoramentoAtual.data_entrega;
-            const dataInicioAtualObj = dataInicioAtual ? new Date(dataInicioAtual) : new Date();
-            dataInicioAtualObj.setHours(0, 0, 0, 0);
-
-            const dataHoje = new Date(); dataHoje.setHours(0, 0, 0, 0);
-            const isAntesDoInicioBack = dataHoje < dataInicioAtualObj;
-
-            if (isAntesDoInicioBack) {
-              const diasAutonomia = qtd_informada_caixa / monitoramentoAtual.posologia_diaria;
-              dataFimEstimadaObj = new Date(dataInicioAtualObj.getTime());
-              dataFimEstimadaObj.setDate(dataFimEstimadaObj.getDate() + Math.floor(diasAutonomia));
-            } else {
-              const diasAutonomia = qtd_informada_caixa / monitoramentoAtual.posologia_diaria;
-              dataFimEstimadaObj = new Date(dataHoje.getTime());
-              dataFimEstimadaObj.setDate(dataFimEstimadaObj.getDate() + Math.floor(diasAutonomia));
-            }
-
-            const dataInicioNova = new Date(proximaDataAdministracao.getTime());
-            dataInicioNova.setHours(0, 0, 0, 0);
-            const diffDays = (dataInicioNova - dataFimEstimadaObj) / (1000 * 60 * 60 * 24);
-
-            if (diffDays <= 0) {
-              sobraNoDiaDoInicio = Math.floor(Math.abs(diffDays) * monitoramentoAtual.posologia_diaria);
-              if (sobraNoDiaDoInicio > qtd_informada_caixa) sobraNoDiaDoInicio = qtd_informada_caixa;
-            } else { sobraNoDiaDoInicio = 0; }
-          } else {
-            if (monitoramentoAtual.data_calculada_fim_caixa) {
-              const dataFimAtual = parseISO(monitoramentoAtual.data_calculada_fim_caixa);
-              const dataInicioNova = new Date(proximaDataAdministracao.getTime());
-              dataInicioNova.setHours(0, 0, 0, 0);
-              if (dataFimAtual > dataInicioNova) {
-                const diffDays = Math.floor((dataFimAtual - dataInicioNova) / (1000 * 60 * 60 * 24));
-                sobraNoDiaDoInicio = diffDays * monitoramentoAtual.posologia_diaria;
-              }
-            }
-          }
-        }
-
-        proximasCapsulasTotais = dados_nova_compra.total_capsulas_novas + sobraNoDiaDoInicio;
+        // A MÁGICA ACONTECE AQUI: O estoque total passa a ser exclusivamente as cápsulas da nova caixa
+        proximasCapsulasTotais = dados_nova_compra.total_capsulas_novas;
+        
         const totalDiasDuracao = Math.floor(proximasCapsulasTotais / proximaPosologia);
         proximaDataFimCaixa = addDays(proximaDataAdministracao, totalDiasDuracao);
 
@@ -344,7 +303,6 @@ class MonitoramentoMedicamentoController {
 
       if (!monitoramento || !monitoramento.evento_externo_id) return res.json({ novaCompraDetectada: false });
 
-      // Busca os eventos desse paciente, do mais recente pro mais antigo
       const eventos = await EventosPaciente.findAll({
         where: { paciente_id: monitoramento.paciente.id },
         order: [['data_entrega_prevista', 'DESC']],
@@ -353,20 +311,16 @@ class MonitoramentoMedicamentoController {
 
       if (eventos.length === 0) return res.json({ novaCompraDetectada: false });
 
-      // Encontra o primeiro evento que não seja o mesmo do monitoramento atual
       const novoEvento = eventos.find(e => String(e.external_id) !== String(monitoramento.evento_externo_id));
       if (!novoEvento) return res.json({ novaCompraDetectada: false });
 
-      // 👇 A MÁGICA ACONTECE AQUI: Prioriza a data real, com fallback para a prevista
       const dataReferenciaNovoEvento = novoEvento.data_entrega_real || novoEvento.data_entrega_prevista;
 
       if (dataReferenciaNovoEvento && monitoramento.data_entrega) {
-        // Trata tanto se o Sequelize retornar uma string quanto um objeto Date
         const dataEntregaLocal = typeof monitoramento.data_entrega === 'string'
           ? monitoramento.data_entrega.split('T')[0]
           : monitoramento.data_entrega.toISOString().split('T')[0];
 
-        // Compara usando a data correta
         if (dataReferenciaNovoEvento <= dataEntregaLocal) {
           return res.json({ novaCompraDetectada: false });
         }
@@ -375,29 +329,22 @@ class MonitoramentoMedicamentoController {
       const dataAdminExterna = novoEvento.data_administracao_prevista;
       const dataNovoInicio = dataAdminExterna ? addDays(parseISO(dataAdminExterna), 5) : null;
 
-      let sobraComprimidos = 0;
-      if (monitoramento.data_calculada_fim_caixa && dataNovoInicio) {
-        const dataFimAtual = parseISO(monitoramento.data_calculada_fim_caixa);
-        if (dataFimAtual > dataNovoInicio) {
-          const diffDays = Math.max(0, Math.floor((dataFimAtual - dataNovoInicio) / (1000 * 60 * 60 * 24)));
-          sobraComprimidos = diffDays * monitoramento.posologia_diaria;
-        }
-      }
-
       const totalCapsulasNovas = (novoEvento.medicamento.qtd_capsula || 0) * novoEvento.qtd_caixas;
 
       return res.json({
         novaCompraDetectada: true,
         detalhes: {
           evento_externo_id: novoEvento.external_id,
-          // 👇 Envia para o frontend a mesma data de referência que validou o processo
           data_entrega: dataReferenciaNovoEvento, 
           data_previsao_administracao: dataAdminExterna,
           data_novo_inicio: dataNovoInicio,
           qtd_caixas: novoEvento.qtd_caixas,
           total_capsulas_novas: totalCapsulasNovas,
-          sobra_comprimidos: sobraComprimidos,
-          total_estoque_calculado: totalCapsulasNovas + sobraComprimidos,
+          
+          // Zeramos a sobra e garantimos que o estoque total seja apenas as cápsulas novas
+          sobra_comprimidos: 0,
+          total_estoque_calculado: totalCapsulasNovas,
+          
           mudou_medicamento: monitoramento.medicamento_id !== novoEvento.medicamento_id,
           medicamento_novo: { id: novoEvento.medicamento_id, nome: novoEvento.medicamento.nome },
           medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome }
@@ -621,6 +568,36 @@ class MonitoramentoMedicamentoController {
       return res.status(500).json({ error: 'Erro ao buscar histórico de compras.', details: error.message });
     }
   }
+
+  async historicoAberturas(req, res) {
+    try {
+      const { id } = req.params;
+      
+      const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id);
+      if (!monitoramentoAtual) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
+
+      // Busca todos os monitoramentos do paciente que tenham a data de administração preenchida ou evento vinculado
+      const historico = await MonitoramentoMedicamento.findAll({
+        where: {
+          paciente_id: monitoramentoAtual.paciente_id,
+          evento_externo_id: { [Op.not]: null }
+        },
+        include: [
+          { model: Medicamentos, as: 'medicamento', attributes: ['nome'] }
+        ],
+        attributes: ['id', 'evento_externo_id', 'data_administracao', 'createdAt'],
+        order: [['data_administracao', 'DESC NULLS LAST'], ['createdAt', 'DESC']]
+      });
+
+      return res.json(historico);
+    } catch (error) {
+      console.error("Erro ao buscar histórico de aberturas:", error);
+      return res.status(500).json({ error: 'Erro ao buscar histórico de aberturas.', details: error.message });
+    }
+  }
+  
 }
 
 export default new MonitoramentoMedicamentoController();
