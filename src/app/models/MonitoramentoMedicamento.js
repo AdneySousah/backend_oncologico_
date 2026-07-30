@@ -16,12 +16,16 @@ class MonitoramentoMedicamento extends Model {
       data_entrega: Sequelize.DATEONLY,
       data_administracao: Sequelize.DATEONLY,
       
-      // Nova coluna adicionada 👇
       data_telemonitoramento_efetivado: Sequelize.DATE,
       
       qtd_caixas: Sequelize.INTEGER,
       qtd_total_capsulas: Sequelize.INTEGER,
-      evento_externo_id: Sequelize.INTEGER
+      evento_externo_id: Sequelize.INTEGER,
+
+      // NOVAS COLUNAS PARA MUDANÇA DE POSOLOGIA 👇
+      mudou_posologia: Sequelize.BOOLEAN,
+      nova_posologia: Sequelize.INTEGER,
+      data_mudanca_posologia: Sequelize.DATEONLY
       
     }, {
       sequelize,

@@ -47,7 +47,7 @@ class MonitoramentoMedicamentoController {
       let externalEventId = null;
       const ultimoEvento = await EventosPaciente.findOne({
         where: { paciente_id },
-        order: [['data_entrega_prevista', 'DESC']]
+        order: [['external_id', 'DESC']] 
       });
       if (ultimoEvento) externalEventId = ultimoEvento.external_id;
 
@@ -165,24 +165,42 @@ class MonitoramentoMedicamentoController {
       aplicar_nova_compra: Yup.boolean().nullable(),
       dados_nova_compra: Yup.object().nullable(),
       data_inicio_nova_caixa: Yup.date().nullable(),
-      posologia_nova_caixa: Yup.number().integer().nullable()
+      posologia_nova_caixa: Yup.number().integer().nullable(),
+
+      // Validações da nova posologia
+      mudou_posologia: Yup.boolean().nullable(),
+      nova_posologia: Yup.number().integer().nullable(),
+      data_mudanca_posologia: Yup.date().nullable()
     });
 
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     const { id } = req.params;
-    const { contato_efetivo, nivel_adesao, qtd_informada_caixa, data_abertura_nova_caixa, is_reacao, reacoes_adversas, observacao, aplicar_nova_compra, dados_nova_compra, data_inicio_nova_caixa, posologia_nova_caixa } = req.body;
+    const {
+      contato_efetivo, nivel_adesao, qtd_informada_caixa, data_abertura_nova_caixa,
+      is_reacao, reacoes_adversas, observacao, aplicar_nova_compra, dados_nova_compra,
+      data_inicio_nova_caixa, posologia_nova_caixa,
+      mudou_posologia, nova_posologia, data_mudanca_posologia // Desestruturação dos novos campos
+    } = req.body;
 
     try {
       const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id);
       if (!monitoramentoAtual) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
 
+      // Atualiza o registro atual salvando o histórico da mudança
       await monitoramentoAtual.update({
         contato_efetivo,
         nivel_adesao: contato_efetivo === false ? 'NAO_ADERE' : nivel_adesao,
-        qtd_informada_caixa, data_abertura_nova_caixa, is_reacao, status: 'CONCLUIDO', observacao,
-        data_telemonitoramento_efetivado: new Date()
+        qtd_informada_caixa,
+        data_abertura_nova_caixa,
+        is_reacao,
+        status: 'CONCLUIDO',
+        observacao,
+        data_telemonitoramento_efetivado: new Date(),
+        mudou_posologia: mudou_posologia || false,
+        nova_posologia: mudou_posologia ? nova_posologia : null,
+        data_mudanca_posologia: mudou_posologia ? data_mudanca_posologia : null
       });
 
       if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) await monitoramentoAtual.setReacoesAdversas(reacoes_adversas);
@@ -208,10 +226,13 @@ class MonitoramentoMedicamentoController {
       let proximaDataFimCaixa = monitoramentoAtual.data_calculada_fim_caixa;
       let proximaDataAdministracao = monitoramentoAtual.data_administracao;
       let proximoEventoExternoId = monitoramentoAtual.evento_externo_id;
-      let proximaPosologia = monitoramentoAtual.posologia_diaria;
 
-      if (qtd_informada_caixa != null) {
-        const diasRestantes = Math.floor(qtd_informada_caixa / monitoramentoAtual.posologia_diaria);
+      // SE MUDOU A POSOLOGIA NO MEIO DO CICLO, O PRÓXIMO HERDA A NOVA
+      let proximaPosologia = (mudou_posologia && nova_posologia) ? nova_posologia : monitoramentoAtual.posologia_diaria;
+
+      // Recalcula o fim da caixa com base no que sobrou (qtd_informada_caixa) dividido pela NOVA posologia
+      if (qtd_informada_caixa != null && proximaPosologia > 0) {
+        const diasRestantes = Math.floor(qtd_informada_caixa / proximaPosologia);
         proximaDataFimCaixa = addDays(new Date(), diasRestantes);
       }
 
@@ -220,12 +241,12 @@ class MonitoramentoMedicamentoController {
         proximasCaixas = dados_nova_compra.qtd_caixas;
         proximaDataEntrega = parseISO(dados_nova_compra.data_entrega);
         proximoEventoExternoId = dados_nova_compra.evento_externo_id;
+        // Nova compra sobrepõe a mudança de posologia isolada
         proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
         proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : parseISO(dados_nova_compra.data_novo_inicio);
 
-        // A MÁGICA ACONTECE AQUI: O estoque total passa a ser exclusivamente as cápsulas da nova caixa
         proximasCapsulasTotais = dados_nova_compra.total_capsulas_novas;
-        
+
         const totalDiasDuracao = Math.floor(proximasCapsulasTotais / proximaPosologia);
         proximaDataFimCaixa = addDays(proximaDataAdministracao, totalDiasDuracao);
 
@@ -247,7 +268,7 @@ class MonitoramentoMedicamentoController {
         });
       }
 
-      await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Compra aplicada: ${aplicar_nova_compra}`);
+      await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${mudou_posologia}`);
       return res.json({ message: 'Contato registrado e ciclo atualizado com sucesso!' });
     } catch (error) { return res.status(500).json({ error: 'Erro ao registrar contato', details: error.message }); }
   }
@@ -305,7 +326,7 @@ class MonitoramentoMedicamentoController {
 
       const eventos = await EventosPaciente.findAll({
         where: { paciente_id: monitoramento.paciente.id },
-        order: [['data_entrega_prevista', 'DESC']],
+        order: [['external_id', 'DESC']], // ALTERADO AQUI
         include: [{ model: Medicamentos, as: 'medicamento' }]
       });
 
@@ -335,16 +356,16 @@ class MonitoramentoMedicamentoController {
         novaCompraDetectada: true,
         detalhes: {
           evento_externo_id: novoEvento.external_id,
-          data_entrega: dataReferenciaNovoEvento, 
+          data_entrega: dataReferenciaNovoEvento,
           data_previsao_administracao: dataAdminExterna,
           data_novo_inicio: dataNovoInicio,
           qtd_caixas: novoEvento.qtd_caixas,
           total_capsulas_novas: totalCapsulasNovas,
-          
+
           // Zeramos a sobra e garantimos que o estoque total seja apenas as cápsulas novas
           sobra_comprimidos: 0,
           total_estoque_calculado: totalCapsulasNovas,
-          
+
           mudou_medicamento: monitoramento.medicamento_id !== novoEvento.medicamento_id,
           medicamento_novo: { id: novoEvento.medicamento_id, nome: novoEvento.medicamento.nome },
           medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome }
@@ -559,7 +580,7 @@ class MonitoramentoMedicamentoController {
           { model: Pacientes, as: 'paciente', attributes: ['nome', 'sobrenome'] },
           { model: Medicamentos, as: 'medicamento', attributes: ['nome', 'qtd_capsula'] }
         ],
-        order: [['data_entrega_prevista', 'DESC']]
+        order: [['external_id', 'DESC']]
       });
 
       return res.json(eventos);
@@ -572,7 +593,7 @@ class MonitoramentoMedicamentoController {
   async historicoAberturas(req, res) {
     try {
       const { id } = req.params;
-      
+
       const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id);
       if (!monitoramentoAtual) {
         return res.status(404).json({ error: 'Monitoramento não encontrado.' });
@@ -597,7 +618,7 @@ class MonitoramentoMedicamentoController {
       return res.status(500).json({ error: 'Erro ao buscar histórico de aberturas.', details: error.message });
     }
   }
-  
+
 }
 
 export default new MonitoramentoMedicamentoController();
