@@ -47,7 +47,7 @@ class MonitoramentoMedicamentoController {
       let externalEventId = null;
       const ultimoEvento = await EventosPaciente.findOne({
         where: { paciente_id },
-        order: [['external_id', 'DESC']] 
+        order: [['external_id', 'DESC']]
       });
       if (ultimoEvento) externalEventId = ultimoEvento.external_id;
 
@@ -170,7 +170,7 @@ class MonitoramentoMedicamentoController {
       mudou_posologia: Yup.boolean().nullable(),
       nova_posologia: Yup.number().integer().nullable(),
       data_mudanca_posologia: Yup.date().nullable(),
-      
+
       // Validação do novo campo 👇
       motivo_falha_contato_id: Yup.number().integer().nullable()
     });
@@ -205,7 +205,7 @@ class MonitoramentoMedicamentoController {
         nova_posologia: mudou_posologia ? nova_posologia : null,
         data_mudanca_posologia: mudou_posologia ? data_mudanca_posologia : null,
         // 👇 Salva o motivo APENAS se o contato não foi efetivo
-        motivo_falha_contato_id: contato_efetivo === false ? motivo_falha_contato_id : null 
+        motivo_falha_contato_id: contato_efetivo === false ? motivo_falha_contato_id : null
       });
 
       if (contato_efetivo && is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
@@ -329,9 +329,13 @@ class MonitoramentoMedicamentoController {
 
       if (!monitoramento || !monitoramento.evento_externo_id) return res.json({ novaCompraDetectada: false });
 
+      // Busca apenas eventos que realmente foram RECEBIDOS pelo paciente
       const eventos = await EventosPaciente.findAll({
-        where: { paciente_id: monitoramento.paciente.id },
-        order: [['external_id', 'DESC']], 
+        where: {
+          paciente_id: monitoramento.paciente.id,
+          recebido: true // 🔥 CORREÇÃO: Ignora os eventos de histórico pendentes/não recebidos
+        },
+        order: [['external_id', 'DESC']],
         include: [{ model: Medicamentos, as: 'medicamento' }]
       });
 

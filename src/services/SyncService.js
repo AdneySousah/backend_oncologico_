@@ -209,14 +209,15 @@ class PacienteSyncService {
                         paciente_id: paciente.id,
                         medicamento_id: medicamentoEventoId,
 
-                        // CORREÇÃO APLICADA AQUI 👇
                         data_entrega_prevista: extrairDataBrasil(extEvent.date_delivery),
                         data_entrega_real: extrairDataBrasil(extEvent.medicament_received_date),
                         data_administracao_prevista: extrairDataBrasil(extEvent.administration_date_prev),
 
                         qtd_caixas: extEvent.qtd_medicament ? parseInt(extEvent.qtd_medicament, 10) : 1,
                         preco: extEvent.price ? parseFloat(extEvent.price) : null,
-                        recebido: true
+
+                        // 🔥 CORREÇÃO: Respeitar o status real do recebimento
+                        recebido: String(extEvent.medicament_received) === '1'
                     };
 
                     const eventoExistente = await EventosPaciente.findOne({ where: { external_id: extEvent.id } });
