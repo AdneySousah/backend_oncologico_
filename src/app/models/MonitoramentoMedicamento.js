@@ -40,6 +40,8 @@ class MonitoramentoMedicamento extends Model {
     this.belongsTo(models.PatientEvaluation, { foreignKey: 'patient_evaluation_id', as: 'avaliacao' });
     this.belongsTo(models.Medicamentos, { foreignKey: 'medicamento_id', as: 'medicamento' });
 
+    this.belongsTo(models.MotivoFalhaContato, { foreignKey: 'motivo_falha_contato_id', as: 'motivoFalhaContato' });
+    
     this.belongsToMany(models.ReacaoAdversa, { 
       through: 'monitoramento_reacoes_adversas',
       foreignKey: 'monitoramento_id', 

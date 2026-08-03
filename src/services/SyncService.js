@@ -173,8 +173,8 @@ class PacienteSyncService {
                         if (tipoDosagemFormatado && !dosagensPermitidas.includes(tipoDosagemFormatado)) tipoDosagemFormatado = null;
 
                         let qtdCapsulaExtraida = null;
-                        if (extMed.dosage) {
-                            const apenasNumeros = String(extMed.dosage).replace(/\D/g, '');
+                        if (extMed.quantity) {
+                            const apenasNumeros = String(extMed.quantity).replace(/\D/g, '');
                             if (apenasNumeros) qtdCapsulaExtraida = parseInt(apenasNumeros, 10);
                         }
 
@@ -185,7 +185,7 @@ class PacienteSyncService {
                             nome_comercial: extMed.commercial_name,
                             principio_ativo: extMed.active_principle,
                             qtd_capsula: qtdCapsulaExtraida,
-                            dosagem: extMed.dosage ? String(extMed.dosage).trim() : null,
+                            dosagem: extMed.quantity ? String(extMed.quantity).trim() : null,
                             tipo_dosagem: tipoDosagemFormatado,
                             apresentacao: extMed.apresentation,
                             via_administracao: extMed.way_administration,

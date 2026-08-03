@@ -34,6 +34,7 @@ import AuditLog from '../app/models/AuditLog.js';
 import NpsResponse from '../app/models/NpsResponse.js';
 import Conversation from '../app/models/Conversation.js';
 import Message from '../app/models/Message.js';
+import MotivoFalhaContato from '../app/models/MotivoFalhaContato.js';
 import TermosHistorico from '../app/models/TermosHistorico.js';
 import HistoricoTrocaMedicamento from '../app/models/HistoricoTrocaMedicamento.js';
 import PacienteTermoAnexo from '../app/models/PacienteTermoAnexo.js';
@@ -46,7 +47,7 @@ const models = [
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
   MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
-  PacienteTermoAnexo, EventosPaciente
+  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato
 ];
 
 class Database {

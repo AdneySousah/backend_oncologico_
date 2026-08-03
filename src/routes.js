@@ -36,6 +36,7 @@ import NpsHealthController from "./app/controllers/NpsHealthController.js";
 import ChatController from "./app/controllers/ChatController.js";
 import FaturamentoController from "./app/controllers/FaturamentoController.js";
 import PacienteTermoAnexoController from './app/controllers/PacienteTermoAnexoController.js';
+import MotivoFalhaContatoController from "./app/controllers/MotivoFalhaContatoController.js";
 
 
 
@@ -262,5 +263,15 @@ router.get('/faturamento', FaturamentoController.index);
 
 
 router.get('/termos-anexos/todos', PacienteTermoAnexoController.index);
+
+
+
+// ==========================================
+// ROTAS: Motivos de Falha de Contato
+// ==========================================
+router.get('/motivos-falha-contato', MotivoFalhaContatoController.index);
+router.post('/motivos-falha-contato', MotivoFalhaContatoController.store);
+router.put('/motivos-falha-contato/:id', MotivoFalhaContatoController.update);
+router.delete('/motivos-falha-contato/:id', MotivoFalhaContatoController.delete);
 
 export default router;

@@ -11,6 +11,7 @@ import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
 import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
 import Medicamentos from '../models/Medicamentos.js';
+import MotivosFalhaContato from '../models/MotivoFalhaContato.js'; // Ajuste o caminho se necessário
 
 class DashboardController {
   async index(req, res) {
@@ -471,6 +472,70 @@ class DashboardController {
 
       await AuditService.log(req.userId, 'Emissão', 'Dashboard', null, `Gerou relatório do dashboard para o período ${data_inicio || 'Início'} a ${data_fim || 'Fim'} - Operadora: ${nomeOperadoraLog}`);
 
+
+      // ==========================================
+      // PROBLEMAS DE CONTATO (FALHAS)
+      // ==========================================
+      let contatoWhere = {
+        paciente_id: { [Op.in]: safeActiveIds },
+        contato_efetivo: false // Filtra apenas onde houve falha no contato
+      };
+
+      if (start && end) {
+        // Usa createdAt porque falhas podem não ter a data_telemonitoramento_efetivado preenchida
+        contatoWhere.createdAt = { [Op.between]: [start, end] };
+      }
+
+      const monitoramentosFalha = await MonitoramentoMedicamento.findAll({
+        include: [{
+          model: MotivosFalhaContato,
+          as: 'motivoFalhaContato', // <-- CORRIGIDO AQUI (Exatamente como definido na sua Model)
+          attributes: ['descricao'],
+          required: false
+        }],
+        where: contatoWhere,
+        subQuery: false
+      });
+
+      let problemasChartMap = {};
+      let problemasPatientData = {};
+
+      monitoramentosFalha.forEach(mon => {
+        if (!problemasPatientData[mon.paciente_id]) {
+          problemasPatientData[mon.paciente_id] = [];
+        }
+
+        // <-- CORRIGIDO AQUI TAMBÉM para buscar do alias correto
+        const motivoDescricao = mon.motivoFalhaContato?.descricao || 'Motivo Não Informado';
+
+        if (!problemasChartMap[motivoDescricao]) problemasChartMap[motivoDescricao] = new Set();
+        problemasChartMap[motivoDescricao].add(mon.paciente_id);
+
+        problemasPatientData[mon.paciente_id].push({
+          motivo_falha: motivoDescricao,
+          data_registro: mon.createdAt ? new Date(mon.createdAt).toLocaleDateString('pt-BR') : 'N/A'
+        });
+      });
+
+      const problemasContatoChart = Object.keys(problemasChartMap).map(key => ({
+        name: key, value: problemasChartMap[key].size
+      })).sort((a, b) => b.value - a.value);
+
+      let problemasContatoReport = [];
+      
+      // Utilizamos o dictPacientes que já foi criado no bloco da Ficha RAM
+      Object.keys(problemasPatientData).forEach(pacienteIdStr => {
+        const pId = Number(pacienteIdStr);
+        const dadosPaciente = dictPacientes[pId];
+
+        if (dadosPaciente && problemasPatientData[pId].length > 0) {
+          problemasPatientData[pId].forEach(problema => {
+            problemasContatoReport.push({ ...dadosPaciente, ...problema });
+          });
+        }
+      });
+
+
       return res.json({
         pacientesSincronizados: {
           total: ativosCount,
@@ -484,13 +549,16 @@ class DashboardController {
         aderenciaOpcoes: { chart: [{ name: 'Completamente', value: aderenciaOpcoesCount.COMPLETAMENTE }, { name: 'Parcialmente', value: aderenciaOpcoesCount.PARCIALMENTE }, { name: 'Não Adere', value: aderenciaOpcoesCount.NAO_ADERE }, { name: 'Sem Registro', value: aderenciaPendente }], report: aderenciaOpcoesReport },
         fichaRam: { chart: fichaRamChart, report: ramReport },
         nps: { chart: npsChart, report: npsReport },
-        historicoTrocas: { table: historicoTrocasReport, report: historicoTrocasReport }
+        historicoTrocas: { table: historicoTrocasReport, report: historicoTrocasReport },
+        problemasContato: { chart: problemasContatoChart, report: problemasContatoReport },
       });
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: 'Erro ao gerar dados do dashboard', details: error.message });
     }
   }
+
+  
 }
 
 export default new DashboardController();
