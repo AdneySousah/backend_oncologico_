@@ -1,6 +1,5 @@
 import Sequelize from 'sequelize';
 import configDatabase from '../config/database.cjs';
-
 // Models Antigos
 import User from '../app/models/User.js';
 import OncologyProfessional from '../app/models/OncologyProfessional.js';
@@ -12,8 +11,6 @@ import Diagnostico from '../app/models/Diagnostico.js';
 import Exames from '../app/models/Exames.js';
 import InfosComorbidade from '../app/models/InfosComorbidade.js';
 import EntrevistaMedica from '../app/models/EntrevistaMedica.js';
-import MonitoramentoEdicaoEmAndamento from '../app/models/MonitoramentoEdicaoEmAndamento.js';
-
 // NOVOS MODELS
 import EvaluationTemplate from '../app/models/EvaluationTemplate.js';
 import EvaluationQuestion from '../app/models/EvaluationQuestion.js';
@@ -42,24 +39,22 @@ import PacienteTermoAnexo from '../app/models/PacienteTermoAnexo.js';
 import EventosPaciente from '../app/models/EventosPaciente.js';
 import DashboardSnapshot from '../app/models/DashboardSnapshot.js';
 
+
 const models = [
-  User, OncologyProfessional, Especiality, Operadora, Pacientes, 
+  User, OncologyProfessional, Especiality, Operadora, Pacientes,
   PrestadorMedico, Diagnostico, Exames, InfosComorbidade, EntrevistaMedica,
-  EvaluationTemplate, EvaluationQuestion, EvaluationOption, 
+  EvaluationTemplate, EvaluationQuestion, EvaluationOption,
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
   MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
-  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, MonitoramentoEdicaoEmAndamento, DashboardSnapshot
+  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, DashboardSnapshot
 ];
-
 class Database {
   constructor() {
     this.init();
   }
-
   init() {
     this.connection = new Sequelize(configDatabase);
-
     models
       .map((model) => model.init(this.connection))
       .map(
