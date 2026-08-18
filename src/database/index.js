@@ -12,6 +12,7 @@ import Diagnostico from '../app/models/Diagnostico.js';
 import Exames from '../app/models/Exames.js';
 import InfosComorbidade from '../app/models/InfosComorbidade.js';
 import EntrevistaMedica from '../app/models/EntrevistaMedica.js';
+import MonitoramentoEdicaoEmAndamento from '../app/models/MonitoramentoEdicaoEmAndamento.js';
 
 // NOVOS MODELS
 import EvaluationTemplate from '../app/models/EvaluationTemplate.js';
@@ -39,6 +40,7 @@ import TermosHistorico from '../app/models/TermosHistorico.js';
 import HistoricoTrocaMedicamento from '../app/models/HistoricoTrocaMedicamento.js';
 import PacienteTermoAnexo from '../app/models/PacienteTermoAnexo.js';
 import EventosPaciente from '../app/models/EventosPaciente.js';
+import DashboardSnapshot from '../app/models/DashboardSnapshot.js';
 
 const models = [
   User, OncologyProfessional, Especiality, Operadora, Pacientes, 
@@ -47,7 +49,7 @@ const models = [
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
   MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
-  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato
+  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, MonitoramentoEdicaoEmAndamento, DashboardSnapshot
 ];
 
 class Database {
