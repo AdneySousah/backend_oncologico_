@@ -37,7 +37,7 @@ import ChatController from "./app/controllers/ChatController.js";
 import FaturamentoController from "./app/controllers/FaturamentoController.js";
 import PacienteTermoAnexoController from './app/controllers/PacienteTermoAnexoController.js';
 import MotivoFalhaContatoController from "./app/controllers/MotivoFalhaContatoController.js";
-import ReservaEdicaoController from "./app/controllers/ReservaEdicaoController.js";
+
 
 
 
@@ -244,6 +244,7 @@ router.post('/reacao-adversa/import', checkPermission('reacao_adversa', 'editar'
 
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
+router.post('/dashboard/fechar-mes', checkPermission('dashboard', 'editar'), DashboardController.fecharMes);
 
 router.post('/tentativas-contato', TentativaContatoController.store);
 router.get('/tentativas-contato', TentativaContatoController.index);
@@ -279,7 +280,6 @@ router.put('/motivos-falha-contato/:id', MotivoFalhaContatoController.update);
 router.delete('/motivos-falha-contato/:id', MotivoFalhaContatoController.delete);
 
 
-router.post('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao',  ReservaEdicaoController.reservar);
-router.delete('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao',  ReservaEdicaoController.liberar);
+
 
 export default router;
