@@ -122,8 +122,8 @@ router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.a
 router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), PacientesController.syncExternal);
 router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
 router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
-router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
-router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
+//router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
+//router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
 router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
 router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
