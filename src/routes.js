@@ -122,8 +122,8 @@ router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.a
 router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), PacientesController.syncExternal);
 router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
 router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
-//router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
-//router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
+router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
+router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
 router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
 router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
 router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
@@ -212,7 +212,7 @@ router.get('/nps/paciente/:id/atendimento/:monitoramento_id/status', NpsControll
 
 router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.store);
 router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
-//router.get('/monitoramento-medicamentos/candidatos-retomada', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.candidatosRetomada);
+router.get('/monitoramento-medicamentos/candidatos-retomada', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.candidatosRetomada);
 router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline);
 
 router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
@@ -226,7 +226,7 @@ router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', Moni
 router.get('/monitoramento-medicamentos/:id/verificar-compra', MonitoramentoMedicamentoController.verificarNovaCompra);
 router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.informarDataAdministracao);
 router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
-//router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedicamentoController.registrarContatoConjunto);
+router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedicamentoController.registrarContatoConjunto);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
 router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);

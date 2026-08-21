@@ -197,7 +197,7 @@ class PacientesController {
             if (lastPage > 1) {
                 console.log(`[BACKEND] Total de páginas com pacientes oncológicos: ${lastPage}. Buscando o resto...`);
 
-                const BATCH_SIZE = 5; 
+                const BATCH_SIZE = 5;
 
                 for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
                     const batchPromises = [];
@@ -243,7 +243,7 @@ class PacientesController {
     // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE
     // =========================================================================
 
-   // =========================================================================
+    // =========================================================================
     // VERIFICADOR DE SINCRONIZAÇÃO PENDENTE (ATUALIZADO PARA EVENTOS)
     // =========================================================================
     async checkSync(req, res) {
@@ -287,19 +287,19 @@ class PacientesController {
 
             // Varre os pacientes e extrai TODOS os IDs de eventos válidos
             todosPacientesExternos.forEach(extPatient => {
-                const hasTreatmentType4 = extPatient.treatmentTypes && 
-                    Array.isArray(extPatient.treatmentTypes) && 
+                const hasTreatmentType4 = extPatient.treatmentTypes &&
+                    Array.isArray(extPatient.treatmentTypes) &&
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
 
-                const isFundacaoLibertas = extPatient.company && 
-                    extPatient.company.name && 
+                const isFundacaoLibertas = extPatient.company &&
+                    extPatient.company.name &&
                     String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
 
                 if (hasTreatmentType4 && !isFundacaoLibertas) {
-                    const validEvents = extPatient.events && Array.isArray(extPatient.events) ? extPatient.events.filter(e => 
-                        String(e.eventtype_id) === '2' && 
-                        String(e.medicament_received) === '1' && 
-                        e.medicament && 
+                    const validEvents = extPatient.events && Array.isArray(extPatient.events) ? extPatient.events.filter(e =>
+                        String(e.eventtype_id) === '2' &&
+                        String(e.medicament_received) === '1' &&
+                        e.medicament &&
                         String(e.medicament.treatment_types_id) === '4'
                     ) : [];
 
@@ -387,12 +387,89 @@ class PacientesController {
 
             return res.json({
                 ...paciente.toJSON(),
-                ja_tem_monitoramento: !!temMonitoramento 
+                ja_tem_monitoramento: !!temMonitoramento
             });
 
         } catch (err) {
             console.error("Erro no show paciente:", err);
             return res.status(500).json({ error: 'Erro ao buscar paciente' });
+        }
+    }
+
+    async medicamentosAtivos(req, res) {
+        const { id } = req.params;
+        try {
+            const eventos = await EventosPaciente.findAll({
+                where: { paciente_id: id, recebido: true },
+                order: [['external_id', 'DESC']],
+                include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }]
+            });
+
+            if (eventos.length === 0) {
+                return res.json({ medicamentos: [] });
+            }
+
+            // Mantém só o evento mais recente de cada medicamento DISTINTO — evita
+            // listar a mesma substância várias vezes por reposições/recompras antigas.
+            const medicamentosVistos = new Set();
+            const medicamentosAtivos = [];
+
+            for (const evento of eventos) {
+                if (!evento.medicamento || medicamentosVistos.has(evento.medicamento_id)) continue;
+                medicamentosVistos.add(evento.medicamento_id);
+
+                medicamentosAtivos.push({
+                    id: evento.medicamento.id,
+                    nome: evento.medicamento.nome,
+                    qtd_capsula: evento.medicamento.qtd_capsula,
+                    data_entrega_medicamento: evento.data_entrega_real || evento.data_entrega_prevista,
+                    qtd_caixas: evento.qtd_caixas || 1
+                });
+
+                if (medicamentosAtivos.length === 2) break; // limite de 2 medicamentos concorrentes
+            }
+
+            return res.json({ medicamentos: medicamentosAtivos });
+        } catch (err) {
+            console.error("Erro ao buscar medicamentos ativos:", err);
+            return res.status(500).json({ error: 'Erro ao buscar medicamentos ativos do paciente.', details: err.message });
+        }
+    }
+
+    async syncIndividual(req, res) {
+        const { id } = req.params;
+        try {
+            const currentUser = await User.findByPk(req.userId);
+            if (!currentUser || !currentUser.external_token) {
+                return res.status(401).json({ error: "Token externo não encontrado." });
+            }
+
+            const paciente = await Pacientes.findByPk(id);
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado.' });
+            if (!paciente.external_id) {
+                return res.json({ message: 'Paciente sem vínculo com o sistema externo.', sincronizado: false });
+            }
+
+            const headers = { 'Authorization': `Bearer ${currentUser.external_token}` };
+  
+            const url = `${process.env.END_POINT}/api/patients?id=${paciente.external_id}`;
+            const response = await axios.get(url, { headers });
+            const pacienteExterno = Array.isArray(response.data.data) ? response.data.data[0] : (response.data.data || response.data);
+
+            if (!pacienteExterno) {
+                return res.json({ message: 'Paciente não encontrado no sistema externo.', sincronizado: false });
+            }
+
+            const { successes, errors } = await PacienteSyncService.syncPacientes([pacienteExterno], currentUser.id);
+
+            return res.json({
+                message: successes.length > 0 ? 'Paciente sincronizado com sucesso.' : 'Nenhuma atualização necessária.',
+                sincronizado: successes.length > 0,
+                errors
+            });
+        } catch (err) {
+            console.error('[BACKEND] Erro na sincronização individual:', err.response?.data || err.message);
+            return res.status(500).json({ error: 'Erro ao sincronizar paciente individualmente.' });
         }
     }
 }

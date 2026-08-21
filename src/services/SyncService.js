@@ -11,27 +11,24 @@ const formatarCelularWhatsapp = (numero) => {
     return limpo;
 };
 
+
+const OFFSET_BRASILIA_MS = 3 * 60 * 60 * 1000;
+
 // Nova função para garantir que o corte da data respeite o fuso do Brasil (-03:00)
 const extrairDataBrasil = (dataIso) => {
     if (!dataIso) return null;
-
-    // Se a data já vier curta (ex: 2026-06-30), retorna direto
-    if (dataIso.length === 10) return dataIso;
-
+    // Se já vier só a data (ex: "2026-06-30", sem horário), não há fuso a corrigir.
+    if (typeof dataIso === 'string' && dataIso.length === 10 && !dataIso.includes('T')) {
+        return dataIso;
+    }
     try {
-        // Se a data vier no formato ISO longo (ex: 2026-06-30T03:00:00.000Z)
-        // Cortamos no 'T' e pegamos apenas a parte da data.
-        if (dataIso.includes('T')) {
-            return dataIso.split('T')[0];
-        }
-
-        // Se vier com espaço separando hora (ex: 2026-06-30 00:00:00)
-        if (dataIso.includes(' ')) {
-            return dataIso.split(' ')[0];
-        }
-
-        // Fallback cortando os 10 primeiros caracteres (YYYY-MM-DD)
-        return String(dataIso).substring(0, 10);
+        const dataUtc = new Date(dataIso);
+        if (isNaN(dataUtc.getTime())) return null;
+        const dataBrasil = new Date(dataUtc.getTime() - OFFSET_BRASILIA_MS);
+        const ano = dataBrasil.getUTCFullYear();
+        const mes = String(dataBrasil.getUTCMonth() + 1).padStart(2, '0');
+        const dia = String(dataBrasil.getUTCDate()).padStart(2, '0');
+        return `${ano}-${mes}-${dia}`;
     } catch (error) {
         return null;
     }
@@ -50,16 +47,16 @@ class PacienteSyncService {
                 const hasTreatmentType4 = extPatient.treatmentTypes &&
                     Array.isArray(extPatient.treatmentTypes) &&
                     extPatient.treatmentTypes.some(t => String(t.id) === '4');
-
-                // Pega TODOS os eventos válidos (não apenas o primeiro)
-                const eventosValidos = extPatient.events && Array.isArray(extPatient.events)
+        
+                const eventosValidos = (extPatient.events && Array.isArray(extPatient.events)
                     ? extPatient.events.filter(e =>
                         String(e.eventtype_id) === '2' &&
                         String(e.medicament_received) === '1' &&
                         e.medicament &&
                         String(e.medicament.treatment_types_id) === '4'
                     )
-                    : [];
+                    : []
+                ).sort((a, b) => Number(a.id) - Number(b.id));
 
                 const isFundacaoLibertas = extPatient.company &&
                     extPatient.company.name &&
