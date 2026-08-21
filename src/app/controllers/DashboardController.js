@@ -321,8 +321,11 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
     // ==========================================
     // FICHAS RAM
     // ==========================================
+    // Usa a mesma população da Aderência (safeElegiveisIds), não safeActiveIds —
+    // as duas contagens vêm do mesmo universo de "contatos efetivos concluídos
+    // no período" e o total de CPFs únicos de um bate com o do outro.
     let ramWhere = {
-      paciente_id: { [Op.in]: safeActiveIds },
+      paciente_id: { [Op.in]: safeElegiveisIds },
       status: 'CONCLUIDO',
       contato_efetivo: true
     };
@@ -345,7 +348,10 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
 
     let ramChartMap = {};
     let ramPatientData = {};
-    let monitoramentosSemReacao = 0;
+    // Set, não contador simples — igual ramChartMap já faz pras outras reações,
+    // pra "Nenhuma Reação" contar pacientes distintos, não visitas repetidas
+    // do mesmo paciente dentro do período.
+    let pacientesSemReacao = new Set();
 
     monitoramentosRam.forEach(mon => {
       if (!ramPatientData[mon.paciente_id]) {
@@ -389,7 +395,7 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
         }
 
         if (monitoramentoNoPeriodo) {
-          monitoramentosSemReacao++;
+          pacientesSemReacao.add(mon.paciente_id);
           ramPatientData[mon.paciente_id].push({
             reacao_adversa: 'Nenhuma Reação',
             data_registro: mon.data_telemonitoramento_efetivado ? new Date(mon.data_telemonitoramento_efetivado).toLocaleDateString('pt-BR') : 'N/A'
@@ -402,8 +408,8 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
       name: key, value: ramChartMap[key].size
     })).sort((a, b) => b.value - a.value);
 
-    if (monitoramentosSemReacao > 0) {
-      fichaRamChart.push({ name: 'Nenhuma Reação', value: monitoramentosSemReacao });
+    if (pacientesSemReacao.size > 0) {
+      fichaRamChart.push({ name: 'Nenhuma Reação', value: pacientesSemReacao.size });
     }
 
     // ==========================================
@@ -572,14 +578,32 @@ async function fecharMesInterno({ ano, mes, operadoraId = null, userId = null })
 
     const payload = await calcularPayloadDashboard({ permission, data_inicio, data_fim });
 
-    await DashboardSnapshot.upsert({
-      ano,
-      mes,
-      operadora_id: operadoraId || null,
-      dados: payload,
-      fechado_por: userId,
-      fechado_em: new Date(),
+    // Não usamos DashboardSnapshot.upsert() aqui de propósito: por padrão o
+    // upsert do Sequelize resolve conflito pela PRIMARY KEY (id), não pela
+    // nossa chave de negócio (ano, mes, operadora_id) — então, ao tentar
+    // FECHAR DE NOVO um mês que já tem snapshot (o caso normal de recongelar
+    // depois de corrigir um dado), o INSERT esbarra na constraint única e
+    // quebra, em vez de atualizar. Aqui resolvemos manualmente pela chave real.
+    const existente = await DashboardSnapshot.findOne({
+      where: { ano, mes, operadora_id: operadoraId || null }
     });
+
+    if (existente) {
+      await existente.update({
+        dados: payload,
+        fechado_por: userId,
+        fechado_em: new Date(),
+      });
+    } else {
+      await DashboardSnapshot.create({
+        ano,
+        mes,
+        operadora_id: operadoraId || null,
+        dados: payload,
+        fechado_por: userId,
+        fechado_em: new Date(),
+      });
+    }
 
     return payload;
 }
