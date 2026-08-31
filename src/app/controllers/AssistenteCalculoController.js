@@ -13,41 +13,53 @@ function limparJson(texto) {
 
 class AssistenteCalculoController {
   async calcular(req, res) {
-    const { mensagem, historico } = req.body;
+
+    const { mensagem, historico, data_referencia } = req.body;
     if (!mensagem || !mensagem.trim()) {
       return res.status(400).json({ error: 'Envie uma pergunta.' });
     }
     try {
-      const hoje = new Date();
-      const hojeFormatado = format(hoje, 'dd/MM/yyyy');
+      const dataReferenciaValida = data_referencia && !isNaN(parseISO(data_referencia).getTime());
+      const dataReferenciaObj = dataReferenciaValida ? parseISO(data_referencia) : new Date();
+      const hojeFormatado = format(dataReferenciaObj, 'dd/MM/yyyy');
 
-      const systemPrompt = `Você é uma calculadora de datas para uma equipe de telemonitoramento de medicamentos. As enfermeiras enviam perguntas informais em português sobre quantidade de comprimidos, data de início do uso e posologia diária.
+      // MUDE PRA ESSE
+      const systemPrompt = `Você é uma calculadora de datas para uma equipe de telemonitoramento de medicamentos. As enfermeiras enviam mensagens informais em português contendo alguma combinação de: quantidade de comprimidos (total da caixa e/ou quanto ainda resta), data de início do uso e posologia diária. NEM toda mensagem vai ter uma data de início — na maioria das vezes é justamente isso que está sendo perguntado (formato 2 abaixo), então a ausência de uma data não significa que falta informação.
 
-A data de hoje é ${hojeFormatado}.
+A data de referência deste cálculo é ${hojeFormatado} — é o dia em que o tele foi realizado, não necessariamente o dia de hoje no relógio. Trate essa data como "hoje" pra tudo, inclusive pra completar anos que faltarem em datas mencionadas.
 
-Você DEVE responder APENAS com um JSON válido, sem markdown, sem \`\`\`, sem texto antes ou depois. Você NUNCA calcula a data final sozinha — só extrai os dados; o cálculo é feito por outro sistema.
+Você DEVE responder APENAS com um JSON válido, sem markdown, sem \`\`\`, sem texto antes ou depois. Você NUNCA faz nenhuma conta de dias sozinha — nem soma, nem subtração — só extrai os números e datas mencionados; todo o cálculo é feito por outro sistema.
 
 Formatos possíveis de resposta:
 
-1) Pergunta sobre quando o medicamento acaba/termina/dura até quando:
+1) Pergunta sobre quando o medicamento acaba/termina/dura até quando, a partir de uma data de início já conhecida:
 {"entendido": true, "tipo": "DATA_FIM_MEDICAMENTO", "data_inicio": "AAAA-MM-DD", "quantidade_total": <numero>, "posologia_diaria": <numero>}
 
-2) Pergunta sobre somar ou subtrair dias de uma data:
+2) Pergunta sobre quando o paciente começou a tomar, a partir de quantos comprimidos ainda restam e do tamanho da caixa (ex: "tem 61 comprimidos, caixa de 90, toma 1 por dia, quando começou?"):
+{"entendido": true, "tipo": "DATA_INICIO_MEDICAMENTO", "quantidade_restante": <numero>, "quantidade_total": <numero>, "posologia_diaria": <numero>}
+
+3) Pergunta sobre somar ou subtrair uma quantidade de dias JÁ DITA EXPLICITAMENTE pela enfermeira a partir de uma data (não use este formato se a quantidade de dias precisar ser calculada a partir de comprimidos restantes — nesse caso use o formato 2):
 {"entendido": true, "tipo": "SOMAR_DIAS", "data_base": "AAAA-MM-DD", "dias_a_somar": <numero inteiro, pode ser negativo>}
 
-3) Faltou alguma informação, ou a pergunta não é sobre datas/medicamentos:
+4) Faltou alguma informação, ou a pergunta não é sobre datas/medicamentos:
 {"entendido": false, "pergunta_esclarecimento": "<pergunta curta e direta pedindo o que falta>"}
 
 Regras:
-- Sempre converta datas para AAAA-MM-DD, mesmo que venham como "22/07", "22-07-2026" ou "dia 22 de julho". Se faltar o ano, use o ano atual com base na data de hoje informada acima.
-- "quantidade_total" e "posologia_diaria" são sempre números inteiros.
-- Nunca invente um valor que não foi informado — peça esclarecimento (formato 3) se faltar algo.`;
+- Sempre converta datas para AAAA-MM-DD, mesmo que venham como "22/07", "22-07-2026" ou "dia 22 de julho". Se faltar o ano, use o ano atual com base na data de referência informada acima.
+- "quantidade_total", "quantidade_restante" e "posologia_diaria" são sempre números inteiros.
+// MUDE PRA ESSE
+- Se a pergunta mencionar comprimidos restantes e tamanho da caixa (em vez de uma quantidade de dias pronta), é sempre o formato 2 — nunca subtraia os valores você mesma pra virar um "dias_a_somar".
+- Se a mensagem trouxer quantidade restante e quantidade total da caixa, mas NÃO mencionar nenhuma data de início, classifique SEMPRE como formato 2 — mesmo que não haja uma pergunta explícita tipo "quando começou?". Nesse caso NUNCA peça a data de início: essa data é justamente o que você está calculando.
+- Nunca invente um valor que não foi informado — peça esclarecimento (formato 4) se faltar algo.
+
+Exemplo (mensagem só com os dados, sem pergunta explícita):
+"tem 61 comprimidos caixa cmo 90 toma um por dia" → {"entendido": true, "tipo": "DATA_INICIO_MEDICAMENTO", "quantidade_restante": 61, "quantidade_total": 90, "posologia_diaria": 1}`;
 
       const historicoConvertido = Array.isArray(historico)
         ? historico.flatMap(h => ([
-            { role: 'user', content: h.pergunta },
-            { role: 'assistant', content: h.resposta }
-          ]))
+          { role: 'user', content: h.pergunta },
+          { role: 'assistant', content: h.resposta }
+        ]))
         : [];
 
       let respostaIA;
@@ -113,6 +125,29 @@ Regras:
         return res.json({
           resposta: `Começando em ${format(dataInicioObj, 'dd/MM/yyyy')}, com ${quantidade_total} comprimidos e ${posologia_diaria} por dia, o medicamento dura ${diasDuracao} dias e termina em ${format(dataFimObj, 'dd/MM/yyyy')}.`,
           data_resultante: format(dataFimObj, 'yyyy-MM-dd')
+        });
+      }
+
+      if (extraido.tipo === 'DATA_INICIO_MEDICAMENTO') {
+        const { quantidade_restante, quantidade_total, posologia_diaria } = extraido;
+        if (quantidade_restante == null || !quantidade_total || !posologia_diaria) {
+          return res.json({
+            resposta: 'Preciso de quantos comprimidos restam, do total da caixa e de quantos comprimidos por dia pra calcular quando ela começou.',
+            data_resultante: null
+          });
+        }
+        const consumido = Number(quantidade_total) - Number(quantidade_restante);
+        if (consumido < 0) {
+          return res.json({
+            resposta: `A quantidade que resta (${quantidade_restante}) não pode ser maior que o total da caixa (${quantidade_total}). Confere esses números?`,
+            data_resultante: null
+          });
+        }
+        const diasConsumidos = Math.floor(consumido / Number(posologia_diaria));
+        const dataInicioCalculada = addDays(dataReferenciaObj, -diasConsumidos);
+        return res.json({
+          resposta: `Com ${quantidade_restante} restando de uma caixa de ${quantidade_total}, tomando ${posologia_diaria} por dia, ela consumiu ${consumido} comprimidos em ${diasConsumidos} dias. Contando a partir de ${format(dataReferenciaObj, 'dd/MM/yyyy')} (data do tele), ela começou a tomar em ${format(dataInicioCalculada, 'dd/MM/yyyy')}.`,
+          data_resultante: format(dataInicioCalculada, 'yyyy-MM-dd')
         });
       }
 
