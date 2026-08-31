@@ -22,12 +22,17 @@ class MonitoramentoMedicamento extends Model {
       qtd_total_capsulas: Sequelize.INTEGER,
       evento_externo_id: Sequelize.INTEGER,
 
-      // NOVAS COLUNAS PARA MUDANÇA DE POSOLOGIA 👇
       mudou_posologia: Sequelize.BOOLEAN,
       nova_posologia: Sequelize.INTEGER,
       data_mudanca_posologia: Sequelize.DATEONLY,
       grupo_medicamentos_id: Sequelize.STRING,
-      retomado_de_monitoramento_id: Sequelize.INTEGER
+      retomado_de_monitoramento_id: Sequelize.INTEGER,
+
+      // 👇 NOVO: marca o ciclo cuja "compra" veio de um evento de reembolso
+      // criado manualmente (paciente comprou por conta própria e foi
+      // reembolsado pela operadora, sem sincronizar com o sistema externo).
+      // Usado pelo faturamento pra excluir esse ciclo específico da cobrança.
+      eh_reembolso: Sequelize.BOOLEAN
 
     }, {
       sequelize,

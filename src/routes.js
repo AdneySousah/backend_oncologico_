@@ -37,8 +37,9 @@ import ChatController from "./app/controllers/ChatController.js";
 import FaturamentoController from "./app/controllers/FaturamentoController.js";
 import PacienteTermoAnexoController from './app/controllers/PacienteTermoAnexoController.js';
 import MotivoFalhaContatoController from "./app/controllers/MotivoFalhaContatoController.js";
+import AssistenteCalculoController from "./app/controllers/AssistenteCalculoController.js";
 
-
+import ReservaEdicaoController from "./app/controllers/ReservaEdicaoController.js";
 
 
 const router = Router();
@@ -226,7 +227,9 @@ router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', Moni
 router.get('/monitoramento-medicamentos/:id/verificar-compra', MonitoramentoMedicamentoController.verificarNovaCompra);
 router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.informarDataAdministracao);
 router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
+router.put('/monitoramento-medicamentos/:id/reembolso', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.criarEventoReembolso);
 router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedicamentoController.registrarContatoConjunto);
+router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.atualizarDataProximoContato);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
 router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);
@@ -278,6 +281,20 @@ router.get('/motivos-falha-contato', MotivoFalhaContatoController.index);
 router.post('/motivos-falha-contato', MotivoFalhaContatoController.store);
 router.put('/motivos-falha-contato/:id', MotivoFalhaContatoController.update);
 router.delete('/motivos-falha-contato/:id', MotivoFalhaContatoController.delete);
+
+
+
+// ==========================================
+// ROTAS: Reserva de Edição de Monitoramento de Medicamentos
+// ==========================================
+router.post('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), ReservaEdicaoController.reservar);
+router.delete('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), ReservaEdicaoController.liberar);
+
+// ==========================================
+// ROTAS: Assistente de Cálculo
+// ==========================================
+
+router.post('/assistente-calculo', checkPermission('telemonitoramento', 'acessar'), AssistenteCalculoController.calcular);
 
 
 

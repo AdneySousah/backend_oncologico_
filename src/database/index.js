@@ -38,6 +38,7 @@ import HistoricoTrocaMedicamento from '../app/models/HistoricoTrocaMedicamento.j
 import PacienteTermoAnexo from '../app/models/PacienteTermoAnexo.js';
 import EventosPaciente from '../app/models/EventosPaciente.js';
 import DashboardSnapshot from '../app/models/DashboardSnapshot.js';
+import MonitoramentoEdicaoEmAndamento from '../app/models/MonitoramentoEdicaoEmAndamento.js';
 
 
 const models = [
@@ -47,7 +48,7 @@ const models = [
   PatientEvaluation, EvaluationAnswer,Medico,
   PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
   MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
-  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, DashboardSnapshot
+  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, DashboardSnapshot, MonitoramentoEdicaoEmAndamento
 ];
 class Database {
   constructor() {

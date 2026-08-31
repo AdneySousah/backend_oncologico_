@@ -373,7 +373,6 @@ class MonitoramentoMedicamentoController {
       data_mudanca_posologia: Yup.date().nullable(),
       motivo_falha_contato_id: Yup.number().integer().nullable(),
       modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
-      // 👇 NOVO
       descontinuar_medicamento: Yup.boolean().nullable(),
       motivo_encerramento: Yup.string().nullable()
     });
@@ -388,8 +387,8 @@ class MonitoramentoMedicamentoController {
       mudou_posologia, nova_posologia, data_mudanca_posologia,
       motivo_falha_contato_id,
       modo_novo_medicamento,
-      descontinuar_medicamento, // 👈 NOVO
-      motivo_encerramento // 👈 NOVO
+      descontinuar_medicamento,
+      motivo_encerramento
     } = req.body;
 
     if (descontinuar_medicamento && aplicar_nova_compra) {
@@ -442,7 +441,7 @@ class MonitoramentoMedicamentoController {
           return { mensagem: 'Contato sem sucesso. Reagendado para o próximo dia útil.' };
         }
 
-        // ---- 👇 NOVO: Descontinuar medicamento — fecha o registro e NÃO cria próximo ciclo ----
+        // ---- Descontinuar medicamento — fecha o registro e NÃO cria próximo ciclo ----
         if (descontinuar_medicamento) {
           await monitoramentoAtual.update({
             contato_efetivo,
@@ -539,10 +538,10 @@ class MonitoramentoMedicamentoController {
             }, { transaction });
           }
         }
-
+        let proximoCicloAtual = null;
         if (data_abertura_nova_caixa) {
           const dataProximoContatoEnviada = parseISO(data_abertura_nova_caixa);
-          await MonitoramentoMedicamento.create({
+          proximoCicloAtual = await MonitoramentoMedicamento.create({
             paciente_id: monitoramentoAtual.paciente_id, patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
             medicamento_id: proximoMedicamentoId, posologia_diaria: proximaPosologia, data_entrega: proximaDataEntrega,
             data_administracao: proximaDataAdministracao, data_calculada_fim_caixa: proximaDataFimCaixa, data_proximo_contato: dataProximoContatoEnviada,
@@ -551,6 +550,11 @@ class MonitoramentoMedicamentoController {
           }, { transaction });
         }
 
+        // 👇 NOVO: capturamos o registro criado aqui pra devolver o id no
+        // final — é isso que permite o front encadear o registro completo
+        // (comprimidos/adesão/reação) do medicamento adicional na mesma sessão,
+        // em vez de deixá-lo esperando um contato futuro sem nenhum dado.
+        let novoMonitoramentoAdicional = null;
         if (ehUsoConjunto) {
           if (!data_inicio_nova_caixa || !posologia_nova_caixa) {
             const erro = new Error('Data de início e posologia do medicamento adicional são obrigatórias para uso em conjunto.');
@@ -563,7 +567,7 @@ class MonitoramentoMedicamentoController {
           const dataFimCaixaNovoMed = addDays(dataAdministracaoNovoMed, diasDuracaoNovoMed);
           const dataProximoContatoNovoMed = calcularDataTelemonitoramento(dataAdministracaoNovoMed);
 
-          await MonitoramentoMedicamento.create({
+          novoMonitoramentoAdicional = await MonitoramentoMedicamento.create({
             paciente_id: monitoramentoAtual.paciente_id,
             patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
             medicamento_id: compraRevalidada.medicamentoNovoId,
@@ -582,15 +586,25 @@ class MonitoramentoMedicamentoController {
 
         await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${mudou_posologia}. Uso em conjunto: ${ehUsoConjunto}`);
 
-        return { mensagem: 'Contato registrado e ciclo atualizado com sucesso!' };
+        return {
+          mensagem: 'Contato registrado e ciclo atualizado com sucesso!',
+          monitoramentoAdicionalId: ehUsoConjunto ? novoMonitoramentoAdicional.id : null,
+          proximoCicloAtualId: proximoCicloAtual ? proximoCicloAtual.id : null // 👈 NOVO
+        };
       });
 
-      return res.json({ message: resultado.mensagem });
+      // 👇 NOVO: devolve o id pro front
+      return res.json({
+        message: resultado.mensagem,
+        monitoramento_adicional_id: resultado.monitoramentoAdicionalId,
+        proximo_ciclo_atual_id: resultado.proximoCicloAtualId // 👈 NOVO
+      });
     } catch (error) {
       const status = error.status || 500;
       return res.status(status).json({ error: status === 500 ? 'Erro ao registrar contato' : error.message, details: error.message });
     }
   }
+
 
   // [VINCULAR AVALIAÇÃO, TIMELINE E INFORMAR ADMINISTRAÇÃO MANTIDOS INTACTOS]
   async timeline(req, res) {
@@ -617,17 +631,26 @@ class MonitoramentoMedicamentoController {
     } catch (error) { return res.status(500).json({ error: 'Erro ao vincular', details: error.message }); }
   }
 
+  // MonitoramentoMedicamentoController.js
   async informarDataAdministracao(req, res) {
     const { id } = req.params;
     const { data_administracao } = req.body;
+    if (!data_administracao) {
+      return res.status(400).json({ error: 'Data de administração é obrigatória.' });
+    }
     try {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id);
+      if (!monitoramento) {
+        return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      }
       const dataAdminParsed = parseISO(data_administracao);
       const diasDuracao = Math.floor(monitoramento.qtd_total_capsulas / monitoramento.posologia_diaria);
       const novaDataFimCaixa = addDays(dataAdminParsed, diasDuracao);
       await monitoramento.update({ data_administracao: dataAdminParsed, data_calculada_fim_caixa: novaDataFimCaixa });
       return res.json({ message: 'Sucesso!', monitoramento });
-    } catch (error) { return res.status(500).json({ error: 'Erro', details: error.message }); }
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao informar data de administração', details: error.message });
+    }
   }
 
 
@@ -876,7 +899,7 @@ class MonitoramentoMedicamentoController {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }, // 👈 NOVO: qtd_capsula
           { model: ReacaoAdversa, as: 'reacoesAdversas', through: { attributes: [] } }
         ]
       });
@@ -1296,6 +1319,130 @@ class MonitoramentoMedicamentoController {
   }
 
 
+  async criarEventoReembolso(req, res) {
+    const schema = Yup.object().shape({
+      qtd_caixas_reembolsadas: Yup.number().integer().min(1).required(),
+      data_inicio_medicamento: Yup.date().required(),
+      posologia: Yup.number().integer().min(1).nullable(), // 👈 NOVO
+      qtd_capsula_manual: Yup.number().integer().min(1).nullable()
+    });
+    try { await schema.validate(req.body, { abortEarly: false }); }
+    catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
+
+    const { id } = req.params;
+    const { qtd_caixas_reembolsadas, data_inicio_medicamento, posologia, qtd_capsula_manual } = req.body;
+
+    try {
+      const resultado = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
+        const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id, {
+          transaction,
+          lock: transaction.LOCK.UPDATE
+        });
+        if (!monitoramentoAtual) {
+          const erro = new Error('Monitoramento não encontrado.');
+          erro.status = 404;
+          throw erro;
+        }
+        if (monitoramentoAtual.status !== 'PENDENTE') {
+          const erro = new Error('Só é possível criar um evento de reembolso a partir de um monitoramento pendente.');
+          erro.status = 400;
+          throw erro;
+        }
+
+        const medicamento = await Medicamentos.findByPk(monitoramentoAtual.medicamento_id, { transaction });
+
+        const qtdPorCaixa = medicamento?.qtd_capsula || qtd_capsula_manual;
+        if (!qtdPorCaixa) {
+          const erro = new Error(`Informe a quantidade de comprimidos por caixa de ${medicamento?.nome} para calcular o ciclo.`);
+          erro.status = 400;
+          erro.payload = { needs_qtd_capsula: true, medicamento_id: monitoramentoAtual.medicamento_id };
+          throw erro;
+        }
+        if (qtd_capsula_manual && !medicamento.qtd_capsula) {
+          await medicamento.update({ qtd_capsula: qtd_capsula_manual }, { transaction });
+        }
+
+        const dataInicio = parseISO(data_inicio_medicamento);
+        // 👇 NOVO: a posologia informada na tela tem prioridade — a dosagem
+        // pode ter mudado desde o último ciclo sincronizado.
+        const posologiaVigente = posologia || monitoramentoAtual.posologia_diaria;
+        const qtdTotalCapsulas = qtdPorCaixa * qtd_caixas_reembolsadas;
+        const diasDuracao = Math.floor(qtdTotalCapsulas / posologiaVigente);
+        const dataFimCaixa = addDays(dataInicio, diasDuracao);
+        const dataProximoContatoSugerida = calcularDataTelemonitoramento(dataInicio);
+
+        // Cancela o registro pendente antigo — ele fica sem uma compra
+        // sincronizada disponível e é substituído pelo ciclo de reembolso.
+        await monitoramentoAtual.update({ status: 'CANCELADO' }, { transaction });
+
+        const novoMonitoramentoReembolso = await MonitoramentoMedicamento.create({
+          paciente_id: monitoramentoAtual.paciente_id,
+          patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
+          medicamento_id: monitoramentoAtual.medicamento_id,
+          posologia_diaria: posologiaVigente,
+          data_entrega: dataInicio,
+          data_administracao: dataInicio,
+          data_calculada_fim_caixa: dataFimCaixa,
+          data_proximo_contato: dataProximoContatoSugerida,
+          status: 'PENDENTE',
+          qtd_caixas: qtd_caixas_reembolsadas,
+          qtd_total_capsulas: qtdTotalCapsulas,
+          evento_externo_id: monitoramentoAtual.evento_externo_id,
+          eh_reembolso: true,
+          grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id
+        }, { transaction });
+
+        await AuditService.log(
+          req.userId, 'Criação', 'Monitoramento', novoMonitoramentoReembolso.id,
+          `Evento de reembolso criado para ${medicamento?.nome} (paciente ${monitoramentoAtual.paciente_id}). Caixas reembolsadas: ${qtd_caixas_reembolsadas}. Posologia: ${posologiaVigente}/dia. Início: ${data_inicio_medicamento}. Substitui o monitoramento #${monitoramentoAtual.id} (cancelado).`
+        );
+
+        return novoMonitoramentoReembolso;
+      });
+
+      return res.status(201).json({
+        message: 'Evento de reembolso criado com sucesso. Prossiga com o registro de contato normalmente.',
+        monitoramento: resultado
+      });
+    } catch (error) {
+      const status = error.status || 500;
+      return res.status(status).json({
+        error: status === 500 ? 'Erro ao criar evento de reembolso' : error.message,
+        ...(error.payload || {}),
+        details: error.message
+      });
+    }
+  }
+
+  // ============================================================
+// FUNÇÃO NOVA: atualizarDataProximoContato()
+// Reagenda a data_proximo_contato de um monitoramento PENDENTE. Usada pelo
+// fluxo de uso conjunto imediato pra alinhar a data do medicamento ATUAL
+// (já fechado) com a data escolhida na resolução de divergência de adesão
+// do medicamento adicional — sem isso os dois ficam com datas diferentes.
+// ============================================================
+async atualizarDataProximoContato(req, res) {
+  const schema = Yup.object().shape({
+    data_proximo_contato: Yup.date().required()
+  });
+  try { await schema.validate(req.body, { abortEarly: false }); }
+  catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
+
+  const { id } = req.params;
+  const { data_proximo_contato } = req.body;
+
+  try {
+    const monitoramento = await MonitoramentoMedicamento.findByPk(id);
+    if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+    if (monitoramento.status !== 'PENDENTE') {
+      return res.status(400).json({ error: 'Só é possível reagendar um monitoramento pendente.' });
+    }
+    await monitoramento.update({ data_proximo_contato: parseISO(data_proximo_contato) });
+    return res.json({ message: 'Data do próximo contato atualizada com sucesso.' });
+  } catch (error) {
+    return res.status(500).json({ error: 'Erro ao atualizar data do próximo contato', details: error.message });
+  }
+}
 }
 
 export default new MonitoramentoMedicamentoController();
