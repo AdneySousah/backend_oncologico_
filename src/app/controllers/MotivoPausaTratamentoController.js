@@ -1,73 +1,72 @@
-import MotivoFalhaContato from '../models/MotivoFalhaContato.js';
+import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import AuditService from '../../services/AuditService.js';
 import * as Yup from 'yup';
 
-class MotivoFalhaContatoController {
-  // Listar motivos (O frontend do monitoramento vai usar essa rota)
+class MotivoPausaTratamentoController {
+  // Listar motivos (usado tanto pelo select de "Pausar Tratamento" quanto
+  // pelo select de "Descontinuar Medicamento")
   async index(req, res) {
     try {
       // Se passar ?all=true na URL, traz todos (útil para a tela de admin)
-      // Se não, traz só os ativos (útil para o select do modal)
+      // Se não, traz só os ativos (útil para os selects dos dois fluxos)
       const whereClause = req.query.all ? {} : { ativo: true };
 
-      const motivos = await MotivoFalhaContato.findAll({
+      const motivos = await MotivoPausaTratamento.findAll({
         where: whereClause,
         order: [['descricao', 'ASC']]
       });
 
       return res.json(motivos);
     } catch (error) {
-      return res.status(500).json({ error: 'Erro ao buscar motivos de falha de contato.' });
+      return res.status(500).json({ error: 'Erro ao buscar motivos de pausa/descontinuação.' });
     }
   }
 
-  // Criar um novo motivo
   async store(req, res) {
     const schema = Yup.object().shape({
       descricao: Yup.string().required('A descrição é obrigatória.'),
       ativo: Yup.boolean()
     });
 
-    try { await schema.validate(req.body, { abortEarly: false }); } 
+    try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     try {
       const { descricao, ativo = true } = req.body;
 
-      const motivoExists = await MotivoFalhaContato.findOne({ where: { descricao } });
+      const motivoExists = await MotivoPausaTratamento.findOne({ where: { descricao } });
       if (motivoExists) {
         return res.status(400).json({ error: 'Já existe um motivo cadastrado com essa descrição.' });
       }
 
-      const motivo = await MotivoFalhaContato.create({ descricao, ativo });
-      
-      await AuditService.log(req.userId, 'Criação', 'Motivo de Falha de Contato', motivo.id, `Motivo de Falha de Contato "${motivo.descricao}" criado.`);
+      const motivo = await MotivoPausaTratamento.create({ descricao, ativo });
+
+      await AuditService.log(req.userId, 'Criação', 'Motivo de Pausa/Descontinuação', motivo.id, `Motivo de Pausa/Descontinuação "${motivo.descricao}" criado.`);
 
       return res.status(201).json(motivo);
     } catch (error) {
-      return res.status(500).json({ error: 'Erro ao criar motivo de falha.', details: error.message });
+      return res.status(500).json({ error: 'Erro ao criar motivo.', details: error.message });
     }
   }
 
-  // Editar um motivo (corrigir texto ou status)
   async update(req, res) {
     const schema = Yup.object().shape({
       descricao: Yup.string(),
       ativo: Yup.boolean()
     });
 
-    try { await schema.validate(req.body, { abortEarly: false }); } 
+    try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     try {
-      const motivo = await MotivoFalhaContato.findByPk(req.params.id);
-      
+      const motivo = await MotivoPausaTratamento.findByPk(req.params.id);
+
       if (!motivo) {
         return res.status(404).json({ error: 'Motivo não encontrado.' });
       }
 
       await motivo.update(req.body);
-      await AuditService.log(req.userId, 'Edição', 'Motivo de Falha de Contato', motivo.id, `Motivo de Falha de Contato "${motivo.descricao}" editado.`);
+      await AuditService.log(req.userId, 'Edição', 'Motivo de Pausa/Descontinuação', motivo.id, `Motivo de Pausa/Descontinuação "${motivo.descricao}" editado.`);
 
       return res.json(motivo);
     } catch (error) {
@@ -75,18 +74,18 @@ class MotivoFalhaContatoController {
     }
   }
 
-  // "Deletar" (Inativar para não quebrar chaves estrangeiras)
+  // "Deletar" (Inativar para não quebrar chaves estrangeiras já usadas em
+  // pacientes/monitoramentos passados)
   async delete(req, res) {
     try {
-      const motivo = await MotivoFalhaContato.findByPk(req.params.id);
-      
+      const motivo = await MotivoPausaTratamento.findByPk(req.params.id);
+
       if (!motivo) {
         return res.status(404).json({ error: 'Motivo não encontrado.' });
       }
 
-      // Inativa em vez de deletar do banco, assim os monitoramentos passados não perdem a referência
       await motivo.update({ ativo: false });
-      await AuditService.log(req.userId, 'Edição', 'Motivo de Falha de Contato', motivo.id, `Motivo de Falha de Contato "${motivo.descricao}" inativado.`);
+      await AuditService.log(req.userId, 'Edição', 'Motivo de Pausa/Descontinuação', motivo.id, `Motivo de Pausa/Descontinuação "${motivo.descricao}" inativado.`);
 
       return res.json({ message: 'Motivo inativado com sucesso.' });
     } catch (error) {
@@ -95,4 +94,4 @@ class MotivoFalhaContatoController {
   }
 }
 
-export default new MotivoFalhaContatoController();
+export default new MotivoPausaTratamentoController();

@@ -1,5 +1,6 @@
 import * as Yup from 'yup';
 import Perfil from '../models/Perfil.js';
+import AuditService from '../../services/AuditService.js';
 
 class PerfilController {
     // Lista todos os perfis (Para preencher a tabela no frontend)
@@ -54,6 +55,7 @@ class PerfilController {
             }
 
             const perfil = await Perfil.create(req.body);
+            await AuditService.log(req.userId, 'Criação', 'Perfil', perfil.id, `Perfil "${perfil.nome}" criado.`);
             return res.status(201).json(perfil);
         } catch (error) {
             return res.status(500).json({ error: 'Erro ao criar perfil', details: error.message });
@@ -92,6 +94,7 @@ class PerfilController {
 
             // O Sequelize substitui o objeto JSONB inteiro. O frontend deve enviar o objeto completo das permissões
             await perfil.update(req.body);
+            await AuditService.log(req.userId, 'Edição', 'Perfil', perfil.id, `Perfil "${perfil.nome}" editado (permissões e/ou nome atualizados).`);
 
             return res.json(perfil);
         } catch (error) {

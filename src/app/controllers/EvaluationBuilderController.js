@@ -4,6 +4,7 @@ import PatientEvaluation from '../models/PatientEvaluation.js';
 import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import EvaluationQuestion from '../models/EvaluationQuestion.js';
 import EvaluationOption from '../models/EvaluationOption.js';
+import AuditService from '../../services/AuditService.js';
 
 class EvaluationBuilderController {
   async store(req, res) {
@@ -52,6 +53,8 @@ class EvaluationBuilderController {
           }]
         }]
       });
+
+      await AuditService.log(req.userId, 'Criação', 'Questionário', template.id, `Questionário "${template.title}" criado.`);
 
       return res.json(template);
 
@@ -110,6 +113,7 @@ class EvaluationBuilderController {
 
     try {
       await template.update({ title, description }, { transaction });
+      await AuditService.log(req.userId, 'Edição', 'Questionário', template.id, `Questionário "${title}" editado.`);
 
       const oldQuestions = await EvaluationQuestion.findAll({ where: { template_id: id }, transaction });
       const oldQuestionIds = oldQuestions.map(q => q.id);
@@ -180,6 +184,7 @@ class EvaluationBuilderController {
 
     template.is_active = !template.is_active;
     await template.save();
+    await AuditService.log(req.userId, 'Edição', 'Questionário', template.id, `Questionário "${template.title}" ${template.is_active ? 'ativado' : 'desativado'}.`);
 
     return res.json(template);
   }

@@ -29,16 +29,20 @@ class AuditLogController {
       whereClause.createdAt = { [Op.lte]: new Date(`${data_fim}T23:59:59.999Z`) }; 
     }
 
-    // 2. Filtro por Módulo (entity) - Busca parcial
+    // 2. Filtro por Módulo (entity) - Busca parcial, sem diferenciar maiúsculas/minúsculas
     if (entity) {
       whereClause.entity = {
-        [Op.like]: `%${entity}%` // NOTA: Se o seu banco for PostgreSQL, use Op.iLike para ignorar maiúsculas/minúsculas
+        [Op.iLike]: `%${entity}%`
       };
     }
 
-    // 3. Filtro por Tipo de Ação (action_type) - Busca exata
+    // 3. Filtro por Tipo de Ação (action_type) - Busca exata, mas sem
+    // diferenciar maiúsculas/minúsculas — o filtro do frontend já foi
+    // corrigido pra mandar o valor exato ("Edição", não "EDIÇÃO"), mas
+    // manter case-insensitive aqui evita que essa mesma classe de bug volte
+    // se algum valor novo for adicionado com casing diferente no futuro.
     if (action_type) {
-      whereClause.action_type = action_type;
+      whereClause.action_type = { [Op.iLike]: action_type };
     }
 
     try {

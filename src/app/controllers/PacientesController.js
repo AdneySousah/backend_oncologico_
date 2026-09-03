@@ -1,169 +1,17 @@
-import * as Yup from 'yup';
 import User from '../models/User.js';
 import Pacientes from '../models/Pacientes.js';
 import Operadora from '../models/Operadora.js';
 import Medicamentos from '../models/Medicamentos.js';
-import getAdress from '../../utils/getAdress.js';
-import PacientesAnexos from '../models/PacientesAnexos.js';
-import Sequelize, { Op } from 'sequelize';
-import { getOperadoraFilter } from '../../utils/permissionUtils.js';
+import { Op } from 'sequelize';
 import AuditService from '../../services/AuditService.js';
 import axios from 'axios';
 import PacienteSyncService from '../../services/SyncService.js';
 import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import EventosPaciente from '../models/EventosPaciente.js';
+import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 
-
-const formatarCelularWhatsapp = (numero) => {
-    if (!numero) return null;
-    let limpo = String(numero).replace(/\D/g, '');
-    if (limpo.length === 11 && !limpo.startsWith('55')) {
-        limpo = '55' + limpo;
-    }
-    return limpo;
-};
 
 class PacientesController {
-
-    async getNomesAnexos(req, res) {
-        try {
-            const nomes = await PacientesAnexos.findAll({
-                attributes: [[Sequelize.fn('DISTINCT', Sequelize.col('nome')), 'nome']],
-                raw: true,
-                order: [['nome', 'ASC']]
-            });
-            return res.json(nomes.map(n => n.nome));
-        } catch (error) {
-            return res.status(500).json({ error: 'Erro ao buscar nomes de anexos' });
-        }
-    }
-
-    async store(req, res) {
-        req.body.possui_cuidador = req.body.possui_cuidador === 'true';
-        req.body.fez_entrevista = req.body.fez_entrevista === 'true';
-        req.body.operadora_id = Number(req.body.operadora_id);
-
-        if (req.body.celular) req.body.celular = formatarCelularWhatsapp(req.body.celular);
-        if (req.body.telefone) req.body.telefone = String(req.body.telefone).replace(/\D/g, '');
-
-        const permission = await getOperadoraFilter(req.userId, req.body.operadora_id);
-        if (!permission.authorized) {
-            return res.status(permission.status || 403).json({ error: permission.error || "Sem permissão." });
-        }
-
-        req.body.medicamento_id = req.body.medicamento_id ? Number(req.body.medicamento_id) : null;
-
-        const schema = Yup.object({
-            nome: Yup.string().required(),
-            sobrenome: Yup.string().required(),
-            celular: Yup.string().required().length(13),
-            data_nascimento: Yup.date().required(),
-            sexo: Yup.string().oneOf(['M', 'F', 'nao definido']).required(),
-            possui_cuidador: Yup.boolean().required(),
-            operadora_id: Yup.number().required(),
-            cpf: Yup.string().required(),
-            cep: Yup.string().required(),
-            logradouro: Yup.string().required(),
-            numero: Yup.string().required(),
-            bairro: Yup.string().required(),
-            cidade: Yup.string().required(),
-            estado: Yup.string().required(),
-            matricula: Yup.string().nullable()
-        });
-
-        try {
-            await schema.validate(req.body, { abortEarly: false });
-        } catch (err) {
-            return res.status(400).json({ error: err.errors });
-        }
-
-        const formatarNome = (texto) => texto ? texto.toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') : '';
-        req.body.nome = formatarNome(req.body.nome);
-        req.body.sobrenome = formatarNome(req.body.sobrenome);
-
-        const isCPF = await Pacientes.findOne({ where: { cpf: req.body.cpf.replace(/\D/g, '') } });
-        if (isCPF) return res.status(400).json({ error: 'CPF já cadastrado.' });
-
-        try {
-            const paciente = await Pacientes.create(req.body);
-
-            if (req.files && req.files.length > 0) {
-                let nomesAnexos = Array.isArray(req.body.anexos_nomes) ? req.body.anexos_nomes : [req.body.anexos_nomes || ''];
-                const anexosData = req.files.map((file, index) => ({
-                    paciente_id: paciente.id,
-                    nome: nomesAnexos[index] || 'Sem Nome',
-                    file_path: file.filename,
-                    original_name: file.originalname
-                }));
-                await PacientesAnexos.bulkCreate(anexosData);
-            }
-
-            return res.status(201).json(paciente);
-        } catch (err) {
-            return res.status(500).json({ error: 'Erro ao cadastrar', details: err.message });
-        }
-    }
-
-    async update(req, res) {
-        const { id } = req.params;
-        try {
-            const paciente = await Pacientes.findByPk(id);
-            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
-
-            if (req.body.possui_cuidador !== undefined) req.body.possui_cuidador = String(req.body.possui_cuidador) === 'true';
-            if (req.body.fez_entrevista !== undefined) req.body.fez_entrevista = String(req.body.fez_entrevista) === 'true';
-            if (req.body.operadora_id) req.body.operadora_id = Number(req.body.operadora_id);
-            if (req.body.medicamento_id === '' || req.body.medicamento_id === 'null') req.body.medicamento_id = null;
-            else if (req.body.medicamento_id) req.body.medicamento_id = Number(req.body.medicamento_id);
-
-            if (req.body.celular) {
-                req.body.celular = formatarCelularWhatsapp(req.body.celular);
-            }
-
-            if (req.body.cpf) {
-                req.body.cpf = req.body.cpf.replace(/\D/g, '');
-            }
-
-            await paciente.update(req.body);
-            return res.json(paciente);
-        } catch (err) {
-            return res.status(500).json({ error: 'Erro ao atualizar' });
-        }
-    }
-
-    async index(req, res) {
-        const { nome, cpf, operadora_id, status_active } = req.query;
-        const permission = await getOperadoraFilter(req.userId, operadora_id);
-
-        if (!permission.authorized) return res.json([]);
-
-        const where = permission.whereClause;
-        if (nome) {
-            where[Op.or] = [
-                { nome: { [Op.iLike]: `%${nome}%` } },
-                { sobrenome: { [Op.iLike]: `%${nome}%` } }
-            ];
-        }
-        if (cpf) where.cpf = cpf.replace(/\D/g, '');
-
-        if (status_active === 'false') where.is_active = false;
-        else if (status_active !== 'ambos' && status_active !== 'todos') where.is_active = { [Op.not]: false };
-
-        try {
-            const pacientes = await Pacientes.findAll({
-                where,
-                include: [
-                    { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] },
-                    { model: PacientesAnexos, as: 'anexos', attributes: ['id', 'nome', 'file_path', 'original_name'] },
-                    { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'dosagem'] }
-                ],
-                order: [['nome', 'ASC']]
-            });
-            return res.json(pacientes);
-        } catch (err) {
-            return res.status(500).json({ error: 'Erro ao buscar pacientes' });
-        }
-    }
 
     // =========================================================================
     // SINCRONIZAÇÃO COM API EXTERNA
@@ -330,9 +178,12 @@ class PacientesController {
 
             console.log(`[CHECK SYNC] Pacientes Pendentes: ${pacientesPendentes.length} | Eventos Pendentes: ${eventosPendentes.length}`);
 
-            // Retorna para o front-end a soma de pacientes novos + eventos novos de pacientes antigos
+            // 👇 Quebra pacientes/eventos separadamente, pra tela conseguir
+            // mostrar exatamente o que está pendente (antes só mandava a soma).
             return res.json({
                 pendentes: pacientesPendentes.length + eventosPendentes.length,
+                pacientes_pendentes: pacientesPendentes.length,
+                eventos_pendentes: eventosPendentes.length,
                 total_externo: externalPatientIds.length
             });
 
@@ -342,28 +193,62 @@ class PacientesController {
         }
     }
 
-    async getOperadorasFiltro(req, res) {
+    // =========================================================================
+    // PAUSA DE TRATAMENTO
+    // =========================================================================
+    // Usado a partir de "Necessidade de Navegação": em vez de enviar o Termo,
+    // o operador pode pausar o tratamento do paciente. Enquanto pausado, o
+    // paciente fica bloqueado de qualquer contato automatizado (Termo, NPS,
+    // chat/WhatsApp) e some das pendências do Telemonitoramento, até alguém
+    // retomar o tratamento manualmente.
+    async pausarTratamento(req, res) {
+        const { id } = req.params;
+        const { motivo_id, observacao } = req.body;
         try {
-            const permission = await getOperadoraFilter(req.userId);
-            let whereClause = {};
-            if (permission.whereClause && permission.whereClause.operadora_id) whereClause.id = permission.whereClause.operadora_id;
-            const operadoras = await Operadora.findAll({ where: whereClause, attributes: ['id', 'nome'], order: [['nome', 'ASC']] });
-            return res.json(operadoras);
+            if (!motivo_id) {
+                return res.status(400).json({ error: 'Selecione o motivo da pausa.' });
+            }
+
+            const paciente = await Pacientes.findByPk(id);
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
+
+            await paciente.update({
+                tratamento_pausado: true,
+                motivo_pausa_tratamento_id: motivo_id,
+                motivo_pausa_tratamento: observacao || null,
+                data_pausa_tratamento: new Date()
+            });
+
+            const pacienteAtualizado = await Pacientes.findByPk(id, {
+                include: [{ model: MotivoPausaTratamento, as: 'motivoPausaTratamento', attributes: ['id', 'descricao'] }]
+            });
+
+            await AuditService.log(req.userId, 'Edição', 'Pacientes', paciente.id, `Tratamento pausado. Motivo: ${pacienteAtualizado.motivoPausaTratamento?.descricao || 'não informado'}.`);
+
+            return res.json({ message: 'Tratamento pausado com sucesso.', tratamento_pausado: true, paciente: pacienteAtualizado });
         } catch (err) {
-            return res.status(500).json({ error: 'Erro ao buscar operadoras' });
+            return res.status(500).json({ error: 'Erro ao pausar tratamento' });
         }
     }
 
-    async toggleActive(req, res) {
+    async retomarTratamento(req, res) {
         const { id } = req.params;
         try {
             const paciente = await Pacientes.findByPk(id);
             if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
-            const novoStatus = paciente.is_active === false;
-            await paciente.update({ is_active: novoStatus });
-            return res.json({ message: 'Status alterado', is_active: novoStatus });
+
+            await paciente.update({
+                tratamento_pausado: false,
+                motivo_pausa_tratamento_id: null,
+                motivo_pausa_tratamento: null,
+                data_pausa_tratamento: null
+            });
+
+            await AuditService.log(req.userId, 'Edição', 'Pacientes', paciente.id, 'Tratamento retomado.');
+
+            return res.json({ message: 'Tratamento retomado com sucesso.', tratamento_pausado: false });
         } catch (err) {
-            return res.status(500).json({ error: 'Erro ao alterar status' });
+            return res.status(500).json({ error: 'Erro ao retomar tratamento' });
         }
     }
 

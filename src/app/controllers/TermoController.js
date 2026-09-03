@@ -1,12 +1,12 @@
 import Pacientes from '../models/Pacientes.js';
+import Operadora from '../models/Operadora.js';
+import VersaoTermo from '../models/VersaoTermo.js';
 import User from '../models/User.js';
 import { enviarMensagemWhatsApp } from '../../services/whatsapp.js';
 import AuditService from '../../services/AuditService.js';
 import { gerarPdfTermoNavegacao } from '../../utils/gerarTermoPdf.js';
 import TermosHistorico from '../models/TermosHistorico.js';
-import path from 'path';
 import Mail from '../../services/Mail.js';
-import PacienteTermoAnexo from '../models/PacienteTermoAnexo.js';
 
 class TermoController {
 
@@ -22,6 +22,10 @@ class TermoController {
 
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+
+            if (paciente.tratamento_pausado) {
+                return res.status(400).json({ error: 'Este paciente está com o tratamento pausado. Retome o tratamento antes de enviar o termo.' });
             }
 
             const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
@@ -77,6 +81,27 @@ class TermoController {
                 );
 
                 return res.json({ message: 'Link enviado por e-mail com sucesso!' });
+            }
+
+            // ==========================================
+            // FLUXO: GERAR LINK PRA COPIAR (envio 100% manual, sem
+            // disparar nada automaticamente — nem WhatsApp, nem e-mail).
+            // Antes esse caso não era tratado aqui e caía, por engano, no
+            // bloco de disparo via WhatsApp abaixo — disparando de verdade.
+            // ==========================================
+            if (destino_tipo === 'copiar_link') {
+                paciente.status_termo = 'Pendente';
+                await paciente.save();
+
+                await AuditService.log(
+                    req.userId,
+                    'Envio',
+                    'Termo Link Manual',
+                    paciente.id,
+                    `Gerou o link do termo de acompanhamento para envio manual (nenhum disparo automático foi feito).`
+                );
+
+                return res.json({ message: 'Link gerado com sucesso!', link: linkAcompanhamento });
             }
 
             // ==========================================
@@ -162,50 +187,42 @@ class TermoController {
         // Atualiza os dados principais
         paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
 
-        let pdfSalvoPath = null;
         const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
         const userAgent = req.headers['user-agent'];
 
         if (aceite) {
-            // Gera o PDF e salva fisicamente no servidor (uploads/anexos)
-            pdfSalvoPath = await gerarPdfTermoNavegacao(paciente);
+            // 👇 Não gera nem salva PDF nenhum aqui — o termo é padrão (só
+            // muda nome/CPF/operadora do paciente), então é reconstruído ao
+            // vivo sempre que alguém precisar visualizar (rota /preview-pdf),
+            // em vez de guardar uma cópia física ocupando espaço.
+            // Vincula a VERSÃO do texto vigente agora — se o texto for
+            // editado no futuro (nova versão), esse paciente continua
+            // vinculado ao que ele realmente aceitou.
+            const versaoAtiva = await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
 
-            // Grava os rastros no cadastro do paciente
             paciente.termo_data_aceite = new Date();
             paciente.termo_ip = ip;
             paciente.termo_user_agent = userAgent;
-            paciente.termo_versao = '1.0';
+            paciente.termo_versao_id = versaoAtiva ? versaoAtiva.id : null;
         } else {
             paciente.termo_data_aceite = null;
             paciente.termo_ip = null;
             paciente.termo_user_agent = null;
-            paciente.termo_versao = null;
+            paciente.termo_versao_id = null;
         }
 
         await paciente.save();
 
-        // Salva o registro imutável na tabela de histórico
+        // Salva o registro imutável na tabela de histórico (auditoria de
+        // quando/como o aceite aconteceu — sem referência a arquivo, já que
+        // não existe mais arquivo físico).
         await TermosHistorico.create({
             paciente_id: paciente.id,
             status: paciente.status_termo,
-            arquivo_path: pdfSalvoPath ? path.basename(pdfSalvoPath) : null,
+            arquivo_path: null,
             ip: ip,
             user_agent: userAgent
         });
-
-        // =================================================================
-        // 👇 NOVO: GRAVAÇÃO AUTOMÁTICA NA TABELA 'paciente_termos_anexos'
-        // =================================================================
-        if (aceite && pdfSalvoPath) {
-            const nomeArquivo = path.basename(pdfSalvoPath);
-            
-            await PacienteTermoAnexo.create({
-                paciente_id: paciente.id,
-                arquivo_path: nomeArquivo,
-                nome_original: `Termo_Navegacao_${paciente.nome.trim().replace(/\s+/g, '_')}.pdf`
-            });
-        }
-        // =================================================================
 
         return res.json({ 
             message: 'Resposta registrada com sucesso', 
@@ -272,16 +289,94 @@ class TermoController {
     async previewPdf(req, res) {
         const { id } = req.params;
         try {
-            const paciente = await Pacientes.findByPk(id);
+            const paciente = await Pacientes.findByPk(id, { include: ['operadoras', 'versaoTermo'] });
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
+            const operadoraNome = paciente.operadoras?.nome || 'sua operadora';
+
+            // Se o paciente já aceitou antes, mostra a versão que ELE viu
+            // (fidelidade histórica). Se ainda não aceitou (preview antes de
+            // decidir), mostra a versão vigente agora.
+            const versao = paciente.versaoTermo || await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
+
+            if (!versao) {
+                return res.status(500).json({ error: 'Nenhuma versão do termo está cadastrada no sistema.' });
+            }
+
             // Passa o "res" para a função. Ela vai gerar e enviar direto para o navegador
-            await gerarPdfTermoNavegacao(paciente, res);
+            await gerarPdfTermoNavegacao(paciente, res, operadoraNome, versao);
         } catch (error) {
             console.error(error);
             return res.status(500).json({ error: 'Erro ao gerar visualização do termo' });
+        }
+    }
+
+    // Lista todo paciente com termo aceito — antes essa listagem dependia de
+    // um arquivo salvo em PacienteTermoAnexo; agora usa direto o cadastro do
+    // paciente (fonte real da verdade) e o PDF é gerado ao vivo quando
+    // alguém clicar em "Visualizar/Baixar" (rota /preview-pdf), sem precisar
+    // de nenhum arquivo armazenado.
+    async listarTermosAceitos(req, res) {
+        try {
+            const pacientes = await Pacientes.findAll({
+                where: { status_termo: 'Aceito' },
+                attributes: ['id', 'nome', 'sobrenome', 'cpf', 'termo_data_aceite'],
+                include: [
+                    { model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] },
+                    { model: VersaoTermo, as: 'versaoTermo', attributes: ['id', 'titulo'] }
+                ],
+                order: [['termo_data_aceite', 'DESC']]
+            });
+
+            return res.json(pacientes);
+        } catch (error) {
+            console.error('Erro ao listar termos aceitos:', error);
+            return res.status(500).json({ error: 'Erro ao listar termos aceitos.' });
+        }
+    }
+
+    // Lista o histórico de versões do termo (mais recente primeiro).
+    async listarVersoesTermo(req, res) {
+        try {
+            const versoes = await VersaoTermo.findAll({
+                include: [{ model: User, as: 'criador', attributes: ['id', 'name'] }],
+                order: [['id', 'DESC']]
+            });
+            return res.json(versoes);
+        } catch (error) {
+            return res.status(500).json({ error: 'Erro ao listar versões do termo.' });
+        }
+    }
+
+    // Cria uma nova versão do termo e a torna a ativa — a antiga continua
+    // existindo (histórico), só deixa de ser usada em novos aceites.
+    // Pacientes que já aceitaram sob a versão anterior continuam vinculados
+    // a ela, sem nenhuma alteração retroativa.
+    async criarVersaoTermo(req, res) {
+        const { titulo, introducao, textoAutorizacao, finalidades, textoCiente, itensCiente } = req.body;
+
+        if (!introducao || !Array.isArray(finalidades) || !Array.isArray(itensCiente)) {
+            return res.status(400).json({ error: 'Preencha ao menos a introdução e as duas listas (finalidades e itens de ciência).' });
+        }
+
+        try {
+            await VersaoTermo.update({ ativo: false }, { where: { ativo: true } });
+
+            const novaVersao = await VersaoTermo.create({
+                titulo: titulo || 'TERMO DE ACEITE PARA NAVEGAÇÃO E CONTATO VIA WHATSAPP',
+                conteudo: { introducao, textoAutorizacao, finalidades, textoCiente, itensCiente },
+                ativo: true,
+                criado_por: req.userId
+            });
+
+            await AuditService.log(req.userId, 'Criação', 'Versão do Termo', novaVersao.id, `Nova versão do termo criada e ativada (versão #${novaVersao.id}). Versões anteriores continuam vinculadas aos pacientes que já aceitaram sob elas.`);
+
+            return res.status(201).json(novaVersao);
+        } catch (error) {
+            console.error('Erro ao criar versão do termo:', error);
+            return res.status(500).json({ error: 'Erro ao criar nova versão do termo.' });
         }
     }
 }

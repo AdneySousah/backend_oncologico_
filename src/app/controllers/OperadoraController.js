@@ -1,6 +1,7 @@
 import * as Yup from 'yup';
 import Operadora from '../models/Operadora.js';
 import User from '../models/User.js'; // Importado para poder listar os usuários vinculados
+import AuditService from '../../services/AuditService.js';
 
 class OperadoraController {
   async store(req, res) {
@@ -34,6 +35,8 @@ class OperadoraController {
       telefone,
       email
     });
+
+    await AuditService.log(req.userId, 'Criação', 'Operadora', operadora.id, `Operadora "${operadora.nome}" criada.`);
 
     return res.status(201).json(operadora);
   }
@@ -85,8 +88,26 @@ class OperadoraController {
     }
 
     await operadora.update(req.body);
+    await AuditService.log(req.userId, 'Edição', 'Operadora', operadora.id, `Operadora "${operadora.nome}" editada.`);
 
     return res.status(200).json(operadora);
+  }
+
+  // Desativa/reativa uma operadora (substitui a exclusão definitiva, que nunca existiu de fato).
+  async toggleActive(req, res) {
+    const { id } = req.params;
+    try {
+      const operadora = await Operadora.findByPk(id);
+      if (!operadora) return res.status(404).json({ error: 'Operadora não encontrada' });
+
+      const novoStatus = operadora.is_active === false;
+      await operadora.update({ is_active: novoStatus });
+      await AuditService.log(req.userId, 'Edição', 'Operadora', operadora.id, `Operadora "${operadora.nome}" ${novoStatus ? 'ativada' : 'desativada'}.`);
+
+      return res.json({ message: 'Status alterado', is_active: novoStatus });
+    } catch (err) {
+      return res.status(500).json({ error: 'Erro ao alterar status da operadora' });
+    }
   }
 }
 

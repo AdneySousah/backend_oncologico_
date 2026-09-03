@@ -5,10 +5,10 @@ import { fecharMesInterno } from '../app/controllers/DashboardController.js';
 
 const OFFSET_BRASILIA_MS = 3 * 60 * 60 * 1000;
 
-// Mesmo prazo que vocês já usam hoje pra gerar a apresentação mensal
-// (entre os dias 10 e 12). Dá espaço pra eventos de fim de mês que
-// demoram alguns dias pra sincronizar/chegar no sistema.
-const DIAS_PARA_FECHAR = 10;
+// Mesmo prazo que vocês já usam hoje pra gerar a apresentação mensal.
+// Dá espaço pra eventos de fim de mês que demoram alguns dias pra
+// sincronizar/chegar no sistema.
+const DIAS_PARA_FECHAR = 3;
 
 function hojeBrasil() {
   const agoraUtc = new Date();

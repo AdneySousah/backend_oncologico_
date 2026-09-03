@@ -32,7 +32,17 @@ class MonitoramentoMedicamento extends Model {
       // criado manualmente (paciente comprou por conta própria e foi
       // reembolsado pela operadora, sem sincronizar com o sistema externo).
       // Usado pelo faturamento pra excluir esse ciclo específico da cobrança.
-      eh_reembolso: Sequelize.BOOLEAN
+      eh_reembolso: Sequelize.BOOLEAN,
+
+      // 👇 CORREÇÃO: esta coluna já existia no banco (migration
+      // add-descontinuado-status-to-monitoramento_medicamentos) mas nunca
+      // tinha sido declarada aqui — o Sequelize descartava o valor
+      // silenciosamente em todo update() que tentava gravar o motivo de
+      // descontinuação em texto livre.
+      motivo_encerramento: Sequelize.TEXT,
+      // 👇 NOVO: motivo estruturado (mesma tabela usada em "Pausar
+      // Tratamento"), pra permitir contabilizar motivos de forma consistente.
+      motivo_encerramento_id: Sequelize.INTEGER
 
     }, {
       sequelize,
@@ -48,6 +58,7 @@ class MonitoramentoMedicamento extends Model {
     this.belongsTo(models.Medicamentos, { foreignKey: 'medicamento_id', as: 'medicamento' });
 
     this.belongsTo(models.MotivoFalhaContato, { foreignKey: 'motivo_falha_contato_id', as: 'motivoFalhaContato' });
+    this.belongsTo(models.MotivoPausaTratamento, { foreignKey: 'motivo_encerramento_id', as: 'motivoEncerramento' });
     this.belongsTo(models.MonitoramentoMedicamento, { foreignKey: 'retomado_de_monitoramento_id', as: 'retomadoDe' });
 
     this.belongsToMany(models.ReacaoAdversa, {

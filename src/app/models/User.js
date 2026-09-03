@@ -38,7 +38,6 @@ class User extends Model {
       as: 'operadoras', 
     });
     this.belongsTo(models.Perfil, { foreignKey: 'perfil_id', as: 'perfil' });
-    this.hasOne(models.OncologyProfessional, { foreignKey: 'user_id', as: 'professional' });
   }
 }
 

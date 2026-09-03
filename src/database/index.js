@@ -2,14 +2,8 @@ import Sequelize from 'sequelize';
 import configDatabase from '../config/database.cjs';
 // Models Antigos
 import User from '../app/models/User.js';
-import OncologyProfessional from '../app/models/OncologyProfessional.js';
-import Especiality from '../app/models/Especiality.js';
 import Operadora from '../app/models/Operadora.js';
 import Pacientes from '../app/models/Pacientes.js';
-import PrestadorMedico from '../app/models/PrestadorMedico.js';
-import Diagnostico from '../app/models/Diagnostico.js';
-import Exames from '../app/models/Exames.js';
-import InfosComorbidade from '../app/models/InfosComorbidade.js';
 import EntrevistaMedica from '../app/models/EntrevistaMedica.js';
 // NOVOS MODELS
 import EvaluationTemplate from '../app/models/EvaluationTemplate.js';
@@ -17,9 +11,7 @@ import EvaluationQuestion from '../app/models/EvaluationQuestion.js';
 import EvaluationOption from '../app/models/EvaluationOption.js';
 import PatientEvaluation from '../app/models/PatientEvaluation.js';
 import EvaluationAnswer from '../app/models/EvaluationAnswer.js';
-import Medico from '../app/models/Medico.js';
 import PacientesAnexos from '../app/models/PacientesAnexos.js';
-import Comorbidades from '../app/models/Comorbidades.js';
 import Medicamentos from '../app/models/Medicamentos.js';
 import InfosMedicamento from '../app/models/InfosMedicamento.js';
 import EntrevistaMedicaAnexos from '../app/models/EntrevistaMedicaAnexos.js';
@@ -27,28 +19,27 @@ import Perfil from '../app/models/Perfil.js';
 import EntrevistaMedicamento from '../app/models/EntrevistaMedicamento.js';
 import MonitoramentoMedicamento from '../app/models/MonitoramentoMedicamento.js';
 import ReacaoAdversa from '../app/models/ReacaoAdversa.js';
-import TentativaContato from '../app/models/TentativaContato.js';
 import AuditLog from '../app/models/AuditLog.js';
 import NpsResponse from '../app/models/NpsResponse.js';
 import Conversation from '../app/models/Conversation.js';
 import Message from '../app/models/Message.js';
 import MotivoFalhaContato from '../app/models/MotivoFalhaContato.js';
+import MotivoPausaTratamento from '../app/models/MotivoPausaTratamento.js';
+import VersaoTermo from '../app/models/VersaoTermo.js';
 import TermosHistorico from '../app/models/TermosHistorico.js';
 import HistoricoTrocaMedicamento from '../app/models/HistoricoTrocaMedicamento.js';
-import PacienteTermoAnexo from '../app/models/PacienteTermoAnexo.js';
 import EventosPaciente from '../app/models/EventosPaciente.js';
 import DashboardSnapshot from '../app/models/DashboardSnapshot.js';
 import MonitoramentoEdicaoEmAndamento from '../app/models/MonitoramentoEdicaoEmAndamento.js';
 
 
 const models = [
-  User, OncologyProfessional, Especiality, Operadora, Pacientes,
-  PrestadorMedico, Diagnostico, Exames, InfosComorbidade, EntrevistaMedica,
+  User, Operadora, Pacientes, EntrevistaMedica,
   EvaluationTemplate, EvaluationQuestion, EvaluationOption,
-  PatientEvaluation, EvaluationAnswer,Medico,
-  PacientesAnexos, Comorbidades, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
-  MonitoramentoMedicamento, ReacaoAdversa, TentativaContato, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
-  PacienteTermoAnexo, EventosPaciente, MotivoFalhaContato, DashboardSnapshot, MonitoramentoEdicaoEmAndamento
+  PatientEvaluation, EvaluationAnswer,
+  PacientesAnexos, Medicamentos,InfosMedicamento,EntrevistaMedicaAnexos, Perfil, EntrevistaMedicamento,
+  MonitoramentoMedicamento, ReacaoAdversa, AuditLog, NpsResponse, Conversation,Message,TermosHistorico, HistoricoTrocaMedicamento,
+  EventosPaciente, MotivoFalhaContato, MotivoPausaTratamento, VersaoTermo, DashboardSnapshot, MonitoramentoEdicaoEmAndamento
 ];
 class Database {
   constructor() {

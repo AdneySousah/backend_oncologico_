@@ -1,7 +1,8 @@
 import * as Yup from 'yup';
-import XLSX from 'xlsx';
 import fs from 'fs';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
+import { parseExcel } from '../../utils/excelUtils.js';
+import AuditService from '../../services/AuditService.js';
 
 class ReacaoAdversaController {
   // CREATE (Vincular perfil profissional a um usuario existente)
@@ -12,6 +13,7 @@ class ReacaoAdversaController {
     if (exists) return res.status(400).json({ error: 'Reação já cadastrada.' });
 
     const reacaoAdversa = await ReacaoAdversa.create({ name, active: true });
+    await AuditService.log(req.userId, 'Criação', 'Reação Adversa', reacaoAdversa.id, `Reação adversa "${reacaoAdversa.name}" criada.`);
     return res.status(201).json(reacaoAdversa);
   }
 
@@ -26,7 +28,6 @@ class ReacaoAdversaController {
 
   // UPDATE (Atualizar dados profissionais)
   async update(req, res) {
-    // Logica similar ao update do User, buscando pelo ID do OncologyProfessional
     const schema = Yup.object({
       name: Yup.string().required(),
     });
@@ -48,6 +49,7 @@ class ReacaoAdversaController {
     }
 
     await reacaoAdversa.update({ name });
+    await AuditService.log(req.userId, 'Edição', 'Reação Adversa', reacaoAdversa.id, `Reação adversa renomeada para "${reacaoAdversa.name}".`);
 
     return res.json(reacaoAdversa);
   }
@@ -57,6 +59,7 @@ class ReacaoAdversaController {
     if (!reacao) return res.status(404).json({ error: 'Reação não encontrada' });
 
     await reacao.update({ active: !reacao.active }); // Inverte o status atual
+    await AuditService.log(req.userId, 'Edição', 'Reação Adversa', reacao.id, `Reação adversa "${reacao.name}" ${reacao.active ? 'ativada' : 'desativada'}.`);
     return res.json({ message: 'Status atualizado com sucesso' });
   }
 
@@ -64,9 +67,7 @@ class ReacaoAdversaController {
     try {
       if (!req.file) return res.status(400).json({ error: 'Arquivo não enviado.' });
 
-      const workbook = XLSX.readFile(req.file.path);
-      // range: 1 pula a primeira linha se for um cabeçalho descritivo (igual no seu de Medicamentos)
-      const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+      const data = parseExcel(req.file.path);
 
       const existentes = await ReacaoAdversa.findAll();
       const mapaExistentes = new Map(existentes.map(m => [m.name.toLowerCase().trim(), m]));
@@ -103,8 +104,7 @@ class ReacaoAdversaController {
     const filePath = req.file.path;
 
     try {
-      const workbook = XLSX.readFile(filePath);
-      const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+      const data = parseExcel(filePath);
 
       if (data.length === 0) {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -136,6 +136,10 @@ class ReacaoAdversaController {
       }
 
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+      if (inseridos > 0) {
+        await AuditService.log(req.userId, 'Criação', 'Reação Adversa', null, `Importação de planilha: ${inseridos} reação(ões) adversa(s) nova(s) inserida(s).`);
+      }
 
       return res.json({ message: 'Importação finalizada!', inseridos, atualizados: 0, erros: falhas });
     } catch (err) {

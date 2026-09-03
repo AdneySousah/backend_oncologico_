@@ -2,32 +2,21 @@ import { Router } from "express";
 
 import multer from 'multer';
 import multerConfig from './config/multer.cjs';
-import multerConfigAnexos from './config/anexosMulter.cjs';
 
 import authMiddleware from "./middlewares/auth.js";
 import checkPermission from "./middlewares/checkPermission.js"; // Importe o novo middleware
 
 import UserController from "./app/controllers/UserController.js";
-import OncologyProfessionalController from "./app/controllers/OncologyProfessionalController.js";
-import EspecialitesController from "./app/controllers/EspecialitesController.js";
 import SessionController from "./app/controllers/SessionController.js";
 import OperadoraController from "./app/controllers/OperadoraController.js";
 import PacientesController from "./app/controllers/PacientesController.js";
-import PrestadorMedicoController from "./app/controllers/PrestadorMedicoController.js";
-import DiagnosticoController from "./app/controllers/DiagnosticoController.js";
-import ExamesController from "./app/controllers/ExamesController.js";
-import InfosComorbidadeController from "./app/controllers/InfosComorbidadeController.js";
 import EvaluationBuilderController from "./app/controllers/EvaluationBuilderController.js";
 import EvaluationResponseController from './app/controllers/EvaluationResponseController.js';
-import MedicoController from "./app/controllers/MedicoController.js";
-import ComorbidadesController from "./app/controllers/ComorbidadesController.js";
-import MedicamentosController from "./app/controllers/MedicamentosController.js";
 import TermoController from './app/controllers/TermoController.js';
 import PerfilController from "./app/controllers/PerfilController.js";
 import MonitoramentoMedicamentoController from "./app/controllers/MonitoramentoMedicamentoController.js";
 import ReacaoAdversaController from "./app/controllers/ReacaoAdversaController.js";
 import DashboardController from "./app/controllers/DashboardController.js";
-import TentativaContatoController from "./app/controllers/TentativaContatoController.js";
 import PasswordResetController from "./app/controllers/PasswordResetController.js";
 import AuditLogController from "./app/controllers/AuditLogController.js";
 
@@ -35,8 +24,8 @@ import NpsController from "./app/controllers/NpsController.js";
 import NpsHealthController from "./app/controllers/NpsHealthController.js";
 import ChatController from "./app/controllers/ChatController.js";
 import FaturamentoController from "./app/controllers/FaturamentoController.js";
-import PacienteTermoAnexoController from './app/controllers/PacienteTermoAnexoController.js';
 import MotivoFalhaContatoController from "./app/controllers/MotivoFalhaContatoController.js";
+import MotivoPausaTratamentoController from "./app/controllers/MotivoPausaTratamentoController.js";
 import AssistenteCalculoController from "./app/controllers/AssistenteCalculoController.js";
 
 import ReservaEdicaoController from "./app/controllers/ReservaEdicaoController.js";
@@ -45,11 +34,9 @@ import ReservaEdicaoController from "./app/controllers/ReservaEdicaoController.j
 const router = Router();
 
 const upload = multer(multerConfig);
-const uploadAnexos = multer(multerConfigAnexos);
 
 
 router.post('/session', SessionController.store)
-/* router.post('/nps/resposta', NpsController.registerResponse); */
 
 router.post('/nps/manual',  NpsController.manualSubmit); // <-- ADICIONE ESTA LINHA
 router.get('/nps/paciente/:paciente_id/atendimento/:monitoramento_id', NpsController.verifyNpsPatient);
@@ -61,8 +48,6 @@ router.post('/nps/paciente/:paciente_id/atendimento/:monitoramento_id/responder'
 router.post('/webhooks/twilio/whatsapp', ChatController.receiveWebhook);
 // Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
 router.post('/termos/paciente/:id', TermoController.answerTerm);
-
-router.post('/pacientes/:paciente_id/termos-anexos', upload.single('file'), PacienteTermoAnexoController.store);
 
 router.get('/pacientes/:id', TermoController.verifyResponse);
 router.get('/termos/paciente/:id/preview-pdf', TermoController.previewPdf);
@@ -98,65 +83,24 @@ router.get('/perfis/:id', checkPermission('usuarios', 'acessar'), PerfilControll
 router.put('/perfis/:id', checkPermission('usuarios', 'editar'), PerfilController.update);
 
 
-// --- ROTAS DE PROFISSIONAIS ---
-router.post('/professionals', checkPermission('profissionais', 'editar'), OncologyProfessionalController.store);
-router.get('/professionals', checkPermission('profissionais', 'acessar'), OncologyProfessionalController.index);
-
-
-// --- ROTAS DE ESPECIALIDADES ---
-router.post('/specialities', checkPermission('especialidades', 'editar'), EspecialitesController.store);
-router.get('/specialities', checkPermission('especialidades', 'acessar'), EspecialitesController.index);
-router.put('/specialities/:id', checkPermission('especialidades', 'editar'), EspecialitesController.update);
-router.delete('/specialities/:id', checkPermission('especialidades', 'editar'), EspecialitesController.delete);
-router.post('/specialities/validate', checkPermission('especialidades', 'editar'), upload.single('file'), EspecialitesController.validateExcel);
-router.post('/specialities/import', checkPermission('especialidades', 'editar'), upload.single('file'), EspecialitesController.importExcel);
-
-
 // --- ROTAS DE OPERADORAS ---
 router.post('/operadoras', checkPermission('operadoras', 'editar'), OperadoraController.store);
 router.get('/operadoras', checkPermission('operadoras', 'acessar'), OperadoraController.index);
 router.put('/operadoras/:id', checkPermission('operadoras', 'editar'), OperadoraController.update);
+router.patch('/operadoras/:id/status', checkPermission('operadoras', 'editar'), OperadoraController.toggleActive);
 
 
 // --- ROTAS DOS PACIENTES ---
-router.post('/pacientes', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.store);
+// Cadastro/edição manual de paciente não existe mais: pacientes vêm só via sincronização
+// externa (rotas abaixo). Mantidos apenas os endpoints que a "Necessidade de Navegação"
+// e a "Nova Avaliação" realmente consomem.
 router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), PacientesController.syncExternal);
-router.get('/pacientes', checkPermission('pacientes', 'acessar'), PacientesController.index);
 router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
 router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
 router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
-router.put('/pacientes/:id', checkPermission('pacientes', 'editar'), uploadAnexos.array('anexos_files'), PacientesController.update);
-router.get('/anexos/nomes', checkPermission('pacientes', 'acessar'), PacientesController.getNomesAnexos);
-router.get('/operadoras/filtro', PacientesController.getOperadorasFiltro);
-router.patch('/pacientes/:id/status', checkPermission('pacientes', 'editar'), PacientesController.toggleActive);
 router.get('/sync/pacientes/check', checkPermission('pacientes', 'acessar'), PacientesController.checkSync);
-
-
-
-// --- ROTAS DE PRESTADORES MÉDICOS (HOSPITAIS) ---
-router.post('/prestadores-medicos', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.store);
-router.get('/prestadores-medicos', checkPermission('prestadores_medicos', 'acessar'), PrestadorMedicoController.index);
-router.put('/prestadores-medicos/:id', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.update);
-router.delete('/prestadores-medicos/:id', checkPermission('prestadores_medicos', 'editar'), PrestadorMedicoController.delete);
-router.post('/prestadores-medicos/validate', checkPermission('prestadores_medicos', 'editar'), upload.single('file'), PrestadorMedicoController.validateExcel);
-router.post('/prestadores-medicos/import', checkPermission('prestadores_medicos', 'editar'), upload.single('file'), PrestadorMedicoController.importExcel);
-
-
-// --- ROTAS DE DIAGNÓSTICOS CID ---
-router.post('/diagnosticos', checkPermission('diagnosticos', 'editar'), DiagnosticoController.store);
-router.get('/diagnosticos', checkPermission('diagnosticos', 'acessar'), DiagnosticoController.index);
-router.put('/diagnosticos/:id', checkPermission('diagnosticos', 'editar'), DiagnosticoController.update);
-router.delete('/diagnosticos/:id', checkPermission('diagnosticos', 'editar'), DiagnosticoController.delete);
-router.post('/diagnosticos/validate', checkPermission('diagnosticos', 'editar'), upload.single('file'), DiagnosticoController.validateExcel);
-router.post('/diagnosticos/import', checkPermission('diagnosticos', 'editar'), upload.single('file'), DiagnosticoController.importExcel);
-
-
-// --- ROTAS DE EXAMES ---
-router.post('/exames', checkPermission('exames', 'editar'), ExamesController.store);
-
-
-// --- ROTAS DE INFOS COMORBIDADE ---
-router.post('/infos-comorbidade', checkPermission('comorbidades', 'editar'), InfosComorbidadeController.store);
+router.patch('/pacientes/:id/pausar-tratamento', checkPermission('pacientes', 'editar'), PacientesController.pausarTratamento);
+router.patch('/pacientes/:id/retomar-tratamento', checkPermission('pacientes', 'editar'), PacientesController.retomarTratamento);
 
 
 // --- ROTAS DE AVALIAÇÕES (QUESTIONÁRIOS) ---
@@ -180,23 +124,6 @@ router.get('/evaluations/pendentes-alerta', EvaluationResponseController.pendent
 
 // --- TIMELINE DE AVALIAÇÕES ---
 router.get('/avaliacoes',  EvaluationResponseController.index);
-
-
-// --- ROTAS DE MÉDICOS ---
-router.post('/medicos', checkPermission('medicos', 'editar'), MedicoController.store);
-router.get('/medicos', checkPermission('medicos', 'acessar'), MedicoController.index);
-
-
-// --- ROTAS DE COMORBIDADES (CADASTRO BASE) ---
-router.post('/comorbidades', checkPermission('comorbidades', 'editar'), ComorbidadesController.store);
-router.get('/comorbidades', checkPermission('comorbidades', 'acessar'), ComorbidadesController.index);
-
-
-// --- ROTAS DE MEDICAMENTOS ---
-router.post('/medicamentos', checkPermission('medicamentos', 'editar'), MedicamentosController.store);
-router.get('/medicamentos', checkPermission('medicamentos', 'acessar'), MedicamentosController.index);
-router.post('/medicamentos/validate', upload.single('file'), MedicamentosController.validateExcel);
-router.post('/medicamentos/import', upload.single('file'), MedicamentosController.importExcel);
 
 
 // --- ROTAS DE TERMOS ---
@@ -230,6 +157,8 @@ router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento
 router.put('/monitoramento-medicamentos/:id/reembolso', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.criarEventoReembolso);
 router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedicamentoController.registrarContatoConjunto);
 router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.atualizarDataProximoContato);
+router.get('/monitoramento-medicamentos/recalculaveis', checkPermission('recalculo', 'acessar'), MonitoramentoMedicamentoController.listarRecalculaveis);
+router.put('/monitoramento-medicamentos/:id/recalcular', checkPermission('recalculo', 'editar'), MonitoramentoMedicamentoController.recalcular);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
 router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);
@@ -248,10 +177,8 @@ router.post('/reacao-adversa/import', checkPermission('reacao_adversa', 'editar'
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
 router.post('/dashboard/fechar-mes', checkPermission('dashboard', 'editar'), DashboardController.fecharMes);
-
-router.post('/tentativas-contato', TentativaContatoController.store);
-router.get('/tentativas-contato', TentativaContatoController.index);
-
+router.get('/dashboard/status-fechamento-mes-anterior', checkPermission('fechar_mes_dashboard', 'acessar'), DashboardController.statusFechamentoMesAnterior);
+router.post('/dashboard/fechar-mes-anterior', checkPermission('fechar_mes_dashboard', 'editar'), DashboardController.fecharMesAnterior);
 
 
 router.get('/audit-logs',checkPermission('audit-logs', 'acessar'), AuditLogController.index);
@@ -265,12 +192,15 @@ router.get('/chat/conversations/:id', checkPermission('chat', 'acessar'), ChatCo
 router.post('/chat/send', checkPermission('chat', 'editar'), ChatController.sendMessage);
 router.post('/chat/reopen', checkPermission('chat', 'editar'), ChatController.reopenWindow);
 router.get('/chat/unread', checkPermission('chat', 'acessar'), ChatController.getUnreadCounts);
+router.delete('/chat/conversations/:id', checkPermission('chat', 'excluir'), ChatController.deleteConversation);
 
 
 router.get('/faturamento', FaturamentoController.index);
 
 
-router.get('/termos-anexos/todos', PacienteTermoAnexoController.index);
+router.get('/termos-anexos/todos', checkPermission('termo', 'acessar'), TermoController.listarTermosAceitos);
+router.get('/termos/versoes', checkPermission('termo', 'acessar'), TermoController.listarVersoesTermo);
+router.post('/termos/versoes', checkPermission('termo', 'editar'), TermoController.criarVersaoTermo);
 
 
 
@@ -281,6 +211,15 @@ router.get('/motivos-falha-contato', MotivoFalhaContatoController.index);
 router.post('/motivos-falha-contato', MotivoFalhaContatoController.store);
 router.put('/motivos-falha-contato/:id', MotivoFalhaContatoController.update);
 router.delete('/motivos-falha-contato/:id', MotivoFalhaContatoController.delete);
+
+// ==========================================
+// ROTAS: Motivos de Pausa/Descontinuação de Tratamento
+// (compartilhado entre Necessidade de Navegação e Telemonitoramento)
+// ==========================================
+router.get('/motivos-pausa-tratamento', MotivoPausaTratamentoController.index);
+router.post('/motivos-pausa-tratamento', MotivoPausaTratamentoController.store);
+router.put('/motivos-pausa-tratamento/:id', MotivoPausaTratamentoController.update);
+router.delete('/motivos-pausa-tratamento/:id', MotivoPausaTratamentoController.delete);
 
 
 

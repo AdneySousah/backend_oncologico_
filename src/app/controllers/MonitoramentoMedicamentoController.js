@@ -6,8 +6,9 @@ import Operadora from '../models/Operadora.js';
 import EventosPaciente from '../models/EventosPaciente.js'; // NOVO IMPORT AQUI
 import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
+import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import { addDays, subDays, parseISO } from 'date-fns';
-import { Op } from 'sequelize';
+import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
@@ -241,7 +242,7 @@ class MonitoramentoMedicamentoController {
         return res.status(permission.status).json({ error: permission.error });
       }
 
-      let pacienteWhere = { ...permission.whereClause };
+      let pacienteWhere = { ...permission.whereClause, tratamento_pausado: { [Op.not]: true } };
       if (search) {
         const termosPesquisa = search.trim().split(/\s+/);
         const condicoesBusca = termosPesquisa.map(termo => ({
@@ -251,26 +252,48 @@ class MonitoramentoMedicamentoController {
       }
 
       // ==========================================================
-      // Caminho ORIGINAL, 100% inalterado — pacientes com pelo menos um
-      // registro PENDENTE. Continua sendo o padrão da tela.
+      // Caminho ORIGINAL — pacientes com pelo menos um registro PENDENTE.
+      // Continua sendo o padrão da tela.
+      // 👇 CORREÇÃO: a paginação é feita por PACIENTE DISTINTO, não por linha
+      // de monitoramento. Antes, o LIMIT/OFFSET era aplicado direto nas linhas
+      // de MonitoramentoMedicamento — um paciente com 2 medicamentos em uso
+      // conjunto podia ter suas duas linhas caindo em páginas diferentes
+      // (cada uma ordenada pela própria data_proximo_contato), fazendo o
+      // mesmo paciente aparecer duplicado em duas páginas.
       // ==========================================================
       if (!apenasDescontinuados) {
-        const { count, rows: pendentesPagina } = await MonitoramentoMedicamento.findAndCountAll({
+        const pacientesComPendencia = await MonitoramentoMedicamento.findAll({
+          attributes: [
+            'paciente_id',
+            [fn('MIN', col('MonitoramentoMedicamento.data_proximo_contato')), 'proxima_data']
+          ],
           where: { status: 'PENDENTE' },
           include: [
             {
-              model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome', 'operadora_id', 'possui_cuidador', 'nome_cuidador', 'contato_cuidador'],
-              where: pacienteWhere, required: true,
-              include: [{ model: Operadora, as: 'operadoras', attributes: ['id', 'nome'] }]
+              model: Pacientes, as: 'paciente', attributes: [],
+              where: pacienteWhere, required: true
             }
           ],
-          order: [['data_proximo_contato', 'ASC']],
-          limit: parseInt(limit), offset: parseInt(offset)
+          group: ['MonitoramentoMedicamento.paciente_id'],
+          order: [[literal('proxima_data'), 'ASC']],
+          limit: parseInt(limit), offset: parseInt(offset),
+          subQuery: false,
+          raw: true
         });
 
-        if (pendentesPagina.length === 0) return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
+        if (pacientesComPendencia.length === 0) return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
 
-        const uniquePatientIds = [...new Set(pendentesPagina.map(p => p.paciente_id))];
+        // Total de pacientes distintos (não de linhas) — base real pra paginação
+        const totalPacientesDistintos = await MonitoramentoMedicamento.count({
+          where: { status: 'PENDENTE' },
+          include: [
+            { model: Pacientes, as: 'paciente', attributes: [], where: pacienteWhere, required: true }
+          ],
+          distinct: true,
+          col: 'paciente_id'
+        });
+
+        const uniquePatientIds = pacientesComPendencia.map(p => p.paciente_id);
         const allRecordsForPage = await MonitoramentoMedicamento.findAll({
           where: { paciente_id: { [Op.in]: uniquePatientIds }, status: { [Op.ne]: 'CANCELADO' } },
           include: [
@@ -288,7 +311,7 @@ class MonitoramentoMedicamentoController {
           order: [['createdAt', 'DESC']]
         });
 
-        return res.json({ data: allRecordsForPage, total: count, totalPages: Math.ceil(count / limit), currentPage: parseInt(page) });
+        return res.json({ data: allRecordsForPage, total: totalPacientesDistintos, totalPages: Math.ceil(totalPacientesDistintos / limit), currentPage: parseInt(page) });
       }
 
       // ==========================================================
@@ -374,7 +397,8 @@ class MonitoramentoMedicamentoController {
       motivo_falha_contato_id: Yup.number().integer().nullable(),
       modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
       descontinuar_medicamento: Yup.boolean().nullable(),
-      motivo_encerramento: Yup.string().nullable()
+      motivo_encerramento: Yup.string().nullable(),
+      motivo_encerramento_id: Yup.number().integer().nullable()
     });
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
@@ -388,7 +412,8 @@ class MonitoramentoMedicamentoController {
       motivo_falha_contato_id,
       modo_novo_medicamento,
       descontinuar_medicamento,
-      motivo_encerramento
+      motivo_encerramento,
+      motivo_encerramento_id
     } = req.body;
 
     if (descontinuar_medicamento && aplicar_nova_compra) {
@@ -452,6 +477,7 @@ class MonitoramentoMedicamentoController {
             observacao,
             data_telemonitoramento_efetivado: new Date(),
             motivo_encerramento: motivo_encerramento || null,
+            motivo_encerramento_id: motivo_encerramento_id || null,
             motivo_falha_contato_id: null,
             data_abertura_nova_caixa: null
           }, { transaction });
@@ -462,7 +488,12 @@ class MonitoramentoMedicamentoController {
             await monitoramentoAtual.setReacoesAdversas([], { transaction });
           }
 
-          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${motivo_encerramento || 'não informado'}.`);
+          let descricaoMotivo = motivo_encerramento || 'não informado';
+          if (motivo_encerramento_id) {
+            const motivoRegistrado = await MotivoPausaTratamento.findByPk(motivo_encerramento_id, { transaction });
+            if (motivoRegistrado) descricaoMotivo = motivoRegistrado.descricao;
+          }
+          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}.`);
 
           return { mensagem: 'Medicamento descontinuado com sucesso. Nenhum novo ciclo será agendado.' };
         }
@@ -700,17 +731,46 @@ class MonitoramentoMedicamentoController {
         const extId = parseInt(e.external_id, 10);
         return extId > eventoAtualId && !medicamentosDoGrupoIds.includes(e.medicamento_id) && !eventosExcluidos.includes(extId);
       });
+
+      // 👇 CORREÇÃO (reprogramação de eventos): o sistema externo pode reprogramar
+      // a data de administração de um evento pra depois de outro evento criado
+      // posteriormente (ex: evento A id=1 reprogramado pra depois do evento B id=2).
+      // Usar só o external_id (ordem de criação) pra decidir qual evento é "o
+      // próximo" quebra nesse cenário. Em vez disso, comparamos a data prevista de
+      // administração ATUAL de cada evento — não importa quando ela foi alterada,
+      // só o valor vigente agora. Isso evita depender de updated_at (que muda por
+      // qualquer edição, não só reprogramação de data).
+      const dataDeReferencia = (evento) =>
+        evento.data_administracao_prevista || evento.data_entrega_prevista || evento.data_entrega_real;
+
+      const pegarMaisAntigoPorData = (lista) => {
+        if (lista.length === 0) return null;
+        return [...lista].sort((a, b) => {
+          const dataA = dataDeReferencia(a);
+          const dataB = dataDeReferencia(b);
+          if (dataA && dataB) return new Date(dataA) - new Date(dataB);
+          if (dataA && !dataB) return -1; // evento com data conhecida vem antes de um sem data
+          if (!dataA && dataB) return 1;
+          return parseInt(a.external_id, 10) - parseInt(b.external_id, 10); // fallback final: ordem de criação
+        })[0];
+      };
+
       // Como 'eventos' está em ordem ASC, o primeiro item de cada lista já é o mais antigo pendente daquele tipo.
-      const novoEventoMesmoMedicamento = candidatosMesmoMedicamento[0] || null;
-      const novoEventoMedicamentoDiferente = candidatosMedicamentoDiferente[0] || null;
+      const novoEventoMesmoMedicamento = pegarMaisAntigoPorData(candidatosMesmoMedicamento);
+      const novoEventoMedicamentoDiferente = pegarMaisAntigoPorData(candidatosMedicamentoDiferente);
 
       let novoEvento = null;
       let ehMedicamentoDiferente = false;
       if (novoEventoMesmoMedicamento && novoEventoMedicamentoDiferente) {
-        const idA = parseInt(novoEventoMesmoMedicamento.external_id, 10);
-        const idB = parseInt(novoEventoMedicamentoDiferente.external_id, 10);
-        // Processa sempre o evento cronologicamente mais antigo entre os dois tipos.
-        novoEvento = idA <= idB ? novoEventoMesmoMedicamento : novoEventoMedicamentoDiferente;
+        const dataA = dataDeReferencia(novoEventoMesmoMedicamento);
+        const dataB = dataDeReferencia(novoEventoMedicamentoDiferente);
+        let aVenceB;
+        if (dataA && dataB) aVenceB = new Date(dataA) <= new Date(dataB);
+        else if (dataA) aVenceB = true;
+        else if (dataB) aVenceB = false;
+        else aVenceB = parseInt(novoEventoMesmoMedicamento.external_id, 10) <= parseInt(novoEventoMedicamentoDiferente.external_id, 10);
+        // Processa sempre o evento cronologicamente mais antigo entre os dois tipos (por data, não por ID).
+        novoEvento = aVenceB ? novoEventoMesmoMedicamento : novoEventoMedicamentoDiferente;
         ehMedicamentoDiferente = novoEvento === novoEventoMedicamentoDiferente;
       } else if (novoEventoMedicamentoDiferente) {
         novoEvento = novoEventoMedicamentoDiferente;
@@ -720,6 +780,21 @@ class MonitoramentoMedicamentoController {
         ehMedicamentoDiferente = false;
       }
       if (!novoEvento) return res.json({ novaCompraDetectada: false });
+
+      // 👇 NOVO (múltiplos eventos pendentes): antes, quando existiam DOIS candidatos
+      // simultâneos (ex: evento B de medicamento diferente E evento C de reposição do
+      // medicamento atual), o sistema escolhia um e descartava o outro silenciosamente
+      // — quem operava o contato nunca ficava sabendo que havia um segundo evento
+      // esperando logo atrás. Isso importa principalmente pra decisão de troca vs. uso
+      // em conjunto: se tem uma reposição do medicamento atual chegando junto com um
+      // medicamento novo, é forte indício de uso em conjunto, não substituição.
+      const outroCandidatoImediato = novoEvento === novoEventoMesmoMedicamento
+        ? novoEventoMedicamentoDiferente
+        : novoEventoMesmoMedicamento;
+
+      const totalCandidatosRestantes =
+        candidatosMesmoMedicamento.filter(e => e.id !== novoEvento.id).length +
+        candidatosMedicamentoDiferente.filter(e => e.id !== novoEvento.id).length;
 
       const dataReferenciaNovoEvento = novoEvento.data_entrega_real || novoEvento.data_entrega_prevista;
       const dataAdminExterna = novoEvento.data_administracao_prevista;
@@ -741,7 +816,15 @@ class MonitoramentoMedicamentoController {
           mudou_medicamento: ehMedicamentoDiferente,
           pode_ser_conjunto: podeSerConjunto,
           medicamento_novo: { id: novoEvento.medicamento_id, nome: novoEvento.medicamento.nome },
-          medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome }
+          medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome },
+          existe_outro_evento_pendente: !!outroCandidatoImediato || totalCandidatosRestantes > 0,
+          outro_evento_pendente: outroCandidatoImediato ? {
+            evento_externo_id: outroCandidatoImediato.external_id,
+            medicamento_nome: outroCandidatoImediato.medicamento.nome,
+            data_previsao_administracao: outroCandidatoImediato.data_administracao_prevista,
+            mesmo_medicamento_atual: outroCandidatoImediato === novoEventoMesmoMedicamento
+          } : null,
+          total_eventos_pendentes_adicionais: totalCandidatosRestantes
         }
       });
     } catch (error) {
@@ -1017,7 +1100,8 @@ class MonitoramentoMedicamentoController {
           modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
           // 👇 NOVO
           descontinuar_medicamento: Yup.boolean().nullable(),
-          motivo_encerramento: Yup.string().nullable()
+          motivo_encerramento: Yup.string().nullable(),
+          motivo_encerramento_id: Yup.number().integer().nullable()
         })
       ).min(1).required()
     });
@@ -1102,7 +1186,7 @@ class MonitoramentoMedicamentoController {
             qtd_informada_caixa, nivel_adesao, is_reacao, reacoes_adversas, observacao,
             mudou_posologia, nova_posologia, data_mudanca_posologia,
             aplicar_nova_compra, dados_nova_compra, data_inicio_nova_caixa, posologia_nova_caixa, modo_novo_medicamento,
-            descontinuar_medicamento, motivo_encerramento // 👈 NOVO
+            descontinuar_medicamento, motivo_encerramento, motivo_encerramento_id // 👈 NOVO
           } = registro;
 
           // ---- 👇 NOVO: descontinuar este medicamento específico ----
@@ -1116,6 +1200,7 @@ class MonitoramentoMedicamentoController {
               observacao,
               data_telemonitoramento_efetivado: agora,
               motivo_encerramento: motivo_encerramento || null,
+              motivo_encerramento_id: motivo_encerramento_id || null,
               grupo_medicamentos_id: grupoMedicamentosId
             }, { transaction });
 
@@ -1443,6 +1528,130 @@ async atualizarDataProximoContato(req, res) {
     return res.status(500).json({ error: 'Erro ao atualizar data do próximo contato', details: error.message });
   }
 }
+
+  // ============================================================
+  // RECÁLCULO — aba "Atendimento"
+  // Corrige posologia/data de início quando foram cadastradas erradas na
+  // configuração de uso contínuo, sem passar pelo fluxo de "Registrar
+  // Contato". Só é permitido no PRIMEIRO CICLO de um medicamento — ou seja,
+  // quando não existe NENHUM outro registro (de qualquer status) pra esse
+  // mesmo par paciente+medicamento. Depois do primeiro ciclo, qualquer
+  // ajuste tem que vir do fluxo normal de telemonitoramento.
+  // ============================================================
+  async listarRecalculaveis(req, res) {
+    try {
+      const { operadora_id, search = '' } = req.query;
+      const permission = await getOperadoraFilter(req.userId, operadora_id);
+      if (!permission.authorized) {
+        if (permission.emptyResult) return res.json([]);
+        return res.status(permission.status).json({ error: permission.error });
+      }
+
+      let pacienteWhere = { ...permission.whereClause };
+      if (search) {
+        const termosPesquisa = search.trim().split(/\s+/);
+        const condicoesBusca = termosPesquisa.map(termo => ({
+          [Op.or]: [{ nome: { [Op.iLike]: `%${termo}%` } }, { sobrenome: { [Op.iLike]: `%${termo}%` } }]
+        }));
+        pacienteWhere = { ...pacienteWhere, [Op.and]: condicoesBusca };
+      }
+
+      const pendentes = await MonitoramentoMedicamento.findAll({
+        where: { status: 'PENDENTE' },
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'], where: pacienteWhere, required: true },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (pendentes.length === 0) return res.json([]);
+
+      // Conta, pra cada par (paciente, medicamento) que aparece nos pendentes,
+      // QUANTOS registros existem no total (qualquer status). Se der 1, é o
+      // próprio pendente — logo, primeiro ciclo, elegível pro recálculo.
+      const paresUnicos = [...new Set(pendentes.map(p => `${p.paciente_id}-${p.medicamento_id}`))];
+      const contagens = await MonitoramentoMedicamento.findAll({
+        attributes: ['paciente_id', 'medicamento_id', [fn('COUNT', col('id')), 'total']],
+        where: {
+          [Op.or]: paresUnicos.map(par => {
+            const [paciente_id, medicamento_id] = par.split('-').map(Number);
+            return { paciente_id, medicamento_id };
+          })
+        },
+        group: ['paciente_id', 'medicamento_id'],
+        raw: true
+      });
+      const totalPorPar = {};
+      contagens.forEach(c => { totalPorPar[`${c.paciente_id}-${c.medicamento_id}`] = parseInt(c.total, 10); });
+
+      const elegiveis = pendentes.filter(p => totalPorPar[`${p.paciente_id}-${p.medicamento_id}`] === 1);
+
+      return res.json(elegiveis);
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao buscar monitoramentos recalculáveis.', details: error.message });
+    }
+  }
+
+  async recalcular(req, res) {
+    const schema = Yup.object().shape({
+      posologia_diaria: Yup.number().integer().positive().required(),
+      data_administracao: Yup.date().required()
+    });
+    try { await schema.validate(req.body, { abortEarly: false }); }
+    catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
+
+    const { id } = req.params;
+    const { posologia_diaria, data_administracao } = req.body;
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
+        ]
+      });
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+
+      if (monitoramento.status !== 'PENDENTE') {
+        return res.status(400).json({ error: 'Só é possível recalcular um monitoramento pendente. Ciclos concluídos não podem ser alterados.' });
+      }
+
+      // Revalida no servidor que é mesmo o primeiro ciclo — não confia só no
+      // que a listagem mandou pro front, a regra vale sempre.
+      const outrosCiclos = await MonitoramentoMedicamento.count({
+        where: { paciente_id: monitoramento.paciente_id, medicamento_id: monitoramento.medicamento_id, id: { [Op.ne]: monitoramento.id } }
+      });
+      if (outrosCiclos > 0) {
+        return res.status(400).json({ error: 'Este medicamento já teve ciclo(s) anterior(es) — o recálculo só é permitido no primeiro ciclo.' });
+      }
+
+      const posologiaAnterior = monitoramento.posologia_diaria;
+      const dataInicioAnterior = monitoramento.data_administracao || monitoramento.data_entrega;
+
+      const novaDataInicio = parseISO(data_administracao);
+      const totalCapsulas = monitoramento.qtd_total_capsulas || 0;
+      const diasDuracao = Math.floor(totalCapsulas / posologia_diaria);
+      const novaDataFimCaixa = addDays(novaDataInicio, diasDuracao);
+      const novaDataProximoContato = calcularDataTelemonitoramento(novaDataInicio);
+
+      await monitoramento.update({
+        posologia_diaria,
+        data_administracao: novaDataInicio,
+        data_calculada_fim_caixa: novaDataFimCaixa,
+        data_proximo_contato: novaDataProximoContato
+      });
+
+      await AuditService.log(
+        req.userId, 'Edição', 'Monitoramento', monitoramento.id,
+        `Recálculo do primeiro ciclo de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}: posologia ${posologiaAnterior} → ${posologia_diaria} cp/dia, início ${dataInicioAnterior ? new Date(dataInicioAnterior).toLocaleDateString('pt-BR') : 'N/A'} → ${novaDataInicio.toLocaleDateString('pt-BR')}.`
+      );
+
+      return res.json({ message: 'Recálculo aplicado com sucesso.', monitoramento });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao recalcular monitoramento.', details: error.message });
+    }
+  }
 }
 
 export default new MonitoramentoMedicamentoController();

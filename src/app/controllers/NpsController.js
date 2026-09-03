@@ -1,15 +1,15 @@
 import Pacientes from '../models/Pacientes.js';
 import NpsResponse from '../models/NpsResponse.js';
-import { Op } from 'sequelize';
 import AuditService from '../../services/AuditService.js';
 import { enviarLinkNPS } from '../../services/whatsapp.js';
+import Mail from '../../services/Mail.js';
 
 class NpsController {
     /**
      * 1. DISPARO DO NPS (Chamado pelo sistema/atendente)
      */
     async sendNps(req, res) {
-        const { paciente_id, telefone_destino, destino_tipo, monitoramento_id } = req.body;
+        const { paciente_id, telefone_destino, destino_tipo, monitoramento_id, email_destino } = req.body;
 
         try {
             const paciente = await Pacientes.findByPk(paciente_id, {
@@ -20,15 +20,87 @@ class NpsController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            const numeroDestino = telefone_destino || paciente.celular || paciente.telefone;
-
-            if (!numeroDestino) {
-                return res.status(400).json({ error: 'Paciente/Cuidador não possui número cadastrado' });
+            if (paciente.tratamento_pausado) {
+                return res.status(400).json({ error: 'Este paciente está com o tratamento pausado. Retome o tratamento antes de enviar a pesquisa de NPS.' });
             }
 
             // Geração do Link Front-end
             const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
             const linkNps = `${frontUrl}/paciente/nps/${paciente.id}/${monitoramento_id}`;
+
+            // ==========================================
+            // FLUXO: GERAR LINK PRA COPIAR (envio 100% manual, sem
+            // disparar nada automaticamente).
+            // ==========================================
+            if (destino_tipo === 'copiar_link') {
+                await AuditService.log(
+                    req.userId,
+                    'Envio',
+                    'NPS Link Manual',
+                    paciente.id,
+                    `Gerou o link da pesquisa NPS para envio manual (nenhum disparo automático foi feito).`
+                );
+
+                return res.json({ message: 'Link gerado com sucesso!', link: linkNps });
+            }
+
+            // ==========================================
+            // FLUXO DE DISPARO POR E-MAIL
+            // ==========================================
+            if (destino_tipo === 'email') {
+                if (!email_destino) {
+                    return res.status(400).json({ error: 'E-mail não informado.' });
+                }
+
+                if (paciente.email !== email_destino) {
+                    paciente.email = email_destino;
+                    await paciente.save();
+                }
+
+                const operadoraNome = paciente.operadoras?.nome || 'nossa equipe de saúde';
+
+                const htmlContent = `
+                    <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+                        <h2>Olá, ${paciente.nome}!</h2>
+                        <p>Estamos entrando em contato em nome da <strong>${operadoraNome}</strong>.</p>
+                        <p>Gostaríamos de saber sua opinião sobre o atendimento que você recebeu.</p>
+                        <p>Por favor, acesse o link abaixo para avaliar:</p>
+                        <div style="margin: 20px 0;">
+                            <a href="${linkNps}" style="background-color: #0056b3; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                                Avaliar Atendimento
+                            </a>
+                        </div>
+                        <p>Se o botão não funcionar, copie e cole este link no seu navegador:</p>
+                        <p><a href="${linkNps}">${linkNps}</a></p>
+                        <p>Agradecemos a sua atenção!</p>
+                    </div>
+                `;
+
+                await Mail.sendMail({
+                    to: email_destino,
+                    subject: 'Pesquisa de Satisfação',
+                    html: htmlContent
+                });
+
+                await AuditService.log(
+                    req.userId,
+                    'Envio',
+                    'NPS E-mail',
+                    paciente.id,
+                    `Disparou a pesquisa NPS por e-mail para ${email_destino}.`
+                );
+
+                return res.json({ message: 'Link de pesquisa de NPS enviado por e-mail com sucesso!' });
+            }
+
+            // ==========================================
+            // FLUXO DE DISPARO VIA WHATSAPP (Twilio)
+            // ==========================================
+            const numeroDestino = telefone_destino || paciente.celular || paciente.telefone;
+
+            if (!numeroDestino) {
+                return res.status(400).json({ error: 'Paciente/Cuidador não possui número cadastrado' });
+            }
 
             // Dispara via Twilio usando uma mensagem de texto com o link
             const enviado = await enviarLinkNPS(
@@ -67,59 +139,6 @@ class NpsController {
         }
     }
 
-
-    async registerResponse(req, res) {
-        const { From, Body } = req.body;
-
-        try {
-            if (!From) {
-                return res.status(200).send('<Response></Response>');
-            }
-            const stringFrom = String(From);
-            const celularLimpo = stringFrom.replace('whatsapp:', '').replace(/\D/g, '');
-
-            const stringBody = Body ? String(Body) : '';
-            const match = stringBody.match(/\b(10|[0-9])\b/);
-
-            if (!match) {
-                console.warn(`⚠️ Resposta de ${celularLimpo} sem nota válida: "${Body}"`);
-                res.set('Content-Type', 'text/xml');
-                return res.status(200).send('<Response></Response>');
-            }
-
-            const notaFinal = parseInt(match[0]);
-
-            const ultimos8 = celularLimpo.slice(-8);
-            const paciente = await Pacientes.findOne({
-                where: {
-                    celular: { [Op.like]: `%${ultimos8}` }
-                }
-            });
-
-            if (!paciente) {
-                console.error(`❌ Voto de ${celularLimpo} ignorado: Paciente não localizado.`);
-                res.set('Content-Type', 'text/xml');
-                return res.status(200).send('<Response></Response>');
-            }
-
-            await NpsResponse.create({
-                paciente_id: paciente.id,
-                nota: notaFinal
-            });
-
-
-            res.set('Content-Type', 'text/xml');
-            return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?>
-            <Response>
-                <Message>Agradecemos o seu feedback! Sua nota ${notaFinal} foi registrada com sucesso.</Message>
-            </Response>`);
-
-        } catch (error) {
-            console.error("❌ Erro crítico no Webhook da Twilio:", error);
-            res.set('Content-Type', 'text/xml');
-            return res.status(200).send('<Response></Response>');
-        }
-    }
 
     /**
      * 3. RELATÓRIO DE NPS (Dashboard)

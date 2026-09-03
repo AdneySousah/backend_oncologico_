@@ -38,6 +38,12 @@ class PacienteSyncService {
     async syncPacientes(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
+        // 👇 Em vez de 1 log de auditoria por paciente sincronizado (o que
+        // gerava 200+ linhas idênticas a cada rodada, numa base de ~200
+        // pacientes), acumula os números e grava só 1 evento resumido no
+        // final da sincronização inteira.
+        let pacientesAtualizadosCount = 0;
+        let pacientesCriadosCount = 0;
 
         for (const extPatient of pacientesExternos) {
             try {
@@ -142,12 +148,31 @@ class PacienteSyncService {
                     paciente = await Pacientes.findOne({ where: { cpf: dadosPaciente.cpf } });
                 }
 
+                // 👇 NOVO: mesma proteção aplicada aos medicamentos — "celular" e
+                // "cpf" são obrigatórios na tabela local. Preserva o dado local
+                // válido se o sistema de origem mandar vazio dessa vez; se não
+                // houver nada pra usar (paciente novo), interrompe com uma
+                // mensagem clara (nome + ID externo do paciente) em vez do erro
+                // cru do banco.
+                if (!dadosPaciente.celular && paciente?.celular) dadosPaciente.celular = paciente.celular;
+                if (!dadosPaciente.cpf && paciente?.cpf) dadosPaciente.cpf = paciente.cpf;
+
+                const camposFaltandoPaciente = [];
+                if (!dadosPaciente.celular) camposFaltandoPaciente.push('celular/telefone de contato');
+                if (!dadosPaciente.cpf) camposFaltandoPaciente.push('CPF');
+
+                if (camposFaltandoPaciente.length > 0) {
+                    throw new Error(
+                        `Paciente "${extPatient.name || 'sem nome informado'}" (ID externo #${extPatient.id}) veio do sistema de origem sem: ${camposFaltandoPaciente.join(' e ')}. Corrija esse cadastro no sistema de origem e sincronize novamente.`
+                    );
+                }
+
                 if (paciente) {
                     await paciente.update(dadosPaciente);
-                    await AuditService.log(userId, 'Edição', 'Pacientes', paciente.id, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} atualizado via sincronização.`);
+                    pacientesAtualizadosCount++;
                 } else {
                     paciente = await Pacientes.create(dadosPaciente);
-                    await AuditService.log(userId, 'Criação', 'Pacientes', null, `Paciente ${dadosPaciente.nome} ${dadosPaciente.sobrenome} criado via sincronização.`);
+                    pacientesCriadosCount++;
                 }
 
                 // ==========================================
@@ -191,6 +216,38 @@ class PacienteSyncService {
                             price: extEvent.price ? parseFloat(extEvent.price) : null,
                             fornecedor: extEvent.prices && extEvent.prices.company ? extEvent.prices.company.name : null
                         };
+
+                        // 👇 NOVO: "nome" e "dosagem" são obrigatórios na tabela local.
+                        // ⚠️ O campo "dosagem" no banco, apesar do nome, não guarda a
+                        // dosagem farmacológica (isso já vem embutido no nome do
+                        // medicamento, ex: "2,5 MG") — ele guarda a QUANTIDADE DE
+                        // COMPRIMIDOS da caixa (campo reaproveitado, nunca renomeado).
+                        // A mensagem pro operador usa o nome real do que falta, não o
+                        // nome da coluna, pra não confundir com dosagem de verdade.
+                        // Se o sistema externo mandar o medicamento sem algum desses
+                        // dados:
+                        //   - se já existe um medicamento local com o dado válido,
+                        //     preserva o valor atual em vez de sobrescrever com vazio
+                        //     (uma sincronização incompleta não apaga um dado bom);
+                        //   - se não há nada pra usar como base (medicamento novo),
+                        //     interrompe com uma mensagem clara — nome do medicamento e
+                        //     ID do evento externo (pra localizar no sistema de origem)
+                        //     — em vez do erro cru do banco de dados. Isso é o que
+                        //     aparece no painel "quem não sincronizou" da Necessidade
+                        //     de Navegação.
+                        if (!medData.nome && medicamento?.nome) medData.nome = medicamento.nome;
+                        if (!medData.dosagem && medicamento?.dosagem) medData.dosagem = medicamento.dosagem;
+
+                        const camposFaltando = [];
+                        if (!medData.nome) camposFaltando.push('nome do medicamento');
+                        if (!medData.dosagem) camposFaltando.push('quantidade de comprimidos por caixa');
+
+                        if (camposFaltando.length > 0) {
+                            const nomeReferencia = extMed.name || extMed.commercial_name || 'sem nome informado';
+                            throw new Error(
+                                `Medicamento "${nomeReferencia}" (evento externo #${extEvent.id}) veio do sistema de origem sem: ${camposFaltando.join(' e ')}. Corrija esse cadastro no sistema de origem e sincronize novamente.`
+                            );
+                        }
 
                         if (medicamento) {
                             await medicamento.update(medData);
@@ -237,6 +294,17 @@ class PacienteSyncService {
                 console.error(`Erro ao sincronizar paciente ${extPatient.name}:`, err.message);
                 errors.push({ nome: extPatient.name, cpf: extPatient.cpf, erro: err.message });
             }
+        }
+
+        // Um único evento de auditoria pra sincronização inteira, em vez de
+        // um por paciente. Só grava se algo realmente aconteceu (evita
+        // registrar "sincronização vazia" toda vez que o botão é clicado
+        // sem nenhum dado novo pra trazer).
+        if (pacientesCriadosCount > 0 || pacientesAtualizadosCount > 0) {
+            await AuditService.log(
+                userId, 'Sincronização', 'Pacientes', null,
+                `Sincronização com o sistema externo: ${pacientesCriadosCount} paciente(s) novo(s), ${pacientesAtualizadosCount} atualizado(s)${errors.length > 0 ? `, ${errors.length} com erro` : ''}.`
+            );
         }
 
         return { successes, errors };

@@ -4,7 +4,7 @@ class AuditService {
   /**
    * Grava um log de auditoria no sistema
    * @param {number} userId - ID do usuário logado (req.userId)
-   * @param {string} actionType - 'Criação', 'Edição', 'Exclusão', 'Emissão', 'Envio', 'Acesso'
+   * @param {string} actionType - 'Criação', 'Edição', 'Exclusão', 'Emissão', 'Envio', 'Acesso', 'Sincronização', 'Inserção Manual'
    * @param {string} entity - 'Paciente', 'Avaliação', 'Termo', 'Dashboard', etc.
    * @param {number|null} entityId - ID do registro afetado (se houver)
    * @param {string} details - Detalhes traduzidos da ação

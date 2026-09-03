@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import authConfig from '../../config/auth.js'
 import User from '../models/User.js'
 import Operadora from '../models/Operadora.js' // <-- Import da Operadora adicionado
+import AuditService from '../../services/AuditService.js'
 
 class SessionController {
     async store(req, res) {
@@ -126,6 +127,8 @@ class SessionController {
             const localToken = jwt.sign({ id: user.id }, authConfig.secret, {
                 expiresIn: authConfig.expiresIn,
             });
+
+            await AuditService.log(user.id, 'Acesso', 'Sessão', user.id, `Login realizado (${user.name} / ${user.email}).`);
 
             return res.status(200).json({
                 user: {

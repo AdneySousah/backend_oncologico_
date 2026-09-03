@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import bcrypt from 'bcrypt';
 import Mail from '../../services/Mail.js';
+import AuditService from '../../services/AuditService.js';
 
 class PasswordResetController {
 
@@ -123,6 +124,8 @@ class PasswordResetController {
             reset_password_token: null,
             reset_password_expires: null,
         });
+
+        await AuditService.log(user.id, 'Edição', 'Usuário', user.id, `Senha redefinida via "esqueci minha senha" (${user.email}).`);
 
         return res.json({ message: 'Senha alterada com sucesso.' });
     }

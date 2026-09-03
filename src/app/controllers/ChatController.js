@@ -3,8 +3,10 @@ import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
 import Pacientes from '../models/Pacientes.js';
-import NpsResponse from '../models/NpsResponse.js';
+import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import twilio from 'twilio';
+import AuditService from '../../services/AuditService.js';
+import { enviarMensagemWhatsApp, enviarLinkNPS } from '../../services/whatsapp.js';
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
@@ -60,15 +62,16 @@ class ChatController {
         user_id: null
       });
 
-      const stringBody = Body ? String(Body) : '';
-      const match = stringBody.match(/\b(10|[0-9])\b/);
-
-      if (match && paciente) {
-        const notaFinal = parseInt(match[0]);
-        await NpsResponse.create({ paciente_id: paciente.id, nota: notaFinal });
-        res.set('Content-Type', 'text/xml');
-        return res.status(200).send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>A CICFARMA agradece o seu feedback! Sua nota ${notaFinal} foi registrada com sucesso.</Message></Response>`);
-      }
+      // 👇 REMOVIDO: detecção de nota de NPS por regex num dígito solto na
+      // mensagem (`/\b(10|[0-9])\b/`). Era resquício de uma versão anterior
+      // do fluxo, de quando o paciente respondia a nota digitando direto no
+      // WhatsApp. O fluxo atual é 100% por link (TelaNpsPaciente / answerNps)
+      // — o próprio texto do template de WhatsApp só pede pra clicar no
+      // link, nunca pra responder com número. Além de redundante, esse
+      // código criava um NpsResponse incompleto (sem monitoramento_id) se
+      // disparasse, e teria capturado qualquer dígito solto de uma
+      // conversa de chat normal (ex: "vou tomar 2 comprimidos") como se
+      // fosse nota de NPS.
 
       res.set('Content-Type', 'text/xml');
       return res.status(200).send('<Response></Response>');
@@ -87,6 +90,13 @@ class ChatController {
 
       const conversation = await Conversation.findByPk(conversation_id);
       if (!conversation) return res.status(404).json({ error: 'Conversa não encontrada' });
+
+      if (conversation.paciente_id) {
+        const pacienteDaConversa = await Pacientes.findByPk(conversation.paciente_id, { attributes: ['id', 'tratamento_pausado'] });
+        if (pacienteDaConversa?.tratamento_pausado) {
+          return res.status(400).json({ error: 'Este paciente está com o tratamento pausado. Retome o tratamento antes de enviar mensagens.' });
+        }
+      }
 
       const now = new Date();
       if (!conversation.window_expires_at || conversation.window_expires_at < now) {
@@ -111,6 +121,8 @@ class ChatController {
         body: body,
         is_read: true
       });
+
+      await AuditService.log(loggedUserId, 'Envio', 'Chat', conversation.id, `Mensagem enviada na conversa #${conversation.id} (paciente_id: ${conversation.paciente_id || 'N/A'}).`);
 
       const messageWithUser = await Message.findByPk(message.id, {
         include: [{ model: User, as: 'usuario', attributes: ['id', 'name'] }]
@@ -153,54 +165,71 @@ class ChatController {
   // ✅ NOVO: Função para reabrir o chat disparando o template do Termo
   async reopenWindow(req, res) {
     try {
-      const { conversation_id } = req.body;
+      const { conversation_id, tipo_template = 'termo' } = req.body;
 
       const conversation = await Conversation.findByPk(conversation_id, {
-        include: [{ model: Pacientes, as: 'paciente' }]
+        include: [{ model: Pacientes, as: 'paciente', include: ['operadoras'] }]
       });
 
       if (!conversation) return res.status(404).json({ error: 'Conversa não encontrada' });
 
-      // Dados para o template
-      const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
-      const linkAcompanhamento = conversation.paciente ? `${frontUrl}/paciente/termo/${conversation.paciente.id}` : frontUrl;
+      const numeroDestino = conversation.phone_number;
       const pacienteNome = conversation.paciente ? conversation.paciente.nome : 'Paciente';
-      const userName = 'Equipe CICFARMA'; // Nome genérico para o disparo automático
+      const operadoraNome = conversation.paciente?.operadoras?.nome || 'sua operadora';
+      const usuarioAtual = await User.findByPk(req.userId);
+      const userName = usuarioAtual?.name || 'Equipe';
 
-      // Dispara o template via Twilio
-      const twilioMsg = await client.messages.create({
-        from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-        to: `whatsapp:${conversation.phone_number}`,
-        contentSid: 'HXfa365bb91e965e9939e6204588222659',
-        contentVariables: JSON.stringify({
-          '1': pacienteNome,
-          '2': userName,
-          '3': linkAcompanhamento
-        })
-      });
+      const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
 
-      // Template reabre a janela de 24h!
-      const expireDate = new Date();
-      expireDate.setHours(expireDate.getHours() + 24);
-      await conversation.update({ window_expires_at: expireDate, assigned_user_id: req.userId });
+      let enviado;
+      let tipoTemplateLabel;
 
-      const textoRealDoTemplate = `Olá ${pacienteNome}, meu nome é ${userName}, estou entrando em contato em nome da CIC FARMA.\n\nAceita os termos de contato via telefone para te acompanhar no seu tratamento?\n\nPor favor, acesse o link abaixo para responder:\n${linkAcompanhamento}\n\nAgradecemos a sua atenção.`;
+      // 👇 Reabre a janela usando EXATAMENTE o mesmo template/layout já usado
+      // nos disparos reais de Termo e NPS — não duplica a lógica de envio
+      // aqui, reaproveita as mesmas funções (services/whatsapp.js) usadas
+      // pelos controllers de Termo e NPS.
+      if (tipo_template === 'nps') {
+        if (!conversation.paciente) {
+          return res.status(400).json({ error: 'Esta conversa não está vinculada a um paciente cadastrado — não é possível montar o link de NPS.' });
+        }
+        const ultimoMonitoramento = await MonitoramentoMedicamento.findOne({
+          where: { paciente_id: conversation.paciente.id },
+          order: [['createdAt', 'DESC']]
+        });
+        if (!ultimoMonitoramento) {
+          return res.status(400).json({ error: 'Este paciente não possui nenhum ciclo de acompanhamento registrado — não é possível montar o link de NPS.' });
+        }
+        const linkNps = `${frontUrl}/paciente/nps/${conversation.paciente.id}/${ultimoMonitoramento.id}`;
+        enviado = await enviarLinkNPS(numeroDestino, pacienteNome, operadoraNome, req.userId, linkNps);
+        tipoTemplateLabel = 'NPS';
+      } else {
+        if (!conversation.paciente) {
+          return res.status(400).json({ error: 'Esta conversa não está vinculada a um paciente cadastrado — não é possível montar o link do termo.' });
+        }
+        const linkTermo = `${frontUrl}/paciente/termo/${conversation.paciente.id}`;
+        enviado = await enviarMensagemWhatsApp(numeroDestino, pacienteNome, operadoraNome, userName, linkTermo, req.userId);
+        tipoTemplateLabel = 'Termo';
+      }
 
-      const message = await Message.create({
-        conversation_id: conversation.id,
-        user_id: req.userId,
-        message_sid: twilioMsg.sid,
-        direction: 'outbound-api',
-        body: textoRealDoTemplate,
-        is_read: true
-      });
+      if (!enviado) {
+        return res.status(500).json({ error: `Falha ao reabrir a janela com o template de ${tipoTemplateLabel}.` });
+      }
 
-      const messageWithUser = await Message.findByPk(message.id, {
+      await AuditService.log(req.userId, 'Edição', 'Chat', conversation.id, `Janela de 24h reaberta na conversa #${conversation.id} usando o template de ${tipoTemplateLabel} (paciente_id: ${conversation.paciente_id || 'N/A'}).`);
+
+      // Os envios acima (enviarMensagemWhatsApp/enviarLinkNPS) já atualizaram
+      // window_expires_at e criaram a Message — só busca de volta pra devolver
+      // pro front com os dados atualizados.
+      const conversationAtualizada = await Conversation.findByPk(conversation.id);
+      const ultimaMensagem = await Message.findOne({
+        where: { conversation_id: conversation.id },
+        order: [['createdAt', 'DESC']],
         include: [{ model: User, as: 'usuario', attributes: ['id', 'name'] }]
       });
 
-      return res.json({ message: messageWithUser, conversation });
+      return res.json({ message: ultimaMensagem, conversation: conversationAtualizada });
     } catch (error) {
+      console.error('Erro ao reabrir janela:', error);
       return res.status(500).json({ error: 'Erro ao reabrir janela' });
     }
   }
@@ -239,18 +268,53 @@ class ChatController {
         raw: true
       });
 
-      const total = unreadMessages.length;
-
       // Agrupa por conversa para a Sidebar saber exatamente onde colocar a bolinha verde
       const by_conversation = {};
       unreadMessages.forEach(msg => {
         by_conversation[msg.conversation_id] = (by_conversation[msg.conversation_id] || 0) + 1;
       });
 
+      // 👇 CORREÇÃO: "total" precisa contar CONVERSAS com pendência, não
+      // mensagens soltas — uma conversa com 5 mensagens não lidas ainda é
+      // só 1 conversa pra revisar. Antes contava mensagem por mensagem, o
+      // que fazia o número do balão (ex: 72) não bater com o número da aba
+      // "Não lidas" dentro do chat (ex: 41), que já contava certo.
+      const total = Object.keys(by_conversation).length;
+
       return res.json({ total, by_conversation });
     } catch (error) {
       console.error('Erro ao contar mensagens não lidas:', error);
       return res.status(500).json({ error: 'Erro ao contar mensagens' });
+    }
+  }
+
+  // Apaga uma conversa (e todo o histórico de mensagens dela). Não há
+  // CASCADE configurado no banco entre messages -> conversations, então
+  // apaga as mensagens primeiro, numa transação, pra nunca deixar mensagem
+  // órfã nem a conversa presa por causa da FK.
+  async deleteConversation(req, res) {
+    const { id } = req.params;
+    try {
+      const conversation = await Conversation.findByPk(id, {
+        include: [{ model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] }]
+      });
+      if (!conversation) return res.status(404).json({ error: 'Conversa não encontrada' });
+
+      const nomeReferencia = conversation.paciente
+        ? `${conversation.paciente.nome} ${conversation.paciente.sobrenome}`
+        : conversation.phone_number;
+
+      await Conversation.sequelize.transaction(async (transaction) => {
+        await Message.destroy({ where: { conversation_id: id }, transaction });
+        await conversation.destroy({ transaction });
+      });
+
+      await AuditService.log(req.userId, 'Exclusão', 'Chat', Number(id), `Conversa com ${nomeReferencia} (${conversation.phone_number}) apagada, junto com todo o histórico de mensagens.`);
+
+      return res.json({ message: 'Conversa apagada com sucesso.' });
+    } catch (error) {
+      console.error('Erro ao apagar conversa:', error);
+      return res.status(500).json({ error: 'Erro ao apagar conversa.' });
     }
   }
 

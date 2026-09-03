@@ -1,7 +1,7 @@
 import Especiality from '../models/Especiality.js';
-import XLSX from 'xlsx';
 import fs from 'fs';
 import * as Yup from 'yup';
+import { parseExcel } from '../../utils/excelUtils.js';
 
 class EspecialitesController {
   // CREATE (Vincular perfil profissional a um usuario existente)
@@ -105,8 +105,7 @@ class EspecialitesController {
     try {
       if (!req.file) return res.status(400).json({ error: 'Arquivo não enviado.' });
 
-      const workbook = XLSX.readFile(req.file.path);
-      const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+      const data = parseExcel(req.file.path);
 
       const existentes = await Especiality.findAll();
       const mapaExistentes = new Map(existentes.map(m => [m.name.toLowerCase().trim(), m]));
@@ -143,8 +142,7 @@ class EspecialitesController {
     const filePath = req.file.path;
 
     try {
-      const workbook = XLSX.readFile(filePath);
-      const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+      const data = parseExcel(filePath);
 
       if (data.length === 0) {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);

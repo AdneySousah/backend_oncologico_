@@ -11,7 +11,11 @@ class Operadora extends Model {
             },
             telefone: Sequelize.STRING,
             email: Sequelize.JSONB,
-            external_id: Sequelize.INTEGER
+            external_id: Sequelize.INTEGER,
+            is_active: {
+                type: Sequelize.BOOLEAN,
+                defaultValue: true,
+            },
         }, {
             sequelize,
             tableName: 'operadoras'

@@ -18,12 +18,7 @@ class EntrevistaMedica extends Model {
     }
 
     static associate(models) {
-        this.belongsTo(models.Diagnostico, { foreignKey: 'diagnostico_id', as: 'diagnostico_cid' });
-        this.belongsTo(models.PrestadorMedico, { foreignKey: 'prestador_medico_id', as: 'prestador_medico' });
-        this.belongsTo(models.Exames, { foreignKey: 'exame_id', as: 'exames' });
-        this.belongsTo(models.InfosComorbidade, { foreignKey: 'infos_comorbidades_id', as: 'infos_comorbidade' });
         this.belongsTo(models.Pacientes, { foreignKey: 'paciente_id', as: 'paciente' });
-        this.belongsTo(models.Medico, { foreignKey: 'medico_id', as: 'medico' });
         
         // RELAÇÃO ANTIGA REMOVIDA
         // this.belongsTo(models.InfosMedicamento, { foreignKey: 'infos_medicamentos_id', as: 'infos_medicamento' });

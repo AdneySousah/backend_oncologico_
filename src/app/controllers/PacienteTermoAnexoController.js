@@ -1,5 +1,6 @@
 import PacienteTermoAnexo from '../models/PacienteTermoAnexo.js';
 import Pacientes from '../models/Pacientes.js';
+import AuditService from '../../services/AuditService.js';
 
 class PacienteTermoAnexoController {
     // Rota para fazer upload de um novo termo assinado
@@ -27,6 +28,8 @@ class PacienteTermoAnexoController {
             // Opcional: Atualiza o status do paciente para 'Aceito' se fizer sentido no fluxo
             paciente.status_termo = 'Aceito';
             await paciente.save();
+
+            await AuditService.log(null, 'Envio', 'Termo', paciente.id, `Paciente ${paciente.nome} ${paciente.sobrenome} enviou anexo de termo assinado ("${nome_original}").`);
 
             return res.status(201).json(anexo);
         } catch (error) {

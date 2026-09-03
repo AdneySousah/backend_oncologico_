@@ -60,6 +60,13 @@ function mesJaTerminou(ano, mes) {
   return false;
 }
 
+// Mesmo cálculo usado pelo job automático (DashboardCloseService) — o mês
+// imediatamente anterior ao atual (Brasília).
+function mesAnterior(ano, mes) {
+  if (mes === 1) return { ano: ano - 1, mes: 12 };
+  return { ano, mes: mes - 1 };
+}
+
 function primeiroEUltimoDia(ano, mes) {
   const data_inicio = `${ano}-${String(mes).padStart(2, '0')}-01`;
   const ultimoDia = new Date(ano, mes, 0).getDate();
@@ -653,10 +660,6 @@ class DashboardController {
         });
 
         if (snapshot) {
-          await AuditService.log(
-            req.userId, 'Acesso', 'Dashboard', null,
-            `Consultou snapshot congelado de ${mesCompleto.mes}/${mesCompleto.ano} (fechado em ${new Date(snapshot.fechado_em).toLocaleString('pt-BR')}).`
-          );
           return res.json({ ...snapshot.dados, fechado: true, fechado_em: snapshot.fechado_em });
         }
         // Mês já terminou mas ainda não foi fechado (ex: job automático
@@ -703,6 +706,73 @@ class DashboardController {
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: 'Erro ao fechar o mês', details: error.message });
+    }
+  }
+
+  // Diz se o mês anterior (ao atual, em Brasília) já foi fechado — usado
+  // pelo botão do Dashboard pra decidir se fica habilitado ou só informativo.
+  // Usa a visão consolidada (todas as operadoras) como referência de "já foi
+  // fechado" — é a mesma que o job automático sempre fecha por último.
+  async statusFechamentoMesAnterior(req, res) {
+    try {
+      const hoje = hojeBrasil();
+      const alvo = mesAnterior(hoje.ano, hoje.mes);
+
+      const snapshot = await DashboardSnapshot.findOne({
+        where: { ano: alvo.ano, mes: alvo.mes, operadora_id: null }
+      });
+
+      return res.json({
+        ano: alvo.ano,
+        mes: alvo.mes,
+        fechado: !!snapshot,
+        fechado_em: snapshot ? snapshot.fechado_em : null
+      });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao verificar status do fechamento.' });
+    }
+  }
+
+  // Fecha especificamente o mês anterior (nunca um mês arbitrário) — é o
+  // que o botão do Dashboard chama. Fecha a visão consolidada E cada
+  // operadora individualmente, igual o job automático do dia 3 já faz,
+  // pulando o que já estiver fechado (não sobrescreve à toa). Se a visão
+  // consolidada já estiver fechada, recusa de saída — o botão já vem
+  // desabilitado nesse caso, mas valida de novo aqui pra não sobrescrever
+  // sem querer se alguém chamar a rota diretamente.
+  async fecharMesAnterior(req, res) {
+    try {
+      const hoje = hojeBrasil();
+      const alvo = mesAnterior(hoje.ano, hoje.mes);
+
+      const consolidadoJaFechado = await DashboardSnapshot.findOne({
+        where: { ano: alvo.ano, mes: alvo.mes, operadora_id: null }
+      });
+      if (consolidadoJaFechado) {
+        return res.status(400).json({ error: `O mês ${alvo.mes}/${alvo.ano} já foi fechado.` });
+      }
+
+      const operadoras = await Operadora.findAll({ attributes: ['id'], raw: true });
+      const alvos = [null, ...operadoras.map(o => o.id)];
+
+      for (const operadoraId of alvos) {
+        const jaExiste = await DashboardSnapshot.findOne({
+          where: { ano: alvo.ano, mes: alvo.mes, operadora_id: operadoraId }
+        });
+        if (jaExiste) continue;
+        await fecharMesInterno({ ano: alvo.ano, mes: alvo.mes, operadoraId, userId: req.userId });
+      }
+
+      await AuditService.log(
+        req.userId, 'Edição', 'Dashboard', null,
+        `Fechou (congelou) manualmente o mês anterior ${alvo.mes}/${alvo.ano} (consolidado + todas as operadoras), antes do fechamento automático do dia 3.`
+      );
+
+      return res.json({ message: `Mês ${alvo.mes}/${alvo.ano} fechado com sucesso.`, ano: alvo.ano, mes: alvo.mes });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao fechar o mês anterior', details: error.message });
     }
   }
 }
