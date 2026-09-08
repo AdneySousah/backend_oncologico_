@@ -1,4 +1,5 @@
 import * as Yup from 'yup';
+import { Op } from 'sequelize';
 import PatientEvaluation from '../models/PatientEvaluation.js';
 import EvaluationAnswer from '../models/EvaluationAnswer.js';
 import EvaluationOption from '../models/EvaluationOption.js';
@@ -7,6 +8,7 @@ import Pacientes from '../models/Pacientes.js';
 import EvaluationTemplate from '../models/EvaluationTemplate.js';
 import Medicamentos from '../models/Medicamentos.js';
 import Operadora from '../models/Operadora.js';
+import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import AuditService from '../../services/AuditService.js';
 
@@ -122,12 +124,20 @@ class EvaluationResponseController {
     }
 
     const includePacienteWhere = permission.whereClause;
+    // 👇 NOVO: pacientes pausados saem da listagem normal (não fazem sentido
+    // misturados com quem está em fluxo ativo de termo/questionário) e
+    // passam a ter sua própria categoria — acessível com ?apenas_pausados=true.
+    const apenasPausados = req.query.apenas_pausados === 'true';
 
     try {
       const totalTemplatesAtivos = await EvaluationTemplate.count({ where: { is_active: true } });
 
       const pacientes = await Pacientes.findAll({
-        where: { ...includePacienteWhere, is_active: true },
+        where: {
+          ...includePacienteWhere,
+          is_active: true,
+          tratamento_pausado: apenasPausados ? true : { [Op.not]: true }
+        },
         // 2. ORDENAÇÃO ATUALIZADA: Pega o model incluído e ordena pelo price DESC
         order: [
           [{ model: Medicamentos, as: 'medicamento' }, 'price', 'DESC'],
@@ -143,6 +153,12 @@ class EvaluationResponseController {
             model: Medicamentos,
             as: 'medicamento',
             attributes: ['id', 'nome', 'price']
+          },
+          {
+            model: MotivoPausaTratamento,
+            as: 'motivoPausaTratamento',
+            attributes: ['id', 'descricao'],
+            required: false
           },
           {
             model: PatientEvaluation,

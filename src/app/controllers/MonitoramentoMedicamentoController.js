@@ -10,6 +10,7 @@ import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import { addDays, subDays, parseISO } from 'date-fns';
 import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
+import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia } from '../../utils/calcularPosologia.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
 
@@ -113,6 +114,13 @@ class MonitoramentoMedicamentoController {
           data_telemonitoramento: Yup.date().required(),
           qtd_capsula_manual: Yup.number().integer().nullable(),
           qtd_caixas: Yup.number().integer().nullable(),
+          // 👇 NOVO: padrão de posologia fora do padrão diário. Se omitido,
+          // assume 'diaria' — comportamento idêntico ao de sempre.
+          tipo_posologia: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+          posologia_ciclo_dias_toma: Yup.number().integer().positive().nullable(),
+          posologia_ciclo_dias_pausa: Yup.number().integer().min(0).nullable(),
+          posologia_intervalo_dias: Yup.number().integer().positive().nullable(),
+          posologia_datas_personalizadas: Yup.array().of(Yup.date()).nullable(),
           // 👇 NOVO: presente quando o medicamento vem de um candidato de
           // retomada detectado automaticamente. Se ausente (fluxo original de
           // onboarding), o comportamento continua igual ao de antes.
@@ -201,8 +209,9 @@ class MonitoramentoMedicamentoController {
           const qtdCaixas = item.qtd_caixas || 1;
           const totalCapsulas = qtdPorCaixa * qtdCaixas;
           const dataEntrega = parseISO(item.data_entrega);
-          const diasDuracao = Math.floor(totalCapsulas / item.posologia_diaria);
-          const dataFimCaixa = addDays(dataEntrega, diasDuracao);
+          const tipoPosologia = item.tipo_posologia || 'diaria';
+          const parametrosPosologia = extrairParametrosPosologia(item);
+          const dataFimCaixa = calcularDataFimCaixa(dataEntrega, totalCapsulas, item.posologia_diaria, tipoPosologia, parametrosPosologia);
           const dataProximoContato = parseISO(item.data_telemonitoramento);
 
           const novoMonitoramento = await MonitoramentoMedicamento.create({
@@ -210,6 +219,8 @@ class MonitoramentoMedicamentoController {
             patient_evaluation_id,
             medicamento_id: item.medicamento_id,
             posologia_diaria: item.posologia_diaria,
+            tipo_posologia: tipoPosologia,
+            ...parametrosPosologia,
             data_entrega: dataEntrega,
             data_calculada_fim_caixa: dataFimCaixa,
             data_proximo_contato: dataProximoContato,
@@ -275,7 +286,16 @@ class MonitoramentoMedicamentoController {
             }
           ],
           group: ['MonitoramentoMedicamento.paciente_id'],
-          order: [[literal('proxima_data'), 'ASC']],
+          // 👇 CORREÇÃO: "paciente_id" como critério de desempate depois da
+          // data. Sem isso, quando dois ou mais pacientes têm EXATAMENTE a
+          // mesma data de próximo contato, o Postgres não garante a mesma
+          // ordem relativa entre duas chamadas separadas (página 1 e página
+          // 2 são duas queries diferentes) — um paciente perto da fronteira
+          // entre páginas podia "trocar de lugar" de uma chamada pra outra e
+          // acabar aparecendo (ou sumindo) nas duas páginas. Com um segundo
+          // critério de desempate único e estável, a ordem fica sempre a
+          // mesma, não importa quantas vezes a lista for buscada.
+          order: [[literal('proxima_data'), 'ASC'], [col('MonitoramentoMedicamento.paciente_id'), 'ASC']],
           limit: parseInt(limit), offset: parseInt(offset),
           subQuery: false,
           raw: true
@@ -394,6 +414,11 @@ class MonitoramentoMedicamentoController {
       mudou_posologia: Yup.boolean().nullable(),
       nova_posologia: Yup.number().integer().nullable(),
       data_mudanca_posologia: Yup.date().nullable(),
+      tipo_posologia_nova: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+      posologia_ciclo_dias_toma_nova: Yup.number().integer().positive().nullable(),
+      posologia_ciclo_dias_pausa_nova: Yup.number().integer().min(0).nullable(),
+      posologia_intervalo_dias_nova: Yup.number().integer().positive().nullable(),
+      posologia_datas_personalizadas_nova: Yup.array().of(Yup.date()).nullable(),
       motivo_falha_contato_id: Yup.number().integer().nullable(),
       modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
       descontinuar_medicamento: Yup.boolean().nullable(),
@@ -409,6 +434,8 @@ class MonitoramentoMedicamentoController {
       is_reacao, reacoes_adversas, observacao, aplicar_nova_compra, dados_nova_compra,
       data_inicio_nova_caixa, posologia_nova_caixa,
       mudou_posologia, nova_posologia, data_mudanca_posologia,
+      tipo_posologia_nova, posologia_ciclo_dias_toma_nova, posologia_ciclo_dias_pausa_nova,
+      posologia_intervalo_dias_nova, posologia_datas_personalizadas_nova,
       motivo_falha_contato_id,
       modo_novo_medicamento,
       descontinuar_medicamento,
@@ -416,7 +443,14 @@ class MonitoramentoMedicamentoController {
       motivo_encerramento_id
     } = req.body;
 
-    if (descontinuar_medicamento && aplicar_nova_compra) {
+    // 👇 CORREÇÃO DE BUG: essa combinação só é realmente contraditória quando
+    // a nova compra é do MESMO medicamento (substituindo o ciclo atual) — aí
+    // sim não faz sentido "descontinuar" e "aplicar nova compra" ao mesmo
+    // tempo, porque seriam a mesma linha de tratamento. Quando é uso em
+    // CONJUNTO (medicamento adicional, diferente do atual), são duas ações
+    // válidas e independentes: descontinuar o medicamento atual E começar a
+    // acompanhar o novo em paralelo.
+    if (descontinuar_medicamento && aplicar_nova_compra && !ehSolicitandoUsoConjunto(dados_nova_compra, modo_novo_medicamento)) {
       return res.status(400).json({ error: 'Não é possível descontinuar o medicamento e aplicar uma nova compra ao mesmo tempo.' });
     }
     if (contato_efetivo !== false && !descontinuar_medicamento && aplicar_nova_compra && ehSolicitandoUsoConjunto(dados_nova_compra, modo_novo_medicamento)) {
@@ -456,6 +490,7 @@ class MonitoramentoMedicamentoController {
           await MonitoramentoMedicamento.create({
             paciente_id: monitoramentoAtual.paciente_id, patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
             medicamento_id: monitoramentoAtual.medicamento_id, posologia_diaria: monitoramentoAtual.posologia_diaria,
+            tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual),
             data_entrega: monitoramentoAtual.data_entrega, data_administracao: monitoramentoAtual.data_administracao,
             data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa, data_proximo_contato: proximaData,
             status: 'PENDENTE', qtd_caixas: monitoramentoAtual.qtd_caixas, qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas,
@@ -540,10 +575,23 @@ class MonitoramentoMedicamentoController {
         let proximaDataAdministracao = monitoramentoAtual.data_administracao;
         let proximoEventoExternoId = monitoramentoAtual.evento_externo_id;
         let proximaPosologia = (mudou_posologia && nova_posologia) ? nova_posologia : monitoramentoAtual.posologia_diaria;
+        // 👇 NOVO: se a posologia mudou E veio com um padrão diferente do
+        // diário (cíclico, intervalo, etc.), usa esse padrão novo daqui pra
+        // frente — tanto no cálculo quanto no que fica gravado pro próximo
+        // ciclo. Sem padrão novo informado, mantém o que já estava valendo
+        // (ex: só mudou a quantidade de comprimidos, o ritmo continua igual).
+        const proximoPadraoPosologia = (mudou_posologia && tipo_posologia_nova)
+          ? {
+              tipo_posologia: tipo_posologia_nova,
+              posologia_ciclo_dias_toma: posologia_ciclo_dias_toma_nova,
+              posologia_ciclo_dias_pausa: posologia_ciclo_dias_pausa_nova,
+              posologia_intervalo_dias: posologia_intervalo_dias_nova,
+              posologia_datas_personalizadas: posologia_datas_personalizadas_nova
+            }
+          : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
         if (qtd_informada_caixa != null && proximaPosologia > 0) {
-          const diasRestantes = Math.floor(qtd_informada_caixa / proximaPosologia);
-          proximaDataFimCaixa = addDays(new Date(), diasRestantes);
+          proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
           proximaDataAdministracao = new Date();
           proximasCapsulasTotais = qtd_informada_caixa;
         }
@@ -556,8 +604,7 @@ class MonitoramentoMedicamentoController {
           proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
           proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
           proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
-          const totalDiasDuracao = Math.floor(proximasCapsulasTotais / proximaPosologia);
-          proximaDataFimCaixa = addDays(proximaDataAdministracao, totalDiasDuracao);
+          proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
 
           if (compraRevalidada.mudouMedicamento) {
             await HistoricoTrocaMedicamento.create({
@@ -574,7 +621,9 @@ class MonitoramentoMedicamentoController {
           const dataProximoContatoEnviada = parseISO(data_abertura_nova_caixa);
           proximoCicloAtual = await MonitoramentoMedicamento.create({
             paciente_id: monitoramentoAtual.paciente_id, patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
-            medicamento_id: proximoMedicamentoId, posologia_diaria: proximaPosologia, data_entrega: proximaDataEntrega,
+            medicamento_id: proximoMedicamentoId, posologia_diaria: proximaPosologia,
+            tipo_posologia: proximoPadraoPosologia.tipo_posologia, ...proximoPadraoPosologia,
+            data_entrega: proximaDataEntrega,
             data_administracao: proximaDataAdministracao, data_calculada_fim_caixa: proximaDataFimCaixa, data_proximo_contato: dataProximoContatoEnviada,
             status: 'PENDENTE', qtd_caixas: proximasCaixas, qtd_total_capsulas: proximasCapsulasTotais, evento_externo_id: proximoEventoExternoId,
             grupo_medicamentos_id: grupoMedicamentosId
@@ -594,8 +643,9 @@ class MonitoramentoMedicamentoController {
           }
           const dataAdministracaoNovoMed = parseISO(data_inicio_nova_caixa);
           const totalCapsulasNovoMed = compraRevalidada.totalCapsulasNovas;
-          const diasDuracaoNovoMed = Math.floor(totalCapsulasNovoMed / posologia_nova_caixa);
-          const dataFimCaixaNovoMed = addDays(dataAdministracaoNovoMed, diasDuracaoNovoMed);
+          const tipoPosologiaNovoMed = req.body.tipo_posologia_novo_medicamento || 'diaria';
+          const parametrosPosologiaNovoMed = extrairParametrosPosologia(req.body.parametros_posologia_novo_medicamento || {});
+          const dataFimCaixaNovoMed = calcularDataFimCaixa(dataAdministracaoNovoMed, totalCapsulasNovoMed, posologia_nova_caixa, tipoPosologiaNovoMed, parametrosPosologiaNovoMed);
           const dataProximoContatoNovoMed = calcularDataTelemonitoramento(dataAdministracaoNovoMed);
 
           novoMonitoramentoAdicional = await MonitoramentoMedicamento.create({
@@ -603,6 +653,7 @@ class MonitoramentoMedicamentoController {
             patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
             medicamento_id: compraRevalidada.medicamentoNovoId,
             posologia_diaria: posologia_nova_caixa,
+            tipo_posologia: tipoPosologiaNovoMed, ...parametrosPosologiaNovoMed,
             data_entrega: parseISO(compraRevalidada.dataEntrega),
             data_administracao: dataAdministracaoNovoMed,
             data_calculada_fim_caixa: dataFimCaixaNovoMed,
@@ -675,8 +726,7 @@ class MonitoramentoMedicamentoController {
         return res.status(404).json({ error: 'Monitoramento não encontrado.' });
       }
       const dataAdminParsed = parseISO(data_administracao);
-      const diasDuracao = Math.floor(monitoramento.qtd_total_capsulas / monitoramento.posologia_diaria);
-      const novaDataFimCaixa = addDays(dataAdminParsed, diasDuracao);
+      const novaDataFimCaixa = calcularDataFimCaixa(dataAdminParsed, monitoramento.qtd_total_capsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
       await monitoramento.update({ data_administracao: dataAdminParsed, data_calculada_fim_caixa: novaDataFimCaixa });
       return res.json({ message: 'Sucesso!', monitoramento });
     } catch (error) {
@@ -875,9 +925,8 @@ class MonitoramentoMedicamentoController {
 
       let novaDataFimCaixa = monitoramento.data_calculada_fim_caixa;
       if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
-        const diasDuracao = Math.floor(novaQtdTotalCapsulas / monitoramento.posologia_diaria);
         const baseDate = monitoramento.data_administracao || monitoramento.data_entrega || monitoramento.createdAt;
-        novaDataFimCaixa = addDays(new Date(baseDate), diasDuracao);
+        novaDataFimCaixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
       }
 
       await monitoramento.update({
@@ -957,9 +1006,8 @@ class MonitoramentoMedicamentoController {
       if (mudou_medicamento) updateData.data_administracao = null;
 
       if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
-        const diasDuracao = Math.floor(novaQtdTotalCapsulas / monitoramento.posologia_diaria);
         const baseDate = updateData.data_administracao === null ? monitoramento.data_entrega : (monitoramento.data_administracao || monitoramento.data_entrega);
-        updateData.data_calculada_fim_caixa = addDays(new Date(baseDate), diasDuracao);
+        updateData.data_calculada_fim_caixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
       }
 
       await monitoramento.update(updateData);
@@ -1093,6 +1141,11 @@ class MonitoramentoMedicamentoController {
           mudou_posologia: Yup.boolean().nullable(),
           nova_posologia: Yup.number().integer().nullable(),
           data_mudanca_posologia: Yup.date().nullable(),
+          tipo_posologia_nova: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+          posologia_ciclo_dias_toma_nova: Yup.number().integer().positive().nullable(),
+          posologia_ciclo_dias_pausa_nova: Yup.number().integer().min(0).nullable(),
+          posologia_intervalo_dias_nova: Yup.number().integer().positive().nullable(),
+          posologia_datas_personalizadas_nova: Yup.array().of(Yup.date()).nullable(),
           aplicar_nova_compra: Yup.boolean().nullable(),
           dados_nova_compra: Yup.object().nullable(),
           data_inicio_nova_caixa: Yup.date().nullable(),
@@ -1116,7 +1169,7 @@ class MonitoramentoMedicamentoController {
         return res.status(400).json({ error: 'Data do próximo contato é obrigatória.' });
       }
       for (const registro of registros) {
-        if (registro.descontinuar_medicamento && registro.aplicar_nova_compra) {
+        if (registro.descontinuar_medicamento && registro.aplicar_nova_compra && !ehSolicitandoUsoConjunto(registro.dados_nova_compra, registro.modo_novo_medicamento)) {
           return res.status(400).json({ error: 'Não é possível descontinuar um medicamento e aplicar uma nova compra para ele ao mesmo tempo.' });
         }
         if (!registro.descontinuar_medicamento && registro.aplicar_nova_compra && ehSolicitandoUsoConjunto(registro.dados_nova_compra, registro.modo_novo_medicamento)) {
@@ -1149,6 +1202,8 @@ class MonitoramentoMedicamentoController {
               patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
               medicamento_id: monitoramentoAtual.medicamento_id,
               posologia_diaria: monitoramentoAtual.posologia_diaria,
+              tipo_posologia: monitoramentoAtual.tipo_posologia,
+              ...extrairParametrosPosologia(monitoramentoAtual),
               data_entrega: monitoramentoAtual.data_entrega,
               data_administracao: monitoramentoAtual.data_administracao,
               data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa,
@@ -1185,6 +1240,8 @@ class MonitoramentoMedicamentoController {
           const {
             qtd_informada_caixa, nivel_adesao, is_reacao, reacoes_adversas, observacao,
             mudou_posologia, nova_posologia, data_mudanca_posologia,
+            tipo_posologia_nova, posologia_ciclo_dias_toma_nova, posologia_ciclo_dias_pausa_nova,
+            posologia_intervalo_dias_nova, posologia_datas_personalizadas_nova,
             aplicar_nova_compra, dados_nova_compra, data_inicio_nova_caixa, posologia_nova_caixa, modo_novo_medicamento,
             descontinuar_medicamento, motivo_encerramento, motivo_encerramento_id // 👈 NOVO
           } = registro;
@@ -1248,10 +1305,20 @@ class MonitoramentoMedicamentoController {
           let proximaDataAdministracao = monitoramentoAtual.data_administracao;
           let proximoEventoExternoId = monitoramentoAtual.evento_externo_id;
           let proximaPosologia = (mudou_posologia && nova_posologia) ? nova_posologia : monitoramentoAtual.posologia_diaria;
+          // 👇 NOVO: mesmo critério da versão única — usa o padrão novo se
+          // veio junto com a mudança de posologia, senão mantém o vigente.
+          const proximoPadraoPosologia = (mudou_posologia && tipo_posologia_nova)
+            ? {
+                tipo_posologia: tipo_posologia_nova,
+                posologia_ciclo_dias_toma: posologia_ciclo_dias_toma_nova,
+                posologia_ciclo_dias_pausa: posologia_ciclo_dias_pausa_nova,
+                posologia_intervalo_dias: posologia_intervalo_dias_nova,
+                posologia_datas_personalizadas: posologia_datas_personalizadas_nova
+              }
+            : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
           if (qtd_informada_caixa != null && proximaPosologia > 0) {
-            const diasRestantes = Math.floor(qtd_informada_caixa / proximaPosologia);
-            proximaDataFimCaixa = addDays(new Date(), diasRestantes);
+            proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
             proximaDataAdministracao = new Date();
             proximasCapsulasTotais = qtd_informada_caixa;
           }
@@ -1264,8 +1331,7 @@ class MonitoramentoMedicamentoController {
             proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
             proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
             proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
-            const totalDiasDuracao = Math.floor(proximasCapsulasTotais / proximaPosologia);
-            proximaDataFimCaixa = addDays(proximaDataAdministracao, totalDiasDuracao);
+            proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
 
             if (compraRevalidada.mudouMedicamento) {
               await HistoricoTrocaMedicamento.create({
@@ -1283,6 +1349,8 @@ class MonitoramentoMedicamentoController {
             patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
             medicamento_id: proximoMedicamentoId,
             posologia_diaria: proximaPosologia,
+            tipo_posologia: proximoPadraoPosologia.tipo_posologia,
+            ...proximoPadraoPosologia,
             data_entrega: proximaDataEntrega,
             data_administracao: proximaDataAdministracao,
             data_calculada_fim_caixa: proximaDataFimCaixa,
@@ -1302,14 +1370,16 @@ class MonitoramentoMedicamentoController {
             }
             const dataAdministracaoNovoMed = parseISO(data_inicio_nova_caixa);
             const totalCapsulasNovoMed = compraRevalidada.totalCapsulasNovas;
-            const diasDuracaoNovoMed = Math.floor(totalCapsulasNovoMed / posologia_nova_caixa);
-            const dataFimCaixaNovoMed = addDays(dataAdministracaoNovoMed, diasDuracaoNovoMed);
+            const tipoPosologiaNovoMed = req.body.tipo_posologia_novo_medicamento || 'diaria';
+            const parametrosPosologiaNovoMed = extrairParametrosPosologia(req.body.parametros_posologia_novo_medicamento || {});
+            const dataFimCaixaNovoMed = calcularDataFimCaixa(dataAdministracaoNovoMed, totalCapsulasNovoMed, posologia_nova_caixa, tipoPosologiaNovoMed, parametrosPosologiaNovoMed);
 
             await MonitoramentoMedicamento.create({
               paciente_id: monitoramentoAtual.paciente_id,
               patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
               medicamento_id: compraRevalidada.medicamentoNovoId,
               posologia_diaria: posologia_nova_caixa,
+              tipo_posologia: tipoPosologiaNovoMed, ...parametrosPosologiaNovoMed,
               data_entrega: parseISO(compraRevalidada.dataEntrega),
               data_administracao: dataAdministracaoNovoMed,
               data_calculada_fim_caixa: dataFimCaixaNovoMed,
@@ -1452,8 +1522,7 @@ class MonitoramentoMedicamentoController {
         // pode ter mudado desde o último ciclo sincronizado.
         const posologiaVigente = posologia || monitoramentoAtual.posologia_diaria;
         const qtdTotalCapsulas = qtdPorCaixa * qtd_caixas_reembolsadas;
-        const diasDuracao = Math.floor(qtdTotalCapsulas / posologiaVigente);
-        const dataFimCaixa = addDays(dataInicio, diasDuracao);
+        const dataFimCaixa = calcularDataFimCaixa(dataInicio, qtdTotalCapsulas, posologiaVigente, monitoramentoAtual.tipo_posologia, monitoramentoAtual);
         const dataProximoContatoSugerida = calcularDataTelemonitoramento(dataInicio);
 
         // Cancela o registro pendente antigo — ele fica sem uma compra
@@ -1465,6 +1534,8 @@ class MonitoramentoMedicamentoController {
           patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
           medicamento_id: monitoramentoAtual.medicamento_id,
           posologia_diaria: posologiaVigente,
+          tipo_posologia: monitoramentoAtual.tipo_posologia,
+          ...extrairParametrosPosologia(monitoramentoAtual),
           data_entrega: dataInicio,
           data_administracao: dataInicio,
           data_calculada_fim_caixa: dataFimCaixa,
@@ -1596,13 +1667,22 @@ async atualizarDataProximoContato(req, res) {
   async recalcular(req, res) {
     const schema = Yup.object().shape({
       posologia_diaria: Yup.number().integer().positive().required(),
-      data_administracao: Yup.date().required()
+      data_administracao: Yup.date().required(),
+      // 👇 NOVO: padrão de posologia fora do padrão diário. Se omitido,
+      // assume 'diaria' — comportamento idêntico ao de antes.
+      tipo_posologia: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+      posologia_ciclo_dias_toma: Yup.number().integer().positive().nullable(),
+      posologia_ciclo_dias_pausa: Yup.number().integer().min(0).nullable(),
+      posologia_intervalo_dias: Yup.number().integer().positive().nullable(),
+      posologia_datas_personalizadas: Yup.array().of(Yup.date()).nullable()
     });
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     const { id } = req.params;
     const { posologia_diaria, data_administracao } = req.body;
+    const tipoPosologia = req.body.tipo_posologia || 'diaria';
+    const parametrosPosologia = extrairParametrosPosologia(req.body);
 
     try {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
@@ -1627,29 +1707,56 @@ async atualizarDataProximoContato(req, res) {
       }
 
       const posologiaAnterior = monitoramento.posologia_diaria;
+      const tipoPosologiaAnterior = monitoramento.tipo_posologia || 'diaria';
       const dataInicioAnterior = monitoramento.data_administracao || monitoramento.data_entrega;
 
       const novaDataInicio = parseISO(data_administracao);
       const totalCapsulas = monitoramento.qtd_total_capsulas || 0;
-      const diasDuracao = Math.floor(totalCapsulas / posologia_diaria);
-      const novaDataFimCaixa = addDays(novaDataInicio, diasDuracao);
+      const novaDataFimCaixa = calcularDataFimCaixa(novaDataInicio, totalCapsulas, posologia_diaria, tipoPosologia, parametrosPosologia);
       const novaDataProximoContato = calcularDataTelemonitoramento(novaDataInicio);
 
       await monitoramento.update({
         posologia_diaria,
+        tipo_posologia: tipoPosologia,
+        ...parametrosPosologia,
         data_administracao: novaDataInicio,
         data_calculada_fim_caixa: novaDataFimCaixa,
         data_proximo_contato: novaDataProximoContato
       });
 
+      const descricaoPadrao = (tp, p) => {
+        if (tp === 'ciclica') return `cíclica (toma ${p.posologia_ciclo_dias_toma}, pausa ${p.posologia_ciclo_dias_pausa})`;
+        if (tp === 'intervalo') return `a cada ${p.posologia_intervalo_dias} dias`;
+        if (tp === 'personalizada') return `datas personalizadas`;
+        return 'diária';
+      };
+
       await AuditService.log(
         req.userId, 'Edição', 'Monitoramento', monitoramento.id,
-        `Recálculo do primeiro ciclo de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}: posologia ${posologiaAnterior} → ${posologia_diaria} cp/dia, início ${dataInicioAnterior ? new Date(dataInicioAnterior).toLocaleDateString('pt-BR') : 'N/A'} → ${novaDataInicio.toLocaleDateString('pt-BR')}.`
+        `Recálculo do primeiro ciclo de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}: posologia ${posologiaAnterior} → ${posologia_diaria} cp/dia, padrão ${descricaoPadrao(tipoPosologiaAnterior, monitoramento)} → ${descricaoPadrao(tipoPosologia, parametrosPosologia)}, início ${dataInicioAnterior ? new Date(dataInicioAnterior).toLocaleDateString('pt-BR') : 'N/A'} → ${novaDataInicio.toLocaleDateString('pt-BR')}.`
       );
 
       return res.json({ message: 'Recálculo aplicado com sucesso.', monitoramento });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao recalcular monitoramento.', details: error.message });
+    }
+  }
+
+  // Gera a prévia de "toma"/"pausa" pra tela de confirmação (calendário)
+  // antes de salvar qualquer padrão de posologia. Não grava nada — é só
+  // cálculo, usado tanto na configuração inicial quanto no Recálculo e no
+  // Registrar Contato.
+  async previewPosologia(req, res) {
+    const { data_inicio, tipo_posologia, num_dias } = req.body;
+    if (!data_inicio) {
+      return res.status(400).json({ error: 'Informe a data de início.' });
+    }
+    try {
+      const parametros = extrairParametrosPosologia(req.body);
+      const dias = gerarPreviewPosologia(parseISO(data_inicio), tipo_posologia || 'diaria', parametros, num_dias || 35);
+      return res.json({ dias });
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao gerar prévia da posologia.', details: error.message });
     }
   }
 }

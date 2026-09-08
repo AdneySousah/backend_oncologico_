@@ -42,7 +42,17 @@ class MonitoramentoMedicamento extends Model {
       motivo_encerramento: Sequelize.TEXT,
       // 👇 NOVO: motivo estruturado (mesma tabela usada em "Pausar
       // Tratamento"), pra permitir contabilizar motivos de forma consistente.
-      motivo_encerramento_id: Sequelize.INTEGER
+      motivo_encerramento_id: Sequelize.INTEGER,
+
+      // 👇 NOVO: padrão de posologia "fora do padrão" (ciclo toma/pausa,
+      // intervalo entre doses, ou datas personalizadas) — ver
+      // utils/calcularPosologia.js pra como esses campos são usados no
+      // cálculo de data de fim de caixa.
+      tipo_posologia: Sequelize.ENUM('diaria', 'ciclica', 'intervalo', 'personalizada'),
+      posologia_ciclo_dias_toma: Sequelize.INTEGER,
+      posologia_ciclo_dias_pausa: Sequelize.INTEGER,
+      posologia_intervalo_dias: Sequelize.INTEGER,
+      posologia_datas_personalizadas: Sequelize.JSONB
 
     }, {
       sequelize,

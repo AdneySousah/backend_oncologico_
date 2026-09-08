@@ -159,6 +159,10 @@ router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedica
 router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.atualizarDataProximoContato);
 router.get('/monitoramento-medicamentos/recalculaveis', checkPermission('recalculo', 'acessar'), MonitoramentoMedicamentoController.listarRecalculaveis);
 router.put('/monitoramento-medicamentos/:id/recalcular', checkPermission('recalculo', 'editar'), MonitoramentoMedicamentoController.recalcular);
+// Cálculo puro (sem dado sensível), usado pela tela de confirmação de
+// posologia em vários lugares — só exige estar logado, sem permissão
+// de módulo específica.
+router.post('/monitoramento-medicamentos/preview-posologia', MonitoramentoMedicamentoController.previewPosologia);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
 router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);
