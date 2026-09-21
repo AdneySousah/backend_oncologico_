@@ -14,6 +14,23 @@ function paraDataLocal(valor) {
   return parseISO(valor);
 }
 
+// 👇 NOVO: diz se uma determinada data cai dentro de algum período de pausa
+// de medicamento (pausas_historico + a pausa ativa no momento, se houver).
+// Usado pra excluir esses dias do cálculo de consumo — durante a pausa o
+// paciente não está tomando o medicamento, então esses dias não podem
+// "gastar" comprimidos da caixa.
+function estaDentroDePausa(data, periodosPausa) {
+  if (!Array.isArray(periodosPausa) || periodosPausa.length === 0) return false;
+  return periodosPausa.some(p => {
+    if (!p || !p.inicio) return false;
+    const inicio = startOfDay(paraDataLocal(p.inicio));
+    if (data < inicio) return false;
+    if (!p.fim) return true; // pausa sem fim definido ainda = em andamento, considera pausado a partir daqui
+    const fim = startOfDay(paraDataLocal(p.fim));
+    return data <= fim;
+  });
+}
+
 // ============================================================================
 // Cálculo centralizado de posologia — usado em TODO lugar que precisa saber
 // "em que data a caixa acaba" ou "esse dia é de tomar ou de pausar".
@@ -62,16 +79,17 @@ export function ehDiaDeToma(offsetDias, tipoPosologia, parametros = {}) {
  * @param {number} posologiaDiaria - comprimidos consumidos em cada dia de "toma".
  * @param {string} tipoPosologia - 'diaria' | 'ciclica' | 'intervalo' | 'personalizada'.
  * @param {object} parametros - campos posologia_ciclo_dias_toma/pausa, posologia_intervalo_dias, posologia_datas_personalizadas.
+ * @param {Array} periodosPausa - [{ inicio, fim }] — períodos em que o medicamento ficou pausado (fim pode ser null = pausa ainda em andamento). Esses dias não contam consumo, em nenhum padrão.
  * @returns {Date}
  */
-export function calcularDataFimCaixa(dataInicio, totalCapsulas, posologiaDiaria, tipoPosologia = 'diaria', parametros = {}) {
+export function calcularDataFimCaixa(dataInicio, totalCapsulas, posologiaDiaria, tipoPosologia = 'diaria', parametros = {}, periodosPausa = []) {
   if (!dataInicio || !totalCapsulas || !posologiaDiaria) return dataInicio;
 
   if (tipoPosologia === 'personalizada') {
     const datas = Array.isArray(parametros.posologia_datas_personalizadas) ? parametros.posologia_datas_personalizadas : [];
     const datasOrdenadas = datas
       .map(d => startOfDay(paraDataLocal(d)))
-      .filter(d => d >= startOfDay(dataInicio))
+      .filter(d => d >= startOfDay(dataInicio) && !estaDentroDePausa(d, periodosPausa))
       .sort((a, b) => a - b);
 
     let restante = totalCapsulas;
@@ -86,21 +104,29 @@ export function calcularDataFimCaixa(dataInicio, totalCapsulas, posologiaDiaria,
     return datasOrdenadas.length > 0 ? datasOrdenadas[datasOrdenadas.length - 1] : dataInicio;
   }
 
-  if (!tipoPosologia || tipoPosologia === 'diaria') {
+  // 👇 Sem nenhuma pausa registrada, o padrão diário continua usando o
+  // atalho simples (rápido, sem loop). Com pausa, precisa simular dia a dia
+  // igual cíclica/intervalo, porque a pausa cria um "buraco" no consumo que
+  // a divisão simples não sabe representar.
+  const temPausa = Array.isArray(periodosPausa) && periodosPausa.length > 0;
+  if ((!tipoPosologia || tipoPosologia === 'diaria') && !temPausa) {
     const diasDuracao = Math.floor(totalCapsulas / posologiaDiaria);
     return addDays(dataInicio, diasDuracao);
   }
 
-  // 'ciclica' e 'intervalo': simula dia a dia. Tratamentos reais duram no
-  // máximo algumas centenas de dias, então isso é rápido — e principalmente,
-  // é a MESMA lógica usada em gerarPreviewPosologia, então nunca diverge do
-  // que foi mostrado na tela de confirmação.
+  // 'ciclica', 'intervalo', ou 'diaria' com pausa: simula dia a dia.
+  // Tratamentos reais duram no máximo algumas centenas de dias, então isso
+  // é rápido — e principalmente, é a MESMA lógica usada em
+  // gerarPreviewPosologia, então nunca diverge do que foi mostrado na tela
+  // de confirmação.
   let restante = totalCapsulas;
   const LIMITE_DIAS = 3650; // trava de segurança (10 anos) contra parâmetro inválido causar loop longo demais
   for (let offset = 0; offset < LIMITE_DIAS; offset++) {
+    const dataDoOffset = addDays(dataInicio, offset);
+    if (estaDentroDePausa(dataDoOffset, periodosPausa)) continue; // dia pausado, não consome nada
     if (ehDiaDeToma(offset, tipoPosologia, parametros)) {
       restante -= posologiaDiaria;
-      if (restante <= 0) return addDays(dataInicio, offset);
+      if (restante <= 0) return dataDoOffset;
     }
   }
   // Não deveria chegar aqui com parâmetros válidos — devolve uma estimativa
@@ -127,6 +153,23 @@ export function gerarPreviewPosologia(dataInicio, tipoPosologia, parametros = {}
     dias.push({ data: data.toISOString().slice(0, 10), toma });
   }
   return dias;
+}
+
+/**
+ * Monta a lista de períodos de pausa (histórico + a pausa ativa agora, se
+ * houver) a partir de um registro de monitoramento — pra passar direto
+ * pra calcularDataFimCaixa sem precisar montar isso à mão em cada lugar.
+ */
+export function obterPeriodosPausa(monitoramento) {
+  const periodos = Array.isArray(monitoramento?.pausas_historico) ? [...monitoramento.pausas_historico] : [];
+  if (monitoramento?.data_pausa_inicio) {
+    // Pausa ainda ativa agora (sem fim definido ainda) — na prática só é
+    // relevante se essa função for chamada enquanto o registro ainda está
+    // PAUSADO (fora do fluxo normal de Registrar Contato). Ao destravar, o
+    // controller move esse período pra pausas_historico com o fim real.
+    periodos.push({ inicio: monitoramento.data_pausa_inicio, fim: null });
+  }
+  return periodos;
 }
 
 /**

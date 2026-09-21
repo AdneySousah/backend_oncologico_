@@ -129,6 +129,7 @@ router.get('/avaliacoes',  EvaluationResponseController.index);
 // --- ROTAS DE TERMOS ---
 router.post('/termos/send', checkPermission('termos', 'editar'), TermoController.sendLink);
 router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), TermoController.checkStatus);
+router.patch('/termos/paciente/:id/cancelar', checkPermission('termos', 'editar'), TermoController.cancelarTermo);
 
 router.post('/nps/send', checkPermission('avaliacoes', 'editar'), NpsController.sendNps); 
 router.get('/nps', checkPermission('dashboard', 'acessar'), NpsController.index); 
@@ -159,6 +160,10 @@ router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedica
 router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.atualizarDataProximoContato);
 router.get('/monitoramento-medicamentos/recalculaveis', checkPermission('recalculo', 'acessar'), MonitoramentoMedicamentoController.listarRecalculaveis);
 router.put('/monitoramento-medicamentos/:id/recalcular', checkPermission('recalculo', 'editar'), MonitoramentoMedicamentoController.recalcular);
+router.get('/monitoramento-medicamentos/pausados', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.listarPausados);
+router.patch('/monitoramento-medicamentos/:id/pausar', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.pausarMedicamento);
+router.patch('/monitoramento-medicamentos/:id/destravar-pausa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.destravarPausaMedicamento);
+router.patch('/monitoramento-medicamentos/:id/estender-pausa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.estenderPausaMedicamento);
 // Cálculo puro (sem dado sensível), usado pela tela de confirmação de
 // posologia em vários lugares — só exige estar logado, sem permissão
 // de módulo específica.

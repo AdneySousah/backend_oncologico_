@@ -235,25 +235,6 @@ class TermoController {
     }
 }
 
-    async verifyResponse(req, res) {
-        const { id } = req.params;
-        try {
-            const paciente = await Pacientes.findByPk(id, {
-                include: ['operadoras'],
-                // ✅ NOVO: Adicionado 'termo_data_aceite' nos atributos retornados
-                attributes: ['id', 'status_termo', 'termo_data_aceite'] 
-            });
-            
-            if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
-            }
-            
-            return res.json({ paciente });
-        } catch (error) {
-            return res.status(500).json({ error: 'Erro ao checar status' });
-        }
-    }
-
     // Método para o frontend consultar o status em tempo real (Polling)
     async checkStatus(req, res) {
         const { id } = req.params;
@@ -268,21 +249,59 @@ class TermoController {
         }
     }
 
+    // Usado pela tela pública de aceite, pra saber o status atual e (se já
+    // aceito) a data do aceite.
     async verifyResponse(req, res) {
-        const { id } = req.params
+        const { id } = req.params;
         try {
-            const paciente = await Pacientes.findByPk(id,
-                {
-                    include: ['operadoras'],
-                    attributes: ['id', 'status_termo']
-                }
-            );
+            const paciente = await Pacientes.findByPk(id, {
+                include: ['operadoras'],
+                attributes: ['id', 'status_termo', 'termo_data_aceite']
+            });
+
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
+
             return res.json({ paciente });
         } catch (error) {
             return res.status(500).json({ error: 'Erro ao checar status' });
+        }
+    }
+
+    // 👇 NOVO: cancela/invalida um termo já enviado — antes de responder
+    // (ex: enviado pro número errado) ou mesmo depois de já aceito/recusado.
+    // O link em si (/paciente/termo/:id) não tem token próprio, então
+    // "invalidar" significa: a tela pública passa a mostrar "link não
+    // disponível" pra esse paciente até que um novo termo seja enviado.
+    async cancelarTermo(req, res) {
+        const { id } = req.params;
+        try {
+            const paciente = await Pacientes.findByPk(id);
+            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
+
+            const statusAnterior = paciente.status_termo;
+            if (statusAnterior === 'Cancelado') {
+                return res.status(400).json({ error: 'Este termo já está cancelado.' });
+            }
+
+            await paciente.update({
+                status_termo: 'Cancelado',
+                termo_data_aceite: null,
+                termo_ip: null,
+                termo_user_agent: null,
+                termo_versao_id: null
+            });
+
+            await AuditService.log(
+                req.userId, 'Edição', 'Termo', paciente.id,
+                `Cancelou o termo de ${paciente.nome} ${paciente.sobrenome} (estava "${statusAnterior}") — o link deixa de estar disponível até um novo envio.`
+            );
+
+            return res.json({ message: 'Termo cancelado com sucesso.', status_termo: 'Cancelado' });
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ error: 'Erro ao cancelar o termo.' });
         }
     }
 

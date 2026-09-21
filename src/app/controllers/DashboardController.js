@@ -145,12 +145,12 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
     // ==========================================
     // STATUS DOS TERMOS E CONTAGEM DE ELEGÍVEIS
     // ==========================================
-    let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0 };
+    let termosCount = { Aceito: 0, Recusado: 0, Pendente: 0, 'Nao Enviado': 0, Cancelado: 0 };
     let elegiveisCount = 0;
     let termosReport = [];
 
     pacientesAtivosTermo.forEach(p => {
-      const statusTermo = p.status_termo || 'Pendente';
+      const statusTermo = p.status_termo || 'Nao Enviado';
       if (termosCount[statusTermo] !== undefined) termosCount[statusTermo]++;
 
       if (statusTermo === 'Aceito') {
@@ -565,7 +565,7 @@ async function calcularPayloadDashboard({ permission, data_inicio, data_fim }) {
         report: basePatientsListSincronizados
       },
       pacientesMonitorados: { total: totalMonitorados, chart: [{ name: 'Monitorados', value: totalMonitorados }, { name: 'Não Monitorados', value: naoMonitorados < 0 ? 0 : naoMonitorados }], report: monitoradosReport },
-      termos: { chart: [{ name: 'Aceito', value: termosCount.Aceito }, { name: 'Pendente', value: termosCount.Pendente }, { name: 'Recusado', value: termosCount.Recusado }], report: termosReport },
+      termos: { chart: [{ name: 'Aceito', value: termosCount.Aceito }, { name: 'Pendente', value: termosCount.Pendente }, { name: 'Recusado', value: termosCount.Recusado }, { name: 'Não Enviado', value: termosCount['Nao Enviado'] }, { name: 'Cancelado', value: termosCount.Cancelado }], report: termosReport },
       aderenciaCategoria: { chart: aderenciaCategoriaChart, report: categoriaReport },
       adesaoScore: { chart: [{ name: 'Alta Adesão', value: adesaoAlta }, { name: 'Média Adesão', value: adesaoMedia }, { name: 'Baixa Adesão', value: adesaoBaixa }, { name: 'Sem Avaliação', value: semAvaliacao }], report: adesaoScoreReport },
       aderenciaOpcoes: { chart: [{ name: 'Completamente', value: aderenciaOpcoesCount.COMPLETAMENTE }, { name: 'Parcialmente', value: aderenciaOpcoesCount.PARCIALMENTE }, { name: 'Não Adere', value: aderenciaOpcoesCount.NAO_ADERE }, { name: 'Sem Registro', value: aderenciaPendente }], report: aderenciaOpcoesReport },

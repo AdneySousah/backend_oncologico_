@@ -21,7 +21,7 @@ class Pacientes extends Model {
             estado: Sequelize.STRING,
             cpf: Sequelize.STRING,
             fez_entrevista: Sequelize.BOOLEAN,
-            status_termo: Sequelize.ENUM('aceito', 'recusado', 'pendente'),
+            status_termo: Sequelize.ENUM('aceito', 'recusado', 'pendente', 'nao_enviado'),
             is_active: Sequelize.BOOLEAN,
             is_new_user: Sequelize.BOOLEAN,
             tratamento_pausado: Sequelize.BOOLEAN,

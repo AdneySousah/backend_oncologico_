@@ -10,7 +10,7 @@ import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import { addDays, subDays, parseISO } from 'date-fns';
 import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
-import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia } from '../../utils/calcularPosologia.js';
+import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa } from '../../utils/calcularPosologia.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
 
@@ -591,7 +591,7 @@ class MonitoramentoMedicamentoController {
           : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
         if (qtd_informada_caixa != null && proximaPosologia > 0) {
-          proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
+          proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
           proximaDataAdministracao = new Date();
           proximasCapsulasTotais = qtd_informada_caixa;
         }
@@ -604,7 +604,7 @@ class MonitoramentoMedicamentoController {
           proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
           proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
           proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
-          proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
+          proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
 
           if (compraRevalidada.mudouMedicamento) {
             await HistoricoTrocaMedicamento.create({
@@ -726,7 +726,7 @@ class MonitoramentoMedicamentoController {
         return res.status(404).json({ error: 'Monitoramento não encontrado.' });
       }
       const dataAdminParsed = parseISO(data_administracao);
-      const novaDataFimCaixa = calcularDataFimCaixa(dataAdminParsed, monitoramento.qtd_total_capsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
+      const novaDataFimCaixa = calcularDataFimCaixa(dataAdminParsed, monitoramento.qtd_total_capsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
       await monitoramento.update({ data_administracao: dataAdminParsed, data_calculada_fim_caixa: novaDataFimCaixa });
       return res.json({ message: 'Sucesso!', monitoramento });
     } catch (error) {
@@ -926,7 +926,7 @@ class MonitoramentoMedicamentoController {
       let novaDataFimCaixa = monitoramento.data_calculada_fim_caixa;
       if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
         const baseDate = monitoramento.data_administracao || monitoramento.data_entrega || monitoramento.createdAt;
-        novaDataFimCaixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
+        novaDataFimCaixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
       }
 
       await monitoramento.update({
@@ -1007,7 +1007,7 @@ class MonitoramentoMedicamentoController {
 
       if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
         const baseDate = updateData.data_administracao === null ? monitoramento.data_entrega : (monitoramento.data_administracao || monitoramento.data_entrega);
-        updateData.data_calculada_fim_caixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento);
+        updateData.data_calculada_fim_caixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
       }
 
       await monitoramento.update(updateData);
@@ -1318,7 +1318,7 @@ class MonitoramentoMedicamentoController {
             : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
           if (qtd_informada_caixa != null && proximaPosologia > 0) {
-            proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
+            proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
             proximaDataAdministracao = new Date();
             proximasCapsulasTotais = qtd_informada_caixa;
           }
@@ -1331,7 +1331,7 @@ class MonitoramentoMedicamentoController {
             proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
             proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
             proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
-            proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia);
+            proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
 
             if (compraRevalidada.mudouMedicamento) {
               await HistoricoTrocaMedicamento.create({
@@ -1522,7 +1522,7 @@ class MonitoramentoMedicamentoController {
         // pode ter mudado desde o último ciclo sincronizado.
         const posologiaVigente = posologia || monitoramentoAtual.posologia_diaria;
         const qtdTotalCapsulas = qtdPorCaixa * qtd_caixas_reembolsadas;
-        const dataFimCaixa = calcularDataFimCaixa(dataInicio, qtdTotalCapsulas, posologiaVigente, monitoramentoAtual.tipo_posologia, monitoramentoAtual);
+        const dataFimCaixa = calcularDataFimCaixa(dataInicio, qtdTotalCapsulas, posologiaVigente, monitoramentoAtual.tipo_posologia, monitoramentoAtual, obterPeriodosPausa(monitoramentoAtual));
         const dataProximoContatoSugerida = calcularDataTelemonitoramento(dataInicio);
 
         // Cancela o registro pendente antigo — ele fica sem uma compra
@@ -1739,6 +1739,190 @@ async atualizarDataProximoContato(req, res) {
       return res.json({ message: 'Recálculo aplicado com sucesso.', monitoramento });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao recalcular monitoramento.', details: error.message });
+    }
+  }
+
+  // Pausa TEMPORARIAMENTE um medicamento específico (diferente de "Pausar
+  // Tratamento", que pausa o paciente inteiro sem prazo). O registro sai da
+  // fila normal (status PAUSADO) até alguém destravar, e a data prevista
+  // de retomada alimenta o alerta de "pausa terminando em breve".
+  async pausarMedicamento(req, res) {
+    const { id } = req.params;
+    const { motivo_id, data_fim_prevista, observacao } = req.body;
+
+    if (!motivo_id || !data_fim_prevista) {
+      return res.status(400).json({ error: 'Informe o motivo e a data prevista de retomada.' });
+    }
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
+        ]
+      });
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      if (monitoramento.status !== 'PENDENTE') {
+        return res.status(400).json({ error: 'Só é possível pausar um monitoramento pendente.' });
+      }
+
+      await monitoramento.update({
+        status: 'PAUSADO',
+        data_pausa_inicio: new Date(),
+        data_pausa_fim_prevista: parseISO(data_fim_prevista),
+        motivo_pausa_medicamento_id: motivo_id,
+        motivo_pausa_medicamento_observacao: observacao || null
+      });
+
+      await AuditService.log(
+        req.userId, 'Edição', 'Monitoramento', monitoramento.id,
+        `Pausou temporariamente o acompanhamento de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}, com retomada prevista para ${parseISO(data_fim_prevista).toLocaleDateString('pt-BR')}.`
+      );
+
+      return res.json({ message: 'Medicamento pausado com sucesso.', monitoramento });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao pausar medicamento.' });
+    }
+  }
+
+  // Destrava a pausa — move o período pro histórico (com a data real de
+  // fim = hoje, que pode ser diferente da prevista), recalcula a data de
+  // fim de caixa considerando esse período parado, e volta status PENDENTE.
+  async destravarPausaMedicamento(req, res) {
+    const { id } = req.params;
+    // 👇 NOVO: aceita a data REAL em que o paciente voltou a tomar, que pode
+    // ser diferente de hoje (ex: pausa venceu ontem, mas o operador só
+    // processa no sistema 3 dias depois — sem isso, esses 3 dias de atraso
+    // administrativo seriam contados como se o paciente ainda estivesse
+    // parado, quando na real ele já tinha voltado a tomar).
+    const { data_retomada_real } = req.body;
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
+        ]
+      });
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      if (monitoramento.status !== 'PAUSADO') {
+        return res.status(400).json({ error: 'Este medicamento não está pausado.' });
+      }
+
+      const hoje = new Date();
+      const fimRealPausa = data_retomada_real ? parseISO(data_retomada_real) : hoje;
+
+      if (fimRealPausa > hoje) {
+        return res.status(400).json({ error: 'A data real de retomada não pode ser no futuro.' });
+      }
+      if (monitoramento.data_pausa_inicio && fimRealPausa < new Date(monitoramento.data_pausa_inicio)) {
+        return res.status(400).json({ error: 'A data real de retomada não pode ser antes do início da pausa.' });
+      }
+
+      const historicoAtualizado = [
+        ...(Array.isArray(monitoramento.pausas_historico) ? monitoramento.pausas_historico : []),
+        { inicio: monitoramento.data_pausa_inicio, fim: fimRealPausa.toISOString() }
+      ];
+
+      const dataInicioCiclo = monitoramento.data_administracao || monitoramento.data_entrega;
+      const novaDataFimCaixa = calcularDataFimCaixa(
+        new Date(dataInicioCiclo), monitoramento.qtd_total_capsulas, monitoramento.posologia_diaria,
+        monitoramento.tipo_posologia, monitoramento, historicoAtualizado
+      );
+
+      await monitoramento.update({
+        status: 'PENDENTE',
+        pausas_historico: historicoAtualizado,
+        data_pausa_inicio: null,
+        data_pausa_fim_prevista: null,
+        motivo_pausa_medicamento_id: null,
+        motivo_pausa_medicamento_observacao: null,
+        data_calculada_fim_caixa: novaDataFimCaixa
+      });
+
+      await AuditService.log(
+        req.userId, 'Edição', 'Monitoramento', monitoramento.id,
+        `Destravou a pausa de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome} — retomando o acompanhamento normal. Data real de retomada considerada: ${fimRealPausa.toLocaleDateString('pt-BR')}${data_retomada_real ? ' (informada manualmente)' : ' (hoje)'}.`
+      );
+
+      return res.json({ message: 'Pausa destravada, acompanhamento retomado.', monitoramento });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao destravar pausa.' });
+    }
+  }
+
+  // Estende o prazo de uma pausa já em andamento — pro caso de a data
+  // prevista vencer mas o paciente ainda não poder retomar (ex: médico
+  // ainda não liberou). Só muda a data prevista, não mexe em status nem
+  // em cálculo — o medicamento continua PAUSADO, sem contagem.
+  async estenderPausaMedicamento(req, res) {
+    const { id } = req.params;
+    const { nova_data_fim_prevista } = req.body;
+
+    if (!nova_data_fim_prevista) {
+      return res.status(400).json({ error: 'Informe a nova data prevista de retomada.' });
+    }
+
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
+        include: [
+          { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }
+        ]
+      });
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      if (monitoramento.status !== 'PAUSADO') {
+        return res.status(400).json({ error: 'Este medicamento não está pausado.' });
+      }
+
+      const novaData = parseISO(nova_data_fim_prevista);
+      if (monitoramento.data_pausa_inicio && novaData < new Date(monitoramento.data_pausa_inicio)) {
+        return res.status(400).json({ error: 'A nova data prevista não pode ser antes do início da pausa.' });
+      }
+
+      await monitoramento.update({ data_pausa_fim_prevista: novaData });
+
+      await AuditService.log(
+        req.userId, 'Edição', 'Monitoramento', monitoramento.id,
+        `Estendeu a pausa de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome} — nova retomada prevista: ${novaData.toLocaleDateString('pt-BR')}.`
+      );
+
+      return res.json({ message: 'Prazo da pausa estendido com sucesso.', monitoramento });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao estender a pausa.' });
+    }
+  }
+
+  // Lista todo medicamento atualmente pausado — alimenta a aba "Pausados"
+  // do Telemonitoramento e a checagem de alerta de pausas vencendo em breve.
+  async listarPausados(req, res) {
+    try {
+      const { operadora_id } = req.query;
+      const permission = await getOperadoraFilter(req.userId, operadora_id);
+      if (!permission.authorized) {
+        if (permission.emptyResult) return res.json([]);
+        return res.status(permission.status).json({ error: permission.error });
+      }
+
+      const pausados = await MonitoramentoMedicamento.findAll({
+        where: { status: 'PAUSADO' },
+        include: [
+          {
+            model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome', 'cpf'],
+            where: permission.whereClause, required: true, include: ['operadoras']
+          },
+          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] },
+          { model: MotivoPausaTratamento, as: 'motivoPausaMedicamento', attributes: ['id', 'descricao'] }
+        ],
+        order: [['data_pausa_fim_prevista', 'ASC']]
+      });
+      return res.json(pausados);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ error: 'Erro ao listar medicamentos pausados.' });
     }
   }
 

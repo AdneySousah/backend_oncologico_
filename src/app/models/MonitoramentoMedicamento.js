@@ -52,7 +52,19 @@ class MonitoramentoMedicamento extends Model {
       posologia_ciclo_dias_toma: Sequelize.INTEGER,
       posologia_ciclo_dias_pausa: Sequelize.INTEGER,
       posologia_intervalo_dias: Sequelize.INTEGER,
-      posologia_datas_personalizadas: Sequelize.JSONB
+      posologia_datas_personalizadas: Sequelize.JSONB,
+
+      // 👇 NOVO: pausa temporária de UM medicamento específico (diferente
+      // de "Pausar Tratamento", que é do paciente inteiro). Sai da fila
+      // normal (status PAUSADO) até alguém destravar.
+      data_pausa_inicio: Sequelize.DATE,
+      data_pausa_fim_prevista: Sequelize.DATE,
+      motivo_pausa_medicamento_id: Sequelize.INTEGER,
+      motivo_pausa_medicamento_observacao: Sequelize.TEXT,
+      // Histórico de todos os períodos de pausa já concluídos deste ciclo —
+      // [{ inicio: 'AAAA-MM-DD', fim: 'AAAA-MM-DD' }, ...]. Usado pra
+      // excluir esses dias do cálculo de comprimidos consumidos.
+      pausas_historico: Sequelize.JSONB
 
     }, {
       sequelize,
@@ -69,6 +81,7 @@ class MonitoramentoMedicamento extends Model {
 
     this.belongsTo(models.MotivoFalhaContato, { foreignKey: 'motivo_falha_contato_id', as: 'motivoFalhaContato' });
     this.belongsTo(models.MotivoPausaTratamento, { foreignKey: 'motivo_encerramento_id', as: 'motivoEncerramento' });
+    this.belongsTo(models.MotivoPausaTratamento, { foreignKey: 'motivo_pausa_medicamento_id', as: 'motivoPausaMedicamento' });
     this.belongsTo(models.MonitoramentoMedicamento, { foreignKey: 'retomado_de_monitoramento_id', as: 'retomadoDe' });
 
     this.belongsToMany(models.ReacaoAdversa, {
