@@ -311,7 +311,7 @@ class PacientesController {
                     qtd_caixas: evento.qtd_caixas || 1
                 });
 
-                if (medicamentosAtivos.length === 2) break; // limite de 2 medicamentos concorrentes
+                if (medicamentosAtivos.length === 10) break; // teto de segurança, não uma regra de negócio — evita listas absurdas em caso de dado inconsistente
             }
 
             return res.json({ medicamentos: medicamentosAtivos });

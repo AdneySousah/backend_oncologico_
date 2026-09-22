@@ -64,7 +64,7 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
       });
       medicamentosDoGrupoIds = [...new Set([monitoramentoAtual.medicamento_id, ...irmaos.map(i => i.medicamento_id)])];
     }
-    if (medicamentosDoGrupoIds.length >= 2) {
+    if (medicamentosDoGrupoIds.length >= 10) {
       const erro = new Error('Este paciente já possui o número máximo de medicamentos em acompanhamento simultâneo. Não é possível aplicar como uso em conjunto.');
       erro.status = 409;
       throw erro;
@@ -126,7 +126,7 @@ class MonitoramentoMedicamentoController {
           // onboarding), o comportamento continua igual ao de antes.
           evento_externo_id: Yup.number().integer().nullable()
         })
-      ).min(1).max(2).required()
+      ).min(1).max(10).required()
     });
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
@@ -590,10 +590,17 @@ class MonitoramentoMedicamentoController {
             }
           : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
+        // 👇 A cada contato em que o paciente informa quanto lhe resta,
+        // 👇 REGRA DEFINITIVA: qtd_total_capsulas (o total real da caixa,
+        // vem do questionário/compra) e data_administracao (quando essa
+        // caixa começou a ser usada) são IMUTÁVEIS — só mudam quando um
+        // evento de compra novo de verdade chega (evento_externo_id
+        // diferente, tratado no bloco de nova compra abaixo) ou pelo botão
+        // "Corrigir". qtd_informada_caixa nunca alimenta os dois — serve só
+        // pra classificar a adesão deste contato (comparando informado x
+        // projetado), sem virar a nova base de cálculo dos próximos dias.
         if (qtd_informada_caixa != null && proximaPosologia > 0) {
           proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
-          proximaDataAdministracao = new Date();
-          proximasCapsulasTotais = qtd_informada_caixa;
         }
 
         if (aplicar_nova_compra && compraRevalidada && !ehUsoConjunto) {
@@ -850,7 +857,7 @@ class MonitoramentoMedicamentoController {
       const dataAdminExterna = novoEvento.data_administracao_prevista;
       const dataNovoInicio = dataAdminExterna ? addDays(parseISO(dataAdminExterna), 5) : null;
       const totalCapsulasNovas = (novoEvento.medicamento.qtd_capsula || 0) * novoEvento.qtd_caixas;
-      const podeSerConjunto = ehMedicamentoDiferente && medicamentosDoGrupoIds.length < 2;
+      const podeSerConjunto = ehMedicamentoDiferente && medicamentosDoGrupoIds.length < 10;
 
       return res.json({
         novaCompraDetectada: true,
@@ -1317,10 +1324,10 @@ class MonitoramentoMedicamentoController {
               }
             : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
 
+          // 👇 Mesmo raciocínio da versão única — ver comentário lá.
+          // qtd_total_capsulas e data_administracao são imutáveis.
           if (qtd_informada_caixa != null && proximaPosologia > 0) {
             proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
-            proximaDataAdministracao = new Date();
-            proximasCapsulasTotais = qtd_informada_caixa;
           }
 
           if (aplicar_nova_compra && compraRevalidada && !ehUsoConjunto) {
@@ -1400,7 +1407,7 @@ class MonitoramentoMedicamentoController {
           `Registrou contato em conjunto para o grupo ${grupoMedicamentosId}. Data do próximo contato: ${data_proximo_contato || 'N/A (medicamentos descontinuados)'}`
         );
 
-        return { mensagem: 'Contato registrado para os dois medicamentos com sucesso!', registros: resultados };
+        return { mensagem: `Contato registrado para os ${resultados.length} medicamentos com sucesso!`, registros: resultados };
       });
 
       return res.json({ message: resultado.mensagem, registros: resultado.registros });

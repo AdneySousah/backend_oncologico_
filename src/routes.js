@@ -185,6 +185,7 @@ router.post('/reacao-adversa/import', checkPermission('reacao_adversa', 'editar'
 
 
 router.get('/dashboard', checkPermission('dashboard', 'acessar'), DashboardController.index);
+router.get('/dashboard/novos-pacientes-por-operadora', checkPermission('dashboard', 'acessar'), DashboardController.novosPacientesPorOperadora);
 router.post('/dashboard/fechar-mes', checkPermission('dashboard', 'editar'), DashboardController.fecharMes);
 router.get('/dashboard/status-fechamento-mes-anterior', checkPermission('fechar_mes_dashboard', 'acessar'), DashboardController.statusFechamentoMesAnterior);
 router.post('/dashboard/fechar-mes-anterior', checkPermission('fechar_mes_dashboard', 'editar'), DashboardController.fecharMesAnterior);

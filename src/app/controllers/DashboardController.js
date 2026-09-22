@@ -13,6 +13,17 @@ import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
 import Medicamentos from '../models/Medicamentos.js';
 import MotivosFalhaContato from '../models/MotivoFalhaContato.js';
 import DashboardSnapshot from '../models/DashboardSnapshot.js';
+import User from '../models/User.js';
+import axios from 'axios';
+
+// 👇 NOVO: contagem de "novos pacientes cadastrados" por operadora, direto
+// do sistema externo — sem criar ou atualizar nada localmente, e sem
+// tocar no SyncService.js (mantém o serviço de sincronização como está,
+// a pedido do usuário). Depende de um tipo de evento que ainda não existe
+// no sistema de origem — os dois valores abaixo são placeholders até o
+// outro time confirmar o formato real do evento de "novo paciente".
+const EVENTTYPE_ID_NOVO_PACIENTE = 'TROCAR_PELO_VALOR_REAL'; // TODO: confirmar com o outro sistema qual é o eventtype_id do evento de novo cadastro
+const CAMPO_DATA_NOVO_PACIENTE = 'created_at'; // TODO: confirmar o nome real do campo de data dentro desse tipo de evento (pode não se chamar "created_at")
 
 const OFFSET_BRASILIA_MS = 3 * 60 * 60 * 1000;
 
@@ -684,6 +695,86 @@ class DashboardController {
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: 'Erro ao gerar dados do dashboard', details: error.message });
+    }
+  }
+
+  // 👇 NOVO: quantos pacientes tiveram um evento de "novo cadastro" no
+  // sistema de origem, no período pedido, agrupado por operadora. Só
+  // consulta o sistema externo (mesmo endpoint que a checagem de
+  // pendências já usa) — nenhuma escrita local, nenhum paciente é criado
+  // ou atualizado aqui, e o SyncService.js não é tocado.
+  async novosPacientesPorOperadora(req, res) {
+    try {
+      const currentUser = await User.findByPk(req.userId);
+      if (!currentUser || !currentUser.external_token) {
+        return res.status(401).json({ error: 'Token externo não encontrado.' });
+      }
+
+      const { mes, ano } = req.query;
+      const hoje = new Date();
+      const anoAlvo = ano ? parseInt(ano, 10) : hoje.getFullYear();
+      const mesAlvo = mes ? parseInt(mes, 10) : (hoje.getMonth() + 1);
+      const inicioPeriodo = new Date(anoAlvo, mesAlvo - 1, 1);
+      const fimPeriodoExclusivo = new Date(anoAlvo, mesAlvo, 1);
+
+      const headers = { Authorization: `Bearer ${currentUser.external_token}` };
+      const baseUrl = `${process.env.END_POINT}/api/patients?treatment_type_id=4`;
+      let todosPacientesExternos = [];
+
+      const responseP1 = await axios.get(`${baseUrl}&page=1`, { headers });
+      const dataP1 = responseP1.data;
+      if (dataP1.data) todosPacientesExternos = todosPacientesExternos.concat(dataP1.data);
+      else if (Array.isArray(dataP1)) todosPacientesExternos = todosPacientesExternos.concat(dataP1);
+
+      const lastPage = (dataP1.meta && dataP1.meta.last_page) ? dataP1.meta.last_page : 1;
+      if (lastPage > 1) {
+        const BATCH_SIZE = 5;
+        for (let i = 2; i <= lastPage; i += BATCH_SIZE) {
+          const batchPromises = [];
+          for (let j = i; j < i + BATCH_SIZE && j <= lastPage; j++) {
+            batchPromises.push(axios.get(`${baseUrl}&page=${j}`, { headers }));
+          }
+          const batchResponses = await Promise.all(batchPromises);
+          for (const response of batchResponses) {
+            const responseData = response.data;
+            if (responseData.data) todosPacientesExternos = todosPacientesExternos.concat(responseData.data);
+            else if (Array.isArray(responseData)) todosPacientesExternos = todosPacientesExternos.concat(responseData);
+          }
+        }
+      }
+
+      const contagemPorOperadora = {};
+
+      todosPacientesExternos.forEach(extPatient => {
+        const eventosNovoCadastro = (extPatient.events && Array.isArray(extPatient.events))
+          ? extPatient.events.filter(e => String(e.eventtype_id) === EVENTTYPE_ID_NOVO_PACIENTE)
+          : [];
+
+        const temCadastroNoPeriodo = eventosNovoCadastro.some(e => {
+          const valorData = e[CAMPO_DATA_NOVO_PACIENTE];
+          if (!valorData) return false;
+          const dataEvento = new Date(valorData);
+          return !isNaN(dataEvento) && dataEvento >= inicioPeriodo && dataEvento < fimPeriodoExclusivo;
+        });
+
+        if (temCadastroNoPeriodo) {
+          const nomeOperadora = extPatient.company?.name || 'Sem operadora';
+          contagemPorOperadora[nomeOperadora] = (contagemPorOperadora[nomeOperadora] || 0) + 1;
+        }
+      });
+
+      const porOperadora = Object.entries(contagemPorOperadora)
+        .map(([operadora, quantidade]) => ({ operadora, quantidade }))
+        .sort((a, b) => b.quantidade - a.quantidade);
+
+      return res.json({
+        periodo: `${String(mesAlvo).padStart(2, '0')}/${anoAlvo}`,
+        total: porOperadora.reduce((soma, r) => soma + r.quantidade, 0),
+        porOperadora
+      });
+    } catch (error) {
+      console.error('Erro ao buscar novos pacientes por operadora:', error.message);
+      return res.status(500).json({ error: 'Erro ao consultar o sistema externo.', details: error.message });
     }
   }
 
