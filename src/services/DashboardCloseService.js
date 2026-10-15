@@ -76,9 +76,18 @@ export function iniciarJobFechamentoDashboard() {
   // Roda todo dia às 03:00 (horário de Brasília, independente do fuso do
   // servidor). Nos dias antes de DIAS_PARA_FECHAR, a checagem só roda e sai
   // sem fazer nada — é barato.
+  //
+  // 👇 REMOVIDO: a chamada que rodava fecharMesesPendentes() imediatamente
+  // toda vez que o servidor subia. Motivo: ela testa 12 meses x cada
+  // operadora sequencialmente, uma checagem no banco de cada vez — mesmo
+  // "barata" por checagem, em produção isso coincidia com o boot do
+  // container (migrations rodando, pool de conexão esquentando) e deixava
+  // o banco instável por 2-3 minutos a cada deploy. O cron das 3h já cobre
+  // sozinho o cenário que essa chamada tentava proteger (servidor fora do
+  // ar durante a janela de fechamento) — MESES_RETROATIVOS_VERIFICAR=12
+  // garante que, na primeira execução do cron depois do servidor voltar,
+  // qualquer mês pendente (mesmo de semanas atrás) é fechado normalmente.
+  // Pra forçar uma recuperação manual sem esperar as 3h, use o endpoint
+  // POST /dashboard/fechar-mes.
   cron.schedule('0 3 * * *', fecharMesesPendentes, { timezone: 'America/Sao_Paulo' });
-
-  // Roda também uma vez já na subida do servidor, cobrindo o caso do
-  // servidor ter ficado fora do ar justo no dia do fechamento.
-  fecharMesesPendentes();
 }

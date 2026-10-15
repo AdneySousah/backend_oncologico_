@@ -28,7 +28,243 @@ const ehSolicitandoUsoConjunto = (dadosNovaCompraCliente, modoNovoMedicamento) =
 };
 
 
-const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraCliente, modoNovoMedicamento, options = {}) => {
+// 👇 NOVO: motivos aceitos quando o operador decide NÃO aplicar uma compra que
+// o sistema ofereceu neste contato. A chave vai no payload; o rótulo vai pra
+// auditoria. MEDICAMENTO_DESCONTINUADO é gerado pelo próprio backend.
+const MOTIVOS_NAO_APLICAR_COMPRA = {
+  PACIENTE_NAO_RECEBEU: 'Paciente ainda não recebeu / não iniciou esta compra',
+  AINDA_NA_CAIXA_ANTERIOR: 'Paciente ainda está usando a caixa anterior (aplicar no próximo contato)',
+  DADOS_DIVERGENTES: 'Dados da compra divergem do que o paciente informou',
+  COMPRA_NAO_PERTENCE: 'Compra não corresponde a este tratamento',
+  OUTRO: 'Outro',
+  MEDICAMENTO_DESCONTINUADO: 'Medicamento descontinuado neste contato',
+  MEDICAMENTO_PAUSADO: 'Medicamento pausado temporariamente neste contato (a compra volta a ser oferecida ao destravar a pausa)'
+};
+// Evento cuja previsão de uso passou há mais de N dias é tratado como "antigo"
+// (o front já esperava esse campo — evento_antigo — mas o back nunca enviava).
+const DIAS_EVENTO_ANTIGO = 90;
+
+const formatarDataBR = (valor) => {
+  if (!valor) return 'N/A';
+  const texto = valor instanceof Date ? valor.toISOString() : String(valor);
+  return texto.split('T')[0].split('-').reverse().join('/');
+};
+
+// Data que ordena os eventos de compra: a previsão de administração VIGENTE
+// (o sistema externo pode reprogramá-la), com a entrega como fallback.
+const dataDeReferenciaEvento = (evento) =>
+  evento.data_administracao_prevista || evento.data_entrega_prevista || evento.data_entrega_real;
+
+const compararEventosPorData = (a, b) => {
+  const dataA = dataDeReferenciaEvento(a);
+  const dataB = dataDeReferenciaEvento(b);
+  if (dataA && dataB && dataA !== dataB) return new Date(dataA) - new Date(dataB);
+  if (dataA && !dataB) return -1; // evento com data conhecida vem antes de um sem data
+  if (!dataA && dataB) return 1;
+  return parseInt(a.external_id, 10) - parseInt(b.external_id, 10); // fallback final: ordem de criação
+};
+
+const descreverEvento = (evento) => {
+  const nome = evento.medicamento?.nome || `medicamento ${evento.medicamento_id}`;
+  const entrega = evento.data_entrega_real || evento.data_entrega_prevista;
+  return `#${evento.external_id} (${nome}, ${evento.qtd_caixas || 1} cx, entrega ${formatarDataBR(entrega)}, previsão de uso ${formatarDataBR(evento.data_administracao_prevista)})`;
+};
+
+// Eventos PENDENTES do mesmo medicamento do evento escolhido que são mais
+// antigos do que ele (e posteriores ao evento do ciclo atual): ao aplicar o
+// escolhido, esses ficam "pulados" e precisam ser marcados como consumidos —
+// senão continuariam pendentes pra sempre sem ninguém saber.
+const listarEventosAnterioresPendentes = async (eventoEscolhido, pacienteId, eventoAtualId, options = {}) => {
+  const filtroExternalId = { [Op.ne]: eventoEscolhido.external_id };
+  if (eventoAtualId) filtroExternalId[Op.gt] = parseInt(eventoAtualId, 10);
+  const pendentes = await EventosPaciente.findAll({
+    where: {
+      paciente_id: pacienteId,
+      medicamento_id: eventoEscolhido.medicamento_id,
+      recebido: true,
+      processado: false,
+      external_id: filtroExternalId
+    },
+    include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }],
+    ...options
+  });
+  return pendentes.filter(e => compararEventosPorData(e, eventoEscolhido) < 0).sort(compararEventosPorData);
+};
+
+// Grava no próprio evento que ele foi consumido pelo telemonitoramento. Nunca
+// sobrescreve uma marcação anterior: a primeira é a que vale.
+const marcarEventoProcessado = async (evento, { userId, monitoramentoId = null, tipo, observacao = null }, options = {}) => {
+  if (!evento || evento.processado) return false;
+  await evento.update({
+    processado: true,
+    processado_em: new Date(),
+    processado_por_id: userId || null,
+    monitoramento_id: monitoramentoId,
+    tipo_processamento: tipo,
+    processamento_observacao: observacao
+  }, options);
+  return true;
+};
+
+// Fecha o processamento de uma compra aplicada num contato: marca o evento
+// escolhido (CICLO), marca os anteriores pulados (CONSUMIDO_SEM_CICLO) e
+// grava auditoria de tudo — é o rastro que faltava pra responder "esse
+// evento foi processado? quando? por quem? virou ciclo?".
+const registrarProcessamentoCompra = async ({ compraRevalidada, monitoramentoAtual, novoCiclo, userId, transaction }) => {
+  const { evento, eventosAnteriores } = compraRevalidada;
+  const cicloId = novoCiclo ? novoCiclo.id : null;
+  await marcarEventoProcessado(evento, {
+    userId,
+    monitoramentoId: cicloId,
+    tipo: 'CICLO',
+    observacao: `Aplicado no registro de contato do monitoramento #${monitoramentoAtual.id}.`
+  }, { transaction });
+  await AuditService.log(
+    userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
+    `Aplicou a compra ${descreverEvento(evento)} ao fechar o contato${cicloId ? ` → novo ciclo #${cicloId}` : ''}${novoCiclo?.data_administracao ? `, início ${formatarDataBR(novoCiclo.data_administracao)}` : ''}.`
+  );
+  if (eventosAnteriores.length > 0) {
+    for (const anterior of eventosAnteriores) {
+      await marcarEventoProcessado(anterior, {
+        userId,
+        monitoramentoId: null,
+        tipo: 'CONSUMIDO_SEM_CICLO',
+        observacao: `Pulado ao aplicar a compra mais recente #${evento.external_id} no contato do monitoramento #${monitoramentoAtual.id}, com confirmação do operador de que o medicamento foi utilizado.`
+      }, { transaction });
+    }
+    await AuditService.log(
+      userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
+      `Marcou como processadas (medicamento usado, sem ciclo próprio) as compras anteriores ${eventosAnteriores.map(e => descreverEvento(e)).join('; ')} ao aplicar a #${evento.external_id}.`
+    );
+  }
+};
+
+// Auditoria da decisão de NÃO aplicar a compra oferecida — sem isso um
+// evento pode ficar pendente por meses sem ninguém saber que foi oferecido.
+const registrarCompraNaoAplicada = async ({ monitoramentoAtual, compraOferecidaId, motivo, texto, userId, transaction }) => {
+  const evento = await EventosPaciente.findOne({
+    where: { external_id: compraOferecidaId, paciente_id: monitoramentoAtual.paciente_id },
+    include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }],
+    transaction
+  });
+  const descricao = evento ? descreverEvento(evento) : `#${compraOferecidaId}`;
+  const rotulo = MOTIVOS_NAO_APLICAR_COMPRA[motivo] || motivo;
+  await AuditService.log(
+    userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
+    `Compra ${descricao} oferecida e NÃO aplicada neste contato. Motivo: ${rotulo}${texto ? ` — ${texto}` : ''}.`
+  );
+};
+
+// Regra compartilhada entre o registro individual e o em conjunto: compra
+// oferecida e não aplicada exige motivo (e descrição, se "Outro").
+const validarMotivoNaoAplicarCompra = ({ contato_efetivo, descontinuar_medicamento, aplicar_nova_compra, compra_oferecida_evento_id, motivo_nao_aplicar_compra, motivo_nao_aplicar_compra_texto }) => {
+  const oferecidaSemAplicar = contato_efetivo !== false && !descontinuar_medicamento && !aplicar_nova_compra && !!compra_oferecida_evento_id;
+  if (!oferecidaSemAplicar) return null;
+  if (!motivo_nao_aplicar_compra) return 'Informe o motivo para não aplicar a compra oferecida neste contato.';
+  if (motivo_nao_aplicar_compra === 'OUTRO' && !(motivo_nao_aplicar_compra_texto || '').trim()) return 'Descreva o motivo para não aplicar a compra oferecida.';
+  return null;
+};
+
+// 👇 NOVO: regra dos "candidatos de retomada" (compra recebida que o
+// telemonitoramento nunca viu) extraída de candidatosRetomada pra ser usada
+// também pelo index — é ela que diz se um paciente "ainda usa" um
+// medicamento que não tem ciclo ativo. Devolve { [pacienteId]: [candidato] }.
+const calcularCandidatosRetomada = async (idsArray) => {
+  if (!idsArray || idsArray.length === 0) return {};
+  // evento já processado (inclusive "consumido sem ciclo") não é candidato —
+  // só o que o telemonitoramento nunca viu.
+  const eventos = await EventosPaciente.findAll({
+    where: { paciente_id: { [Op.in]: idsArray }, recebido: true, processado: false },
+    include: [{ model: Medicamentos, as: 'medicamento' }],
+    order: [['external_id', 'DESC']]
+  });
+
+  // Guarda só o evento mais recente por (paciente, medicamento) — como a
+  // lista já vem ordenada DESC, o primeiro encontrado é o mais novo.
+  const eventoMaisRecentePorPar = {};
+  eventos.forEach(e => {
+    const chave = `${e.paciente_id}-${e.medicamento_id}`;
+    if (!eventoMaisRecentePorPar[chave]) eventoMaisRecentePorPar[chave] = e;
+  });
+
+  // "Marca d'água": maior evento_externo_id já registrado em QUALQUER
+  // monitoramento (de qualquer status) pra cada par paciente+medicamento.
+  const monitoramentos = await MonitoramentoMedicamento.findAll({
+    where: { paciente_id: { [Op.in]: idsArray }, evento_externo_id: { [Op.not]: null } },
+    attributes: ['paciente_id', 'medicamento_id', 'evento_externo_id'],
+    raw: true
+  });
+  const watermarkPorPar = {};
+  monitoramentos.forEach(m => {
+    const chave = `${m.paciente_id}-${m.medicamento_id}`;
+    const extId = parseInt(m.evento_externo_id, 10);
+    if (!watermarkPorPar[chave] || extId > watermarkPorPar[chave]) watermarkPorPar[chave] = extId;
+  });
+
+  const candidatos = {};
+  Object.values(eventoMaisRecentePorPar).forEach(evento => {
+    const chave = `${evento.paciente_id}-${evento.medicamento_id}`;
+    const extId = parseInt(evento.external_id, 10);
+    const marca = watermarkPorPar[chave];
+    if (marca === undefined || extId > marca) {
+      const pacienteId = evento.paciente_id;
+      if (!candidatos[pacienteId]) candidatos[pacienteId] = [];
+      const dataAdminExterna = evento.data_administracao_prevista;
+      candidatos[pacienteId].push({
+        evento_externo_id: evento.external_id,
+        medicamento_id: evento.medicamento_id,
+        medicamento_nome: evento.medicamento?.nome,
+        qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
+        qtd_caixas: evento.qtd_caixas,
+        data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
+        data_previsao_administracao: dataAdminExterna,
+        data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
+      });
+    }
+  });
+  return candidatos;
+};
+
+// 👇 NOVO: pacientes "parcialmente encerrados" — sem nenhum ciclo PENDENTE,
+// com pelo menos um medicamento DESCONTINUADO, mas que ainda usam OUTRO
+// medicamento: existe compra recebida (candidato) de um medicamento
+// diferente dos descontinuados. Esses não são "acompanhamento encerrado":
+// ficam na lista normal, com alerta, pra alguém iniciar o outro medicamento.
+// Devolve { [pacienteId]: dataReferencia } (data do encerramento mais recente,
+// usada pra ordenar na lista como contato atrasado).
+const listarParcialmenteEncerrados = async (pacienteWhere, idsComPendente) => {
+  const descontinuados = await MonitoramentoMedicamento.findAll({
+    attributes: ['paciente_id', 'medicamento_id', 'data_telemonitoramento_efetivado', 'createdAt'],
+    where: {
+      status: 'DESCONTINUADO',
+      paciente_id: idsComPendente.length > 0 ? { [Op.notIn]: idsComPendente } : { [Op.ne]: null }
+    },
+    include: [{ model: Pacientes, as: 'paciente', attributes: [], where: pacienteWhere, required: true }],
+    raw: true
+  });
+  if (descontinuados.length === 0) return {};
+
+  const medicamentosDescontinuadosPorPaciente = {};
+  const dataEncerramentoPorPaciente = {};
+  descontinuados.forEach(r => {
+    if (!medicamentosDescontinuadosPorPaciente[r.paciente_id]) medicamentosDescontinuadosPorPaciente[r.paciente_id] = new Set();
+    medicamentosDescontinuadosPorPaciente[r.paciente_id].add(r.medicamento_id);
+    const data = new Date(r.data_telemonitoramento_efetivado || r.createdAt).getTime();
+    if (!dataEncerramentoPorPaciente[r.paciente_id] || data > dataEncerramentoPorPaciente[r.paciente_id]) dataEncerramentoPorPaciente[r.paciente_id] = data;
+  });
+
+  const candidatos = await calcularCandidatosRetomada(Object.keys(medicamentosDescontinuadosPorPaciente).map(Number));
+  const parciais = {};
+  Object.entries(candidatos).forEach(([pacienteId, lista]) => {
+    const descontinuadosDoPaciente = medicamentosDescontinuadosPorPaciente[pacienteId] || new Set();
+    if (lista.some(c => !descontinuadosDoPaciente.has(c.medicamento_id))) {
+      parciais[pacienteId] = dataEncerramentoPorPaciente[pacienteId];
+    }
+  });
+  return parciais;
+};
+
+const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraCliente, modoNovoMedicamento, options = {}, { confirmarConsumoAnteriores = false } = {}) => {
   if (!dadosNovaCompraCliente || !dadosNovaCompraCliente.evento_externo_id) {
     const erro = new Error('Dados da nova compra ausentes ou incompletos.');
     erro.status = 400;
@@ -44,6 +280,13 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
   });
   if (!evento) {
     const erro = new Error('O evento de compra informado não foi encontrado ou não pertence mais a este paciente. Atualize a tela e tente novamente.');
+    erro.status = 409;
+    throw erro;
+  }
+  // 👇 NOVO: um evento consumido (virou ciclo ou foi marcado como usado) não
+  // pode ser aplicado de novo — protege contra tela defasada / duplo envio.
+  if (evento.processado) {
+    const erro = new Error(`A compra #${evento.external_id} já foi processada em ${formatarDataBR(evento.processado_em)} e não pode ser aplicada novamente. Atualize a tela e tente de novo.`);
     erro.status = 409;
     throw erro;
   }
@@ -73,6 +316,17 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
 
   const totalCapsulasNovas = (evento.medicamento?.qtd_capsula || 0) * (evento.qtd_caixas || 1);
 
+  // 👇 NOVO: o operador pode escolher uma compra mais recente do que a mais
+  // antiga pendente (ex: paciente já está na caixa seguinte). As anteriores
+  // do mesmo medicamento não somem: ficam marcadas como consumidas sem
+  // ciclo próprio — mas só com confirmação explícita de quem está no contato.
+  const eventosAnteriores = await listarEventosAnterioresPendentes(evento, monitoramentoAtual.paciente_id, monitoramentoAtual.evento_externo_id, options);
+  if (eventosAnteriores.length > 0 && !confirmarConsumoAnteriores) {
+    const erro = new Error(`Existem compras anteriores deste medicamento ainda pendentes (${eventosAnteriores.map(e => `#${e.external_id}`).join(', ')}). Confirme que o paciente já as utilizou para marcá-las como processadas, ou aplique a mais antiga.`);
+    erro.status = 400;
+    throw erro;
+  }
+
   return {
     mudouMedicamento,
     ehUsoConjunto,
@@ -81,7 +335,9 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
     qtdCaixas: evento.qtd_caixas || 1,
     totalCapsulasNovas,
     dataEntrega: evento.data_entrega_real || evento.data_entrega_prevista,
-    eventoExternoId: evento.external_id
+    eventoExternoId: evento.external_id,
+    evento,
+    eventosAnteriores
   };
 };
 
@@ -232,6 +488,26 @@ class MonitoramentoMedicamentoController {
             status: 'PENDENTE'
           }, { transaction });
 
+          // 👇 NOVO: a compra base vira "processada" no próprio evento, com
+          // o ciclo que a consumiu — antes só existia o evento_externo_id
+          // copiado no ciclo, sem data nem autor.
+          if (eventoExternoIdBase) {
+            const eventoBase = await EventosPaciente.findOne({
+              where: { external_id: eventoExternoIdBase, paciente_id },
+              include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }],
+              transaction
+            });
+            const marcou = await marcarEventoProcessado(eventoBase, {
+              userId: req.userId,
+              monitoramentoId: novoMonitoramento.id,
+              tipo: 'CICLO',
+              observacao: `Usado como compra base ao iniciar o acompanhamento (monitoramento #${novoMonitoramento.id}).`
+            }, { transaction });
+            if (marcou) {
+              await AuditService.log(req.userId, 'Criação', 'Monitoramento', novoMonitoramento.id, `Iniciou o acompanhamento de ${medicamento.nome} a partir da compra ${descreverEvento(eventoBase)}.`);
+            }
+          }
+
           criados.push(novoMonitoramento);
         }
         return criados;
@@ -296,24 +572,29 @@ class MonitoramentoMedicamentoController {
           // critério de desempate único e estável, a ordem fica sempre a
           // mesma, não importa quantas vezes a lista for buscada.
           order: [[literal('proxima_data'), 'ASC'], [col('MonitoramentoMedicamento.paciente_id'), 'ASC']],
-          limit: parseInt(limit), offset: parseInt(offset),
           subQuery: false,
           raw: true
         });
 
-        if (pacientesComPendencia.length === 0) return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
+        // 👇 NOVO: pacientes que encerraram UM medicamento mas ainda usam outro
+        // (compra recebida de outro medicamento sem ciclo) entram na lista
+        // normal — não são "acompanhamento encerrado". Ordenam pela data do
+        // encerramento, como um contato atrasado: alguém precisa iniciar o
+        // outro medicamento. A paginação (por paciente) passou a ser feita
+        // aqui em memória pra mesclar os dois conjuntos sem quebrar a ordem.
+        const idsComPendente = pacientesComPendencia.map(p => p.paciente_id);
+        const parciais = await listarParcialmenteEncerrados(pacienteWhere, idsComPendente);
+        const ordenados = [
+          ...pacientesComPendencia.map(p => ({ paciente_id: p.paciente_id, data: new Date(p.proxima_data).getTime() })),
+          ...Object.entries(parciais).map(([pacienteId, data]) => ({ paciente_id: Number(pacienteId), data }))
+        ].sort((a, b) => (a.data - b.data) || (a.paciente_id - b.paciente_id));
+
+        if (ordenados.length === 0) return res.json({ data: [], total: 0, totalPages: 0, currentPage: parseInt(page) });
 
         // Total de pacientes distintos (não de linhas) — base real pra paginação
-        const totalPacientesDistintos = await MonitoramentoMedicamento.count({
-          where: { status: 'PENDENTE' },
-          include: [
-            { model: Pacientes, as: 'paciente', attributes: [], where: pacienteWhere, required: true }
-          ],
-          distinct: true,
-          col: 'paciente_id'
-        });
+        const totalPacientesDistintos = ordenados.length;
 
-        const uniquePatientIds = pacientesComPendencia.map(p => p.paciente_id);
+        const uniquePatientIds = ordenados.slice(parseInt(offset), parseInt(offset) + parseInt(limit)).map(p => p.paciente_id);
         const allRecordsForPage = await MonitoramentoMedicamento.findAll({
           where: { paciente_id: { [Op.in]: uniquePatientIds }, status: { [Op.ne]: 'CANCELADO' } },
           include: [
@@ -368,8 +649,12 @@ class MonitoramentoMedicamentoController {
         if (atual === undefined || data > atual) dataMaisRecentePorPaciente[r.paciente_id] = data;
       });
 
+      // 👇 NOVO: quem encerrou um medicamento mas ainda usa outro não é
+      // "encerrado" — está na lista normal, com alerta.
+      const parciais = await listarParcialmenteEncerrados(pacienteWhere, idsComPendente);
       const idsOrdenados = Object.keys(dataMaisRecentePorPaciente)
         .map(Number)
+        .filter(id => !parciais[id])
         .sort((a, b) => dataMaisRecentePorPaciente[b] - dataMaisRecentePorPaciente[a]);
 
       const total = idsOrdenados.length;
@@ -423,7 +708,12 @@ class MonitoramentoMedicamentoController {
       modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
       descontinuar_medicamento: Yup.boolean().nullable(),
       motivo_encerramento: Yup.string().nullable(),
-      motivo_encerramento_id: Yup.number().integer().nullable()
+      motivo_encerramento_id: Yup.number().integer().nullable(),
+      // 👇 NOVO: rastreio de processamento da compra oferecida neste contato
+      confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
+      compra_oferecida_evento_id: Yup.number().integer().nullable(),
+      motivo_nao_aplicar_compra: Yup.string().oneOf(Object.keys(MOTIVOS_NAO_APLICAR_COMPRA)).nullable(),
+      motivo_nao_aplicar_compra_texto: Yup.string().nullable()
     });
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
@@ -440,8 +730,16 @@ class MonitoramentoMedicamentoController {
       modo_novo_medicamento,
       descontinuar_medicamento,
       motivo_encerramento,
-      motivo_encerramento_id
+      motivo_encerramento_id,
+      confirmar_consumo_eventos_anteriores,
+      compra_oferecida_evento_id,
+      motivo_nao_aplicar_compra,
+      motivo_nao_aplicar_compra_texto
     } = req.body;
+
+    // 👇 NOVO: compra oferecida e não aplicada precisa de motivo (vai pra auditoria).
+    const erroMotivoCompra = validarMotivoNaoAplicarCompra(req.body);
+    if (erroMotivoCompra) return res.status(400).json({ error: erroMotivoCompra });
 
     // 👇 CORREÇÃO DE BUG: essa combinação só é realmente contraditória quando
     // a nova compra é do MESMO medicamento (substituindo o ciclo atual) — aí
@@ -529,6 +827,10 @@ class MonitoramentoMedicamentoController {
             if (motivoRegistrado) descricaoMotivo = motivoRegistrado.descricao;
           }
           await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}.`);
+          // 👇 NOVO: a compra oferecida fica registrada como não aplicada por descontinuação.
+          if (compra_oferecida_evento_id && !aplicar_nova_compra) {
+            await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_DESCONTINUADO', texto: null, userId: req.userId, transaction });
+          }
 
           return { mensagem: 'Medicamento descontinuado com sucesso. Nenhum novo ciclo será agendado.' };
         }
@@ -536,7 +838,7 @@ class MonitoramentoMedicamentoController {
         // ---- Revalida a nova compra contra o banco ----
         let compraRevalidada = null;
         if (aplicar_nova_compra) {
-          compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction });
+          compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction }, { confirmarConsumoAnteriores: !!confirmar_consumo_eventos_anteriores });
         }
         const ehUsoConjunto = !!(compraRevalidada && compraRevalidada.ehUsoConjunto);
 
@@ -673,7 +975,17 @@ class MonitoramentoMedicamentoController {
           }, { transaction });
         }
 
-        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${mudou_posologia}. Uso em conjunto: ${ehUsoConjunto}`);
+        // 👇 NOVO: rastro de processamento da compra no próprio evento + auditoria.
+        if (compraRevalidada) {
+          await registrarProcessamentoCompra({
+            compraRevalidada, monitoramentoAtual, userId: req.userId, transaction,
+            novoCiclo: ehUsoConjunto ? novoMonitoramentoAdicional : proximoCicloAtual
+          });
+        } else if (compra_oferecida_evento_id) {
+          await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: motivo_nao_aplicar_compra, texto: motivo_nao_aplicar_compra_texto, userId: req.userId, transaction });
+        }
+
+        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${mudou_posologia}. Uso em conjunto: ${ehUsoConjunto}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}`);
 
         return {
           mensagem: 'Contato registrado e ciclo atualizado com sucesso!',
@@ -771,8 +1083,10 @@ class MonitoramentoMedicamentoController {
 
       // 👇 CORREÇÃO: ordem ASC (mais antigo primeiro), pra nunca pular
       // silenciosamente um evento intermediário que ainda não foi aplicado.
+      // 👇 NOVO: evento já processado (virou ciclo ou foi marcado como usado
+      // ao aplicar uma compra mais recente) nunca volta a ser oferecido.
       const eventos = await EventosPaciente.findAll({
-        where: { paciente_id: monitoramento.paciente.id, recebido: true },
+        where: { paciente_id: monitoramento.paciente.id, recebido: true, processado: false },
         order: [['external_id', 'ASC']],
         include: [{ model: Medicamentos, as: 'medicamento' }]
       });
@@ -853,27 +1167,57 @@ class MonitoramentoMedicamentoController {
         candidatosMesmoMedicamento.filter(e => e.id !== novoEvento.id).length +
         candidatosMedicamentoDiferente.filter(e => e.id !== novoEvento.id).length;
 
-      const dataReferenciaNovoEvento = novoEvento.data_entrega_real || novoEvento.data_entrega_prevista;
-      const dataAdminExterna = novoEvento.data_administracao_prevista;
-      const dataNovoInicio = dataAdminExterna ? addDays(parseISO(dataAdminExterna), 5) : null;
-      const totalCapsulasNovas = (novoEvento.medicamento.qtd_capsula || 0) * novoEvento.qtd_caixas;
-      const podeSerConjunto = ehMedicamentoDiferente && medicamentosDoGrupoIds.length < 10;
+      // 👇 NOVO: cada candidato pendente vira um bloco de detalhes com a MESMA
+      // forma do evento escolhido, pra tela poder listar todos e deixar o
+      // operador trocar a seleção (ex: paciente já está numa compra mais
+      // recente) sem nova consulta. Inclui também:
+      //  - dias_desde_previsao / evento_antigo: previsão de uso há mais de
+      //    DIAS_EVENTO_ANTIGO dias (campo que o front já esperava);
+      //  - existe_mais_recente_mesmo_medicamento: há compra posterior do
+      //    mesmo medicamento pendente — a mais antiga pode estar defasada;
+      //  - eventos_anteriores: o que fica "pulado" se este for aplicado.
+      const hoje = new Date();
+      hoje.setHours(0, 0, 0, 0);
+      const diasDesdePrevisao = (evento) => {
+        const referencia = dataDeReferenciaEvento(evento);
+        if (!referencia) return null;
+        return Math.floor((hoje - new Date(`${referencia}T00:00:00`)) / (1000 * 60 * 60 * 24));
+      };
+      const todosCandidatos = [...candidatosMesmoMedicamento, ...candidatosMedicamentoDiferente].sort(compararEventosPorData);
+      const montarDetalhesEvento = (evento) => {
+        const mesmoMedicamento = evento.medicamento_id === monitoramento.medicamento_id;
+        const dataAdmin = evento.data_administracao_prevista;
+        const totalCapsulas = (evento.medicamento?.qtd_capsula || 0) * evento.qtd_caixas;
+        const doMesmoMedicamento = todosCandidatos.filter(e => e.medicamento_id === evento.medicamento_id && e.id !== evento.id);
+        const dias = diasDesdePrevisao(evento);
+        return {
+          evento_externo_id: evento.external_id,
+          medicamento_id: evento.medicamento_id,
+          medicamento_nome: evento.medicamento?.nome,
+          mesmo_medicamento_atual: mesmoMedicamento,
+          data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
+          data_previsao_administracao: dataAdmin,
+          data_novo_inicio: dataAdmin ? addDays(parseISO(dataAdmin), 5) : null,
+          qtd_caixas: evento.qtd_caixas,
+          total_capsulas_novas: totalCapsulas,
+          sobra_comprimidos: 0,
+          total_estoque_calculado: totalCapsulas,
+          mudou_medicamento: !mesmoMedicamento,
+          pode_ser_conjunto: !mesmoMedicamento && medicamentosDoGrupoIds.length < 10,
+          medicamento_novo: { id: evento.medicamento_id, nome: evento.medicamento?.nome },
+          dias_desde_previsao: dias,
+          evento_antigo: dias !== null && dias > DIAS_EVENTO_ANTIGO,
+          existe_mais_recente_mesmo_medicamento: doMesmoMedicamento.some(e => compararEventosPorData(e, evento) > 0),
+          eventos_anteriores: doMesmoMedicamento.filter(e => compararEventosPorData(e, evento) < 0).map(e => e.external_id)
+        };
+      };
 
       return res.json({
         novaCompraDetectada: true,
         detalhes: {
-          evento_externo_id: novoEvento.external_id,
-          data_entrega: dataReferenciaNovoEvento,
-          data_previsao_administracao: dataAdminExterna,
-          data_novo_inicio: dataNovoInicio,
-          qtd_caixas: novoEvento.qtd_caixas,
-          total_capsulas_novas: totalCapsulasNovas,
-          sobra_comprimidos: 0,
-          total_estoque_calculado: totalCapsulasNovas,
-          mudou_medicamento: ehMedicamentoDiferente,
-          pode_ser_conjunto: podeSerConjunto,
-          medicamento_novo: { id: novoEvento.medicamento_id, nome: novoEvento.medicamento.nome },
+          ...montarDetalhesEvento(novoEvento),
           medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome },
+          eventos_pendentes: todosCandidatos.map(montarDetalhesEvento),
           existe_outro_evento_pendente: !!outroCandidatoImediato || totalCandidatosRestantes > 0,
           outro_evento_pendente: outroCandidatoImediato ? {
             evento_externo_id: outroCandidatoImediato.external_id,
@@ -1161,7 +1505,12 @@ class MonitoramentoMedicamentoController {
           // 👇 NOVO
           descontinuar_medicamento: Yup.boolean().nullable(),
           motivo_encerramento: Yup.string().nullable(),
-          motivo_encerramento_id: Yup.number().integer().nullable()
+          motivo_encerramento_id: Yup.number().integer().nullable(),
+          // 👇 NOVO: rastreio de processamento da compra oferecida (mesmos campos do registro individual)
+          confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
+          compra_oferecida_evento_id: Yup.number().integer().nullable(),
+          motivo_nao_aplicar_compra: Yup.string().oneOf(Object.keys(MOTIVOS_NAO_APLICAR_COMPRA)).nullable(),
+          motivo_nao_aplicar_compra_texto: Yup.string().nullable()
         })
       ).min(1).required()
     });
@@ -1176,6 +1525,8 @@ class MonitoramentoMedicamentoController {
         return res.status(400).json({ error: 'Data do próximo contato é obrigatória.' });
       }
       for (const registro of registros) {
+        const erroMotivoCompra = validarMotivoNaoAplicarCompra({ ...registro, contato_efetivo: true });
+        if (erroMotivoCompra) return res.status(400).json({ error: erroMotivoCompra });
         if (registro.descontinuar_medicamento && registro.aplicar_nova_compra && !ehSolicitandoUsoConjunto(registro.dados_nova_compra, registro.modo_novo_medicamento)) {
           return res.status(400).json({ error: 'Não é possível descontinuar um medicamento e aplicar uma nova compra para ele ao mesmo tempo.' });
         }
@@ -1250,11 +1601,15 @@ class MonitoramentoMedicamentoController {
             tipo_posologia_nova, posologia_ciclo_dias_toma_nova, posologia_ciclo_dias_pausa_nova,
             posologia_intervalo_dias_nova, posologia_datas_personalizadas_nova,
             aplicar_nova_compra, dados_nova_compra, data_inicio_nova_caixa, posologia_nova_caixa, modo_novo_medicamento,
-            descontinuar_medicamento, motivo_encerramento, motivo_encerramento_id // 👈 NOVO
+            descontinuar_medicamento, motivo_encerramento, motivo_encerramento_id, // 👈 NOVO
+            confirmar_consumo_eventos_anteriores, compra_oferecida_evento_id, motivo_nao_aplicar_compra, motivo_nao_aplicar_compra_texto
           } = registro;
 
           // ---- 👇 NOVO: descontinuar este medicamento específico ----
           if (descontinuar_medicamento) {
+            if (compra_oferecida_evento_id && !aplicar_nova_compra) {
+              await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_DESCONTINUADO', texto: null, userId: req.userId, transaction });
+            }
             await monitoramentoAtual.update({
               contato_efetivo: true,
               nivel_adesao,
@@ -1279,7 +1634,7 @@ class MonitoramentoMedicamentoController {
 
           let compraRevalidada = null;
           if (aplicar_nova_compra) {
-            compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction });
+            compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction }, { confirmarConsumoAnteriores: !!confirmar_consumo_eventos_anteriores });
           }
           const ehUsoConjunto = !!(compraRevalidada && compraRevalidada.ehUsoConjunto);
 
@@ -1369,6 +1724,7 @@ class MonitoramentoMedicamentoController {
             grupo_medicamentos_id: grupoMedicamentosId
           }, { transaction });
 
+          let novoRegistroAdicional = null;
           if (ehUsoConjunto) {
             if (!data_inicio_nova_caixa || !posologia_nova_caixa) {
               const erro = new Error('Data de início e posologia do medicamento adicional são obrigatórias para uso em conjunto.');
@@ -1381,7 +1737,7 @@ class MonitoramentoMedicamentoController {
             const parametrosPosologiaNovoMed = extrairParametrosPosologia(req.body.parametros_posologia_novo_medicamento || {});
             const dataFimCaixaNovoMed = calcularDataFimCaixa(dataAdministracaoNovoMed, totalCapsulasNovoMed, posologia_nova_caixa, tipoPosologiaNovoMed, parametrosPosologiaNovoMed);
 
-            await MonitoramentoMedicamento.create({
+            novoRegistroAdicional = await MonitoramentoMedicamento.create({
               paciente_id: monitoramentoAtual.paciente_id,
               patient_evaluation_id: monitoramentoAtual.patient_evaluation_id,
               medicamento_id: compraRevalidada.medicamentoNovoId,
@@ -1397,6 +1753,16 @@ class MonitoramentoMedicamentoController {
               evento_externo_id: compraRevalidada.eventoExternoId,
               grupo_medicamentos_id: grupoMedicamentosId
             }, { transaction });
+          }
+
+          // 👇 NOVO: rastro de processamento da compra no próprio evento + auditoria.
+          if (compraRevalidada) {
+            await registrarProcessamentoCompra({
+              compraRevalidada, monitoramentoAtual, userId: req.userId, transaction,
+              novoCiclo: ehUsoConjunto ? novoRegistroAdicional : novoRegistro
+            });
+          } else if (compra_oferecida_evento_id) {
+            await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: motivo_nao_aplicar_compra, texto: motivo_nao_aplicar_compra_texto, userId: req.userId, transaction });
           }
 
           resultados.push(novoRegistro);
@@ -1424,56 +1790,8 @@ class MonitoramentoMedicamentoController {
     if (idsArray.length === 0) return res.json({ candidatos: {} });
 
     try {
-      const eventos = await EventosPaciente.findAll({
-        where: { paciente_id: { [Op.in]: idsArray }, recebido: true },
-        include: [{ model: Medicamentos, as: 'medicamento' }],
-        order: [['external_id', 'DESC']]
-      });
-
-      // Guarda só o evento mais recente por (paciente, medicamento) — como a
-      // lista já vem ordenada DESC, o primeiro encontrado é o mais novo.
-      const eventoMaisRecentePorPar = {};
-      eventos.forEach(e => {
-        const chave = `${e.paciente_id}-${e.medicamento_id}`;
-        if (!eventoMaisRecentePorPar[chave]) eventoMaisRecentePorPar[chave] = e;
-      });
-
-      // "Marca d'água": maior evento_externo_id já registrado em QUALQUER
-      // monitoramento (de qualquer status) pra cada par paciente+medicamento.
-      const monitoramentos = await MonitoramentoMedicamento.findAll({
-        where: { paciente_id: { [Op.in]: idsArray }, evento_externo_id: { [Op.not]: null } },
-        attributes: ['paciente_id', 'medicamento_id', 'evento_externo_id'],
-        raw: true
-      });
-      const watermarkPorPar = {};
-      monitoramentos.forEach(m => {
-        const chave = `${m.paciente_id}-${m.medicamento_id}`;
-        const extId = parseInt(m.evento_externo_id, 10);
-        if (!watermarkPorPar[chave] || extId > watermarkPorPar[chave]) watermarkPorPar[chave] = extId;
-      });
-
-      const candidatos = {};
-      Object.values(eventoMaisRecentePorPar).forEach(evento => {
-        const chave = `${evento.paciente_id}-${evento.medicamento_id}`;
-        const extId = parseInt(evento.external_id, 10);
-        const marca = watermarkPorPar[chave];
-        if (marca === undefined || extId > marca) {
-          const pacienteId = evento.paciente_id;
-          if (!candidatos[pacienteId]) candidatos[pacienteId] = [];
-          const dataAdminExterna = evento.data_administracao_prevista;
-          candidatos[pacienteId].push({
-            evento_externo_id: evento.external_id,
-            medicamento_id: evento.medicamento_id,
-            medicamento_nome: evento.medicamento?.nome,
-            qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
-            qtd_caixas: evento.qtd_caixas,
-            data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
-            data_previsao_administracao: dataAdminExterna,
-            data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
-          });
-        }
-      });
-
+      // 👇 regra extraída pra calcularCandidatosRetomada (reusada pelo index)
+      const candidatos = await calcularCandidatosRetomada(idsArray);
       return res.json({ candidatos });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao buscar candidatos de retomada.', details: error.message });
@@ -1755,7 +2073,10 @@ async atualizarDataProximoContato(req, res) {
   // de retomada alimenta o alerta de "pausa terminando em breve".
   async pausarMedicamento(req, res) {
     const { id } = req.params;
-    const { motivo_id, data_fim_prevista, observacao } = req.body;
+    // 👇 NOVO: compra_oferecida_evento_id — quando a tela estava oferecendo
+    // uma compra e o operador pausou em vez de aplicar, fica registrado na
+    // auditoria que ela foi oferecida e não aplicada por causa da pausa.
+    const { motivo_id, data_fim_prevista, observacao, compra_oferecida_evento_id } = req.body;
 
     if (!motivo_id || !data_fim_prevista) {
       return res.status(400).json({ error: 'Informe o motivo e a data prevista de retomada.' });
@@ -1785,6 +2106,9 @@ async atualizarDataProximoContato(req, res) {
         req.userId, 'Edição', 'Monitoramento', monitoramento.id,
         `Pausou temporariamente o acompanhamento de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}, com retomada prevista para ${parseISO(data_fim_prevista).toLocaleDateString('pt-BR')}.`
       );
+      if (compra_oferecida_evento_id) {
+        await registrarCompraNaoAplicada({ monitoramentoAtual: monitoramento, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_PAUSADO', texto: null, userId: req.userId });
+      }
 
       return res.json({ message: 'Medicamento pausado com sucesso.', monitoramento });
     } catch (error) {
