@@ -168,6 +168,9 @@ router.patch('/monitoramento-medicamentos/:id/estender-pausa', checkPermission('
 // posologia em vários lugares — só exige estar logado, sem permissão
 // de módulo específica.
 router.post('/monitoramento-medicamentos/preview-posologia', MonitoramentoMedicamentoController.previewPosologia);
+// 👇 NOVO: "com essa pausa/descontinuação o paciente deve ter X comprimidos" —
+// projeção na data em que parou de tomar, pra confirmar com o paciente.
+router.post('/monitoramento-medicamentos/:id/projecao-restante', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.projecaoRestante);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
 router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);

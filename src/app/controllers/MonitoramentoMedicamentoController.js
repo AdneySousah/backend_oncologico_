@@ -10,7 +10,7 @@ import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
 import { addDays, subDays, parseISO } from 'date-fns';
 import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
-import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa } from '../../utils/calcularPosologia.js';
+import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa, calcularRestanteNaData } from '../../utils/calcularPosologia.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
 
@@ -305,6 +305,49 @@ const listarParcialmenteEncerrados = async (pacienteWhere, idsComPendente) => {
     }
   });
   return parciais;
+};
+
+// 👇 NOVO (data em que parou + comprimidos restantes): projeta quantos
+// comprimidos o paciente tinha no primeiro dia sem tomar, a partir do ciclo
+// (início da caixa, total, posologia, padrão e pausas anteriores) ou de uma
+// base informada pela tela (caixa nova ainda não gravada). É a conta que a
+// pessoa do contato confirma com o paciente ("você tem X?") na pausa
+// temporária e na descontinuação.
+const projetarRestanteNaParada = (monitoramento, dataParada, base = null) => {
+  const dataInicio = base?.data_inicio || monitoramento.data_administracao || monitoramento.data_entrega;
+  const qtdTotal = base?.qtd_total ?? monitoramento.qtd_total_capsulas;
+  const posologia = base?.posologia ?? monitoramento.posologia_diaria;
+  const tipoPosologia = base?.tipo_posologia || monitoramento.tipo_posologia || 'diaria';
+  const parametros = base ? extrairParametrosPosologia(base.parametros || {}) : extrairParametrosPosologia(monitoramento);
+  const periodosPausa = base ? [] : obterPeriodosPausa(monitoramento);
+  const { consumidos, restante, diasContados } = calcularRestanteNaData(dataInicio, qtdTotal, posologia, tipoPosologia, parametros, periodosPausa, dataParada);
+  return {
+    data_parada: dataParada,
+    data_inicio: dataInicio ? String(dataInicio instanceof Date ? dataInicio.toISOString() : dataInicio).split('T')[0] : null,
+    qtd_total: qtdTotal,
+    posologia_diaria: posologia,
+    tipo_posologia: tipoPosologia,
+    dias_de_toma_contados: diasContados,
+    consumidos,
+    qtd_restante_projetada: restante
+  };
+};
+
+// Valida a decisão "parou em X, tem Y comprimidos" (pausa e descontinuação).
+// Devolve { erro } ou { projecao, qtd_restante_informada, qtd_restante_confirmada }.
+const resolverRestanteNaParada = (monitoramento, { data_parada, qtd_restante_informada, qtd_restante_confirmada }, base = null) => {
+  if (!data_parada) return { erro: 'Informe a data em que o paciente parou de tomar o medicamento.' };
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const parada = parseISO(data_parada);
+  if (isNaN(parada.getTime())) return { erro: 'Data em que parou de tomar inválida.' };
+  if (parada > hoje) return { erro: 'A data em que parou de tomar não pode ser no futuro.' };
+  const projecao = projetarRestanteNaParada(monitoramento, data_parada, base);
+  const confirmada = qtd_restante_confirmada === true || qtd_restante_confirmada === 'true';
+  let informada = confirmada ? projecao.qtd_restante_projetada : qtd_restante_informada;
+  if (informada === null || informada === undefined || informada === '') return { erro: 'Confirme com o paciente quantos comprimidos ele tem na caixa.' };
+  informada = parseInt(informada, 10);
+  if (isNaN(informada) || informada < 0) return { erro: 'Quantidade de comprimidos restantes inválida.' };
+  return { projecao, qtd_restante_informada: informada, qtd_restante_confirmada: informada === projecao.qtd_restante_projetada };
 };
 
 const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraCliente, modoNovoMedicamento, options = {}, { confirmarConsumoAnteriores = false } = {}) => {
@@ -757,6 +800,10 @@ class MonitoramentoMedicamentoController {
       descontinuar_medicamento: Yup.boolean().nullable(),
       motivo_encerramento: Yup.string().nullable(),
       motivo_encerramento_id: Yup.number().integer().nullable(),
+      // 👇 NOVO: descontinuação com data em que parou + comprimidos restantes
+      data_descontinuacao: Yup.string().nullable(),
+      qtd_restante_informada: Yup.number().integer().min(0).nullable(),
+      qtd_restante_confirmada: Yup.boolean().nullable(),
       // 👇 NOVO: rastreio de processamento da compra oferecida neste contato
       confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
       compra_oferecida_evento_id: Yup.number().integer().nullable(),
@@ -779,6 +826,9 @@ class MonitoramentoMedicamentoController {
       descontinuar_medicamento,
       motivo_encerramento,
       motivo_encerramento_id,
+      data_descontinuacao,
+      qtd_restante_informada,
+      qtd_restante_confirmada,
       confirmar_consumo_eventos_anteriores,
       compra_oferecida_evento_id,
       motivo_nao_aplicar_compra,
@@ -849,6 +899,10 @@ class MonitoramentoMedicamentoController {
 
         // ---- Descontinuar medicamento — fecha o registro e NÃO cria próximo ciclo ----
         if (descontinuar_medicamento) {
+          // 👇 NOVO: data em que parou + comprimidos restantes (projeção do
+          // sistema confirmada ou corrigida pelo paciente).
+          const parada = resolverRestanteNaParada(monitoramentoAtual, { data_parada: data_descontinuacao, qtd_restante_informada, qtd_restante_confirmada });
+          if (parada.erro) { const erro = new Error(parada.erro); erro.status = 400; throw erro; }
           await monitoramentoAtual.update({
             contato_efetivo,
             nivel_adesao,
@@ -860,7 +914,11 @@ class MonitoramentoMedicamentoController {
             motivo_encerramento: motivo_encerramento || null,
             motivo_encerramento_id: motivo_encerramento_id || null,
             motivo_falha_contato_id: null,
-            data_abertura_nova_caixa: null
+            data_abertura_nova_caixa: null,
+            data_descontinuacao: data_descontinuacao,
+            qtd_restante_projetada: parada.projecao.qtd_restante_projetada,
+            qtd_restante_informada: parada.qtd_restante_informada,
+            qtd_restante_confirmada: parada.qtd_restante_confirmada
           }, { transaction });
 
           if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
@@ -874,7 +932,7 @@ class MonitoramentoMedicamentoController {
             const motivoRegistrado = await MotivoPausaTratamento.findByPk(motivo_encerramento_id, { transaction });
             if (motivoRegistrado) descricaoMotivo = motivoRegistrado.descricao;
           }
-          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}.`);
+          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}. Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`);
           // 👇 NOVO: a compra oferecida fica registrada como não aplicada por descontinuação.
           if (compra_oferecida_evento_id && !aplicar_nova_compra) {
             await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_DESCONTINUADO', texto: null, userId: req.userId, transaction });
@@ -1557,6 +1615,10 @@ class MonitoramentoMedicamentoController {
           descontinuar_medicamento: Yup.boolean().nullable(),
           motivo_encerramento: Yup.string().nullable(),
           motivo_encerramento_id: Yup.number().integer().nullable(),
+          // 👇 NOVO: descontinuação com data em que parou + comprimidos restantes
+          data_descontinuacao: Yup.string().nullable(),
+          qtd_restante_informada: Yup.number().integer().min(0).nullable(),
+          qtd_restante_confirmada: Yup.boolean().nullable(),
           // 👇 NOVO: rastreio de processamento da compra oferecida (mesmos campos do registro individual)
           confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
           compra_oferecida_evento_id: Yup.number().integer().nullable(),
@@ -1653,11 +1715,15 @@ class MonitoramentoMedicamentoController {
             posologia_intervalo_dias_nova, posologia_datas_personalizadas_nova,
             aplicar_nova_compra, dados_nova_compra, data_inicio_nova_caixa, posologia_nova_caixa, modo_novo_medicamento,
             descontinuar_medicamento, motivo_encerramento, motivo_encerramento_id, // 👈 NOVO
+            data_descontinuacao, qtd_restante_informada, qtd_restante_confirmada,
             confirmar_consumo_eventos_anteriores, compra_oferecida_evento_id, motivo_nao_aplicar_compra, motivo_nao_aplicar_compra_texto
           } = registro;
 
           // ---- 👇 NOVO: descontinuar este medicamento específico ----
           if (descontinuar_medicamento) {
+            // 👇 NOVO: data em que parou + comprimidos restantes (projeção confirmada ou corrigida)
+            const parada = resolverRestanteNaParada(monitoramentoAtual, { data_parada: data_descontinuacao, qtd_restante_informada, qtd_restante_confirmada });
+            if (parada.erro) { const erro = new Error(`${monitoramentoAtual.medicamento?.nome || 'Medicamento'}: ${parada.erro}`); erro.status = 400; throw erro; }
             if (compra_oferecida_evento_id && !aplicar_nova_compra) {
               await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_DESCONTINUADO', texto: null, userId: req.userId, transaction });
             }
@@ -1671,8 +1737,13 @@ class MonitoramentoMedicamentoController {
               data_telemonitoramento_efetivado: agora,
               motivo_encerramento: motivo_encerramento || null,
               motivo_encerramento_id: motivo_encerramento_id || null,
-              grupo_medicamentos_id: grupoMedicamentosId
+              grupo_medicamentos_id: grupoMedicamentosId,
+              data_descontinuacao: data_descontinuacao,
+              qtd_restante_projetada: parada.projecao.qtd_restante_projetada,
+              qtd_restante_informada: parada.qtd_restante_informada,
+              qtd_restante_confirmada: parada.qtd_restante_confirmada
             }, { transaction });
+            await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado (contato em conjunto). Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`);
 
             if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
               await monitoramentoAtual.setReacoesAdversas(reacoes_adversas, { transaction });
@@ -2127,7 +2198,10 @@ async atualizarDataProximoContato(req, res) {
     // 👇 NOVO: compra_oferecida_evento_id — quando a tela estava oferecendo
     // uma compra e o operador pausou em vez de aplicar, fica registrado na
     // auditoria que ela foi oferecida e não aplicada por causa da pausa.
-    const { motivo_id, data_fim_prevista, observacao, compra_oferecida_evento_id } = req.body;
+    // 👇 NOVO: data_parada (primeiro dia sem tomar) + comprimidos restantes
+    // confirmados/informados — antes a pausa começava sempre "agora" (hora da
+    // ligação), e a contagem na retomada saía errada pelos dias de atraso.
+    const { motivo_id, data_fim_prevista, observacao, compra_oferecida_evento_id, data_parada, qtd_restante_informada, qtd_restante_confirmada } = req.body;
 
     if (!motivo_id || !data_fim_prevista) {
       return res.status(400).json({ error: 'Informe o motivo e a data prevista de retomada.' });
@@ -2144,18 +2218,26 @@ async atualizarDataProximoContato(req, res) {
       if (monitoramento.status !== 'PENDENTE') {
         return res.status(400).json({ error: 'Só é possível pausar um monitoramento pendente.' });
       }
+      const parada = resolverRestanteNaParada(monitoramento, { data_parada, qtd_restante_informada, qtd_restante_confirmada });
+      if (parada.erro) return res.status(400).json({ error: parada.erro });
+      if (parseISO(data_parada) > parseISO(data_fim_prevista)) {
+        return res.status(400).json({ error: 'A data prevista de retomada não pode ser antes da data em que parou de tomar.' });
+      }
 
       await monitoramento.update({
         status: 'PAUSADO',
-        data_pausa_inicio: new Date(),
+        data_pausa_inicio: parseISO(data_parada),
         data_pausa_fim_prevista: parseISO(data_fim_prevista),
         motivo_pausa_medicamento_id: motivo_id,
-        motivo_pausa_medicamento_observacao: observacao || null
+        motivo_pausa_medicamento_observacao: observacao || null,
+        qtd_restante_projetada: parada.projecao.qtd_restante_projetada,
+        qtd_restante_informada: parada.qtd_restante_informada,
+        qtd_restante_confirmada: parada.qtd_restante_confirmada
       });
 
       await AuditService.log(
         req.userId, 'Edição', 'Monitoramento', monitoramento.id,
-        `Pausou temporariamente o acompanhamento de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}, com retomada prevista para ${parseISO(data_fim_prevista).toLocaleDateString('pt-BR')}.`
+        `Pausou temporariamente o acompanhamento de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome}: parou de tomar em ${formatarDataBR(data_parada)}, retomada prevista para ${parseISO(data_fim_prevista).toLocaleDateString('pt-BR')}; comprimidos na caixa: ${parada.qtd_restante_informada} (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`
       );
       if (compra_oferecida_evento_id) {
         await registrarCompraNaoAplicada({ monitoramentoAtual: monitoramento, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_PAUSADO', texto: null, userId: req.userId });
@@ -2204,12 +2286,32 @@ async atualizarDataProximoContato(req, res) {
 
       const historicoAtualizado = [
         ...(Array.isArray(monitoramento.pausas_historico) ? monitoramento.pausas_historico : []),
-        { inicio: monitoramento.data_pausa_inicio, fim: fimRealPausa.toISOString() }
+        {
+          inicio: monitoramento.data_pausa_inicio,
+          // 👇 CORREÇÃO: o motor trata `fim` como dia pausado (inclusivo); o dia
+          // da retomada é dia de toma, então o período guardado vai até a
+          // véspera. Antes o dia da retomada era contado como pausado.
+          fim: addDays(fimRealPausa, -1).toISOString(),
+          qtd_restante_projetada: monitoramento.qtd_restante_projetada ?? null,
+          qtd_restante_informada: monitoramento.qtd_restante_informada ?? null
+        }
       ];
 
       const dataInicioCiclo = monitoramento.data_administracao || monitoramento.data_entrega;
+      // 👇 NOVO: se na pausa o paciente informou quantos comprimidos tinha
+      // (e esse número difere da projeção), a retomada parte dessa quantidade:
+      // o "total efetivo" da caixa vira o informado + o que o sistema contou
+      // até a parada — assim o padrão de posologia e as pausas anteriores
+      // continuam valendo e o fim de caixa sai da quantidade real.
+      let totalParaRecalculo = monitoramento.qtd_total_capsulas;
+      let notaRestante = '';
+      if (monitoramento.qtd_restante_informada !== null && monitoramento.qtd_restante_informada !== undefined && monitoramento.data_pausa_inicio) {
+        const projecao = projetarRestanteNaParada(monitoramento, new Date(monitoramento.data_pausa_inicio).toISOString().split('T')[0]);
+        totalParaRecalculo = monitoramento.qtd_restante_informada + projecao.consumidos;
+        notaRestante = ` Comprimidos na pausa: ${monitoramento.qtd_restante_informada} (projeção ${projecao.qtd_restante_projetada}).`;
+      }
       const novaDataFimCaixa = calcularDataFimCaixa(
-        new Date(dataInicioCiclo), monitoramento.qtd_total_capsulas, monitoramento.posologia_diaria,
+        new Date(dataInicioCiclo), totalParaRecalculo, monitoramento.posologia_diaria,
         monitoramento.tipo_posologia, monitoramento, historicoAtualizado
       );
 
@@ -2225,7 +2327,7 @@ async atualizarDataProximoContato(req, res) {
 
       await AuditService.log(
         req.userId, 'Edição', 'Monitoramento', monitoramento.id,
-        `Destravou a pausa de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome} — retomando o acompanhamento normal. Data real de retomada considerada: ${fimRealPausa.toLocaleDateString('pt-BR')}${data_retomada_real ? ' (informada manualmente)' : ' (hoje)'}.`
+        `Destravou a pausa de ${monitoramento.medicamento?.nome} para ${monitoramento.paciente?.nome} ${monitoramento.paciente?.sobrenome} — retomando o acompanhamento normal. Data real de retomada considerada: ${fimRealPausa.toLocaleDateString('pt-BR')}${data_retomada_real ? ' (informada manualmente)' : ' (hoje)'}.${notaRestante} Novo fim de caixa: ${formatarDataBR(novaDataFimCaixa)}.`
       );
 
       return res.json({ message: 'Pausa destravada, acompanhamento retomado.', monitoramento });
@@ -2312,6 +2414,28 @@ async atualizarDataProximoContato(req, res) {
   // antes de salvar qualquer padrão de posologia. Não grava nada — é só
   // cálculo, usado tanto na configuração inicial quanto no Recálculo e no
   // Registrar Contato.
+  // 👇 NOVO: projeção de comprimidos restantes numa data de parada — alimenta
+  // a confirmação "com essa pausa o paciente deve ter X comprimidos" na pausa
+  // temporária e na descontinuação. Sem `base`, usa o ciclo; com `base`
+  // (data_inicio, qtd_total, posologia, tipo_posologia, parametros), projeta
+  // uma caixa ainda não gravada (ex: compra nova aplicada no mesmo contato).
+  async projecaoRestante(req, res) {
+    const { id } = req.params;
+    const { data_parada, base } = req.body;
+    if (!data_parada) return res.status(400).json({ error: 'Informe a data em que o paciente parou de tomar.' });
+    try {
+      const monitoramento = await MonitoramentoMedicamento.findByPk(id);
+      if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+      const parada = parseISO(data_parada);
+      if (isNaN(parada.getTime())) return res.status(400).json({ error: 'Data em que parou de tomar inválida.' });
+      if (parada > hoje) return res.status(400).json({ error: 'A data em que parou de tomar não pode ser no futuro.' });
+      return res.json(projetarRestanteNaParada(monitoramento, data_parada, base || null));
+    } catch (error) {
+      return res.status(500).json({ error: 'Erro ao projetar comprimidos restantes.', details: error.message });
+    }
+  }
+
   async previewPosologia(req, res) {
     const { data_inicio, tipo_posologia, num_dias } = req.body;
     if (!data_inicio) {

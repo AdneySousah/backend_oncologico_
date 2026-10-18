@@ -64,7 +64,16 @@ class MonitoramentoMedicamento extends Model {
       // Histórico de todos os períodos de pausa já concluídos deste ciclo —
       // [{ inicio: 'AAAA-MM-DD', fim: 'AAAA-MM-DD' }, ...]. Usado pra
       // excluir esses dias do cálculo de comprimidos consumidos.
-      pausas_historico: Sequelize.JSONB
+      pausas_historico: Sequelize.JSONB,
+
+      // 👇 NOVO: quando o paciente parou de tomar e quantos comprimidos tinha
+      // nesse dia (pausa temporária usa data_pausa_inicio como data real;
+      // descontinuação usa data_descontinuacao). Ver migration
+      // add-data-parada-e-restante-ao-monitoramento.
+      data_descontinuacao: Sequelize.DATEONLY,
+      qtd_restante_projetada: Sequelize.INTEGER,
+      qtd_restante_informada: Sequelize.INTEGER,
+      qtd_restante_confirmada: Sequelize.BOOLEAN
 
     }, {
       sequelize,

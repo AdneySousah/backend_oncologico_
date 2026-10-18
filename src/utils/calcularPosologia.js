@@ -135,6 +135,45 @@ export function calcularDataFimCaixa(dataInicio, totalCapsulas, posologiaDiaria,
 }
 
 /**
+ * 👇 NOVO: quantos comprimidos foram consumidos (e quantos restam) entre o
+ * início da caixa e uma data de PARADA — o primeiro dia em que o paciente
+ * NÃO tomou (pausa temporária ou descontinuação). Usa exatamente a mesma
+ * simulação dia a dia de calcularDataFimCaixa (padrão diário/cíclico/
+ * intervalo/personalizado e pausas anteriores), pra nunca divergir do fim
+ * de caixa mostrado na tela. Data de parada anterior ao início = nada
+ * consumido.
+ * @returns {{ consumidos: number, restante: number, diasContados: number }}
+ */
+export function calcularRestanteNaData(dataInicio, totalCapsulas, posologiaDiaria, tipoPosologia = 'diaria', parametros = {}, periodosPausa = [], dataParada) {
+  const total = Number(totalCapsulas) || 0;
+  const dose = Number(posologiaDiaria) || 0;
+  if (!dataInicio || !dataParada || total <= 0 || dose <= 0) return { consumidos: 0, restante: total, diasContados: 0 };
+
+  const inicio = startOfDay(paraDataLocal(dataInicio));
+  const parada = startOfDay(paraDataLocal(dataParada));
+  if (parada <= inicio) return { consumidos: 0, restante: total, diasContados: 0 };
+
+  let consumidos = 0;
+  let diasContados = 0;
+  if (tipoPosologia === 'personalizada') {
+    const datas = Array.isArray(parametros.posologia_datas_personalizadas) ? parametros.posologia_datas_personalizadas : [];
+    datas.map(d => startOfDay(paraDataLocal(d)))
+      .filter(d => d >= inicio && d < parada && !estaDentroDePausa(d, periodosPausa))
+      .forEach(() => { consumidos += dose; diasContados += 1; });
+  } else {
+    const LIMITE_DIAS = 3650;
+    for (let offset = 0; offset < LIMITE_DIAS; offset++) {
+      const dia = addDays(inicio, offset);
+      if (dia >= parada) break;
+      if (estaDentroDePausa(dia, periodosPausa)) continue;
+      if (ehDiaDeToma(offset, tipoPosologia, parametros)) { consumidos += dose; diasContados += 1; }
+    }
+  }
+  const consumidosLimitados = Math.min(consumidos, total);
+  return { consumidos: consumidosLimitados, restante: total - consumidosLimitados, diasContados };
+}
+
+/**
  * Gera a prévia de "toma"/"pausa" pros próximos N dias a partir de uma data
  * de referência — alimenta o calendário de confirmação no frontend.
  */
