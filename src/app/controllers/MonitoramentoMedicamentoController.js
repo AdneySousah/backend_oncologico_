@@ -74,21 +74,55 @@ const descreverEvento = (evento) => {
 // antigos do que ele (e posteriores ao evento do ciclo atual): ao aplicar o
 // escolhido, esses ficam "pulados" e precisam ser marcados como consumidos —
 // senão continuariam pendentes pra sempre sem ninguém saber.
-const listarEventosAnterioresPendentes = async (eventoEscolhido, pacienteId, eventoAtualId, options = {}) => {
-  const filtroExternalId = { [Op.ne]: eventoEscolhido.external_id };
-  if (eventoAtualId) filtroExternalId[Op.gt] = parseInt(eventoAtualId, 10);
+// 👇 CORREÇÃO (cronologia por data, não por id): o sistema externo reaproveita
+// programações editando as datas em vez de criar eventos novos, então um
+// evento com external_id MENOR pode ser a compra MAIS NOVA (ex: 52433 entregue
+// em 17/09 depois do 52598 de 31/07). A marca d'água por id escondia essa
+// compra pra sempre. Agora "é posterior ao ciclo atual" é decidido pela data
+// de referência do evento comparada à do evento-base do ciclo (ou, sem ele, à
+// data de entrega/administração do ciclo). O id só decide quando falta data.
+const dataAncoraDoCiclo = async (monitoramento, options = {}) => {
+  if (monitoramento.evento_externo_id) {
+    const eventoBase = await EventosPaciente.findOne({
+      where: { external_id: monitoramento.evento_externo_id, paciente_id: monitoramento.paciente_id },
+      attributes: ['external_id', 'data_administracao_prevista', 'data_entrega_prevista', 'data_entrega_real'],
+      ...options
+    });
+    const dataBase = eventoBase ? dataDeReferenciaEvento(eventoBase) : null;
+    if (dataBase) return dataBase;
+  }
+  const fallback = monitoramento.data_entrega || monitoramento.data_administracao;
+  if (!fallback) return null;
+  return (fallback instanceof Date ? fallback.toISOString() : String(fallback)).split('T')[0];
+};
+
+const ehPosteriorAoCicloAtual = (evento, ancora, eventoAtualId) => {
+  const extId = parseInt(evento.external_id, 10);
+  const atualId = parseInt(eventoAtualId, 10);
+  if (!isNaN(atualId) && extId === atualId) return false; // o próprio evento-base nunca é "o próximo"
+  const data = dataDeReferenciaEvento(evento);
+  if (data && ancora) return new Date(data) >= new Date(ancora); // mesmo dia conta (compra conjunta no mesmo dia)
+  return isNaN(atualId) ? true : extId > atualId; // sem data de um dos lados: regra antiga por id
+};
+
+const listarEventosAnterioresPendentes = async (eventoEscolhido, monitoramentoAtual, options = {}) => {
   const pendentes = await EventosPaciente.findAll({
     where: {
-      paciente_id: pacienteId,
+      paciente_id: monitoramentoAtual.paciente_id,
       medicamento_id: eventoEscolhido.medicamento_id,
       recebido: true,
       processado: false,
-      external_id: filtroExternalId
+      external_id: { [Op.ne]: eventoEscolhido.external_id }
     },
     include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }],
     ...options
   });
-  return pendentes.filter(e => compararEventosPorData(e, eventoEscolhido) < 0).sort(compararEventosPorData);
+  // Só o que está entre o ciclo atual e o evento escolhido: histórico anterior
+  // ao ciclo (nunca monitorado) não é "pulado" e fica como está.
+  const ancora = await dataAncoraDoCiclo(monitoramentoAtual, options);
+  return pendentes
+    .filter(e => ehPosteriorAoCicloAtual(e, ancora, monitoramentoAtual.evento_externo_id) && compararEventosPorData(e, eventoEscolhido) < 0)
+    .sort(compararEventosPorData);
 };
 
 // Grava no próprio evento que ele foi consumido pelo telemonitoramento. Nunca
@@ -171,24 +205,25 @@ const validarMotivoNaoAplicarCompra = ({ contato_efetivo, descontinuar_medicamen
 // medicamento que não tem ciclo ativo. Devolve { [pacienteId]: [candidato] }.
 const calcularCandidatosRetomada = async (idsArray) => {
   if (!idsArray || idsArray.length === 0) return {};
-  // evento já processado (inclusive "consumido sem ciclo") não é candidato —
-  // só o que o telemonitoramento nunca viu.
+  // 👇 CORREÇÃO (cronologia por data): a marca d'água era o maior external_id
+  // já usado por um ciclo do par paciente+medicamento, e só eventos com id
+  // MAIOR viravam candidatos. Como o sistema externo reaproveita programações
+  // editando datas, uma compra nova pode ter id menor. Agora a referência é
+  // o evento PROCESSADO mais recente do par (por data): candidato = evento
+  // recebido, não processado e posterior a ele. Sem evento processado no par,
+  // vale a marca d'água antiga por id (ciclos cujo evento nunca foi importado).
   const eventos = await EventosPaciente.findAll({
-    where: { paciente_id: { [Op.in]: idsArray }, recebido: true, processado: false },
-    include: [{ model: Medicamentos, as: 'medicamento' }],
-    order: [['external_id', 'DESC']]
+    where: { paciente_id: { [Op.in]: idsArray }, recebido: true },
+    include: [{ model: Medicamentos, as: 'medicamento' }]
   });
 
-  // Guarda só o evento mais recente por (paciente, medicamento) — como a
-  // lista já vem ordenada DESC, o primeiro encontrado é o mais novo.
-  const eventoMaisRecentePorPar = {};
+  const porPar = {};
   eventos.forEach(e => {
     const chave = `${e.paciente_id}-${e.medicamento_id}`;
-    if (!eventoMaisRecentePorPar[chave]) eventoMaisRecentePorPar[chave] = e;
+    if (!porPar[chave]) porPar[chave] = { processados: [], pendentes: [] };
+    porPar[chave][e.processado ? 'processados' : 'pendentes'].push(e);
   });
 
-  // "Marca d'água": maior evento_externo_id já registrado em QUALQUER
-  // monitoramento (de qualquer status) pra cada par paciente+medicamento.
   const monitoramentos = await MonitoramentoMedicamento.findAll({
     where: { paciente_id: { [Op.in]: idsArray }, evento_externo_id: { [Op.not]: null } },
     attributes: ['paciente_id', 'medicamento_id', 'evento_externo_id'],
@@ -202,25 +237,33 @@ const calcularCandidatosRetomada = async (idsArray) => {
   });
 
   const candidatos = {};
-  Object.values(eventoMaisRecentePorPar).forEach(evento => {
-    const chave = `${evento.paciente_id}-${evento.medicamento_id}`;
-    const extId = parseInt(evento.external_id, 10);
-    const marca = watermarkPorPar[chave];
-    if (marca === undefined || extId > marca) {
-      const pacienteId = evento.paciente_id;
-      if (!candidatos[pacienteId]) candidatos[pacienteId] = [];
-      const dataAdminExterna = evento.data_administracao_prevista;
-      candidatos[pacienteId].push({
-        evento_externo_id: evento.external_id,
-        medicamento_id: evento.medicamento_id,
-        medicamento_nome: evento.medicamento?.nome,
-        qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
-        qtd_caixas: evento.qtd_caixas,
-        data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
-        data_previsao_administracao: dataAdminExterna,
-        data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
-      });
+  Object.entries(porPar).forEach(([chave, { processados, pendentes }]) => {
+    if (pendentes.length === 0) return;
+    // o mais recente (por data; id como desempate) entre os não processados
+    const evento = [...pendentes].sort(compararEventosPorData).pop();
+    let ehCandidato;
+    if (processados.length > 0) {
+      const ultimoProcessado = [...processados].sort(compararEventosPorData).pop();
+      ehCandidato = compararEventosPorData(evento, ultimoProcessado) > 0;
+    } else {
+      const marca = watermarkPorPar[chave];
+      ehCandidato = marca === undefined || parseInt(evento.external_id, 10) > marca;
     }
+    if (!ehCandidato) return;
+
+    const pacienteId = evento.paciente_id;
+    if (!candidatos[pacienteId]) candidatos[pacienteId] = [];
+    const dataAdminExterna = evento.data_administracao_prevista;
+    candidatos[pacienteId].push({
+      evento_externo_id: evento.external_id,
+      medicamento_id: evento.medicamento_id,
+      medicamento_nome: evento.medicamento?.nome,
+      qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
+      qtd_caixas: evento.qtd_caixas,
+      data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
+      data_previsao_administracao: dataAdminExterna,
+      data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
+    });
   });
   return candidatos;
 };
@@ -320,7 +363,7 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
   // antiga pendente (ex: paciente já está na caixa seguinte). As anteriores
   // do mesmo medicamento não somem: ficam marcadas como consumidas sem
   // ciclo próprio — mas só com confirmação explícita de quem está no contato.
-  const eventosAnteriores = await listarEventosAnterioresPendentes(evento, monitoramentoAtual.paciente_id, monitoramentoAtual.evento_externo_id, options);
+  const eventosAnteriores = await listarEventosAnterioresPendentes(evento, monitoramentoAtual, options);
   if (eventosAnteriores.length > 0 && !confirmarConsumoAnteriores) {
     const erro = new Error(`Existem compras anteriores deste medicamento ainda pendentes (${eventosAnteriores.map(e => `#${e.external_id}`).join(', ')}). Confirme que o paciente já as utilizou para marcá-las como processadas, ou aplique a mais antiga.`);
     erro.status = 400;
@@ -428,11 +471,16 @@ class MonitoramentoMedicamentoController {
           eventoExternoIdBase = eventoInformado ? eventoInformado.external_id : null;
         }
         if (!eventoExternoIdBase) {
-          const ultimoEventoDesteMedicamento = await EventosPaciente.findOne({
-            where: { paciente_id, medicamento_id: item.medicamento_id },
-            order: [['external_id', 'DESC']]
+          // 👇 CORREÇÃO (cronologia por data): a compra-base é a mais recente
+          // POR DATA entre as não processadas (ou, sem nenhuma, a mais recente
+          // de todas) — não a de maior external_id, que pode ser uma compra antiga
+          // quando o sistema externo reaproveita programações editando datas.
+          const eventosDesteMedicamento = await EventosPaciente.findAll({
+            where: { paciente_id, medicamento_id: item.medicamento_id }
           });
-          eventoExternoIdBase = ultimoEventoDesteMedicamento ? ultimoEventoDesteMedicamento.external_id : null;
+          const naoProcessados = eventosDesteMedicamento.filter(e => !e.processado);
+          const base = [...(naoProcessados.length > 0 ? naoProcessados : eventosDesteMedicamento)].sort(compararEventosPorData).pop();
+          eventoExternoIdBase = base ? base.external_id : null;
         }
 
         // 👇 NOVO: busca automática do ciclo descontinuado anterior deste
@@ -1093,14 +1141,17 @@ class MonitoramentoMedicamentoController {
       if (eventos.length === 0) return res.json({ novaCompraDetectada: false });
 
       const eventoAtualId = parseInt(monitoramento.evento_externo_id, 10);
+      // 👇 CORREÇÃO: "é posterior ao ciclo atual" por DATA (ver dataAncoraDoCiclo),
+      // não por external_id — o id só decide quando falta data.
+      const ancora = await dataAncoraDoCiclo(monitoramento);
 
       const candidatosMesmoMedicamento = eventos.filter(e => {
         const extId = parseInt(e.external_id, 10);
-        return extId > eventoAtualId && e.medicamento_id === monitoramento.medicamento_id && !eventosExcluidos.includes(extId);
+        return ehPosteriorAoCicloAtual(e, ancora, eventoAtualId) && e.medicamento_id === monitoramento.medicamento_id && !eventosExcluidos.includes(extId);
       });
       const candidatosMedicamentoDiferente = eventos.filter(e => {
         const extId = parseInt(e.external_id, 10);
-        return extId > eventoAtualId && !medicamentosDoGrupoIds.includes(e.medicamento_id) && !eventosExcluidos.includes(extId);
+        return ehPosteriorAoCicloAtual(e, ancora, eventoAtualId) && !medicamentosDoGrupoIds.includes(e.medicamento_id) && !eventosExcluidos.includes(extId);
       });
 
       // 👇 CORREÇÃO (reprogramação de eventos): o sistema externo pode reprogramar

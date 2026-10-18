@@ -44,6 +44,12 @@ class PacienteSyncService {
         // final da sincronização inteira.
         let pacientesAtualizadosCount = 0;
         let pacientesCriadosCount = 0;
+        // 👇 NOVO: eventos JÁ processados pelo telemonitoramento cujas datas
+        // foram adiadas no sistema externo (reaproveitamento da programação
+        // pra outra compra, em vez de criar evento novo). Não dá pra tratar
+        // como compra nova — o id já está num ciclo — então fica na
+        // auditoria pra alguém conferir.
+        const reprogramadosProcessados = [];
 
         for (const extPatient of pacientesExternos) {
             try {
@@ -276,6 +282,15 @@ class PacienteSyncService {
 
                     const eventoExistente = await EventosPaciente.findOne({ where: { external_id: extEvent.id } });
                     if (eventoExistente) {
+                        if (eventoExistente.processado) {
+                            const refAntes = eventoExistente.data_administracao_prevista || eventoExistente.data_entrega_prevista || eventoExistente.data_entrega_real;
+                            const refDepois = eventoData.data_administracao_prevista || eventoData.data_entrega_prevista || eventoData.data_entrega_real;
+                            if (refAntes && refDepois && refDepois > refAntes) {
+                                reprogramadosProcessados.push(`#${extEvent.id} (paciente ${paciente.id}: ${refAntes.split('-').reverse().join('/')} → ${refDepois.split('-').reverse().join('/')})`);
+                                const observacaoAnterior = eventoExistente.processamento_observacao ? `${eventoExistente.processamento_observacao} | ` : '';
+                                eventoData.processamento_observacao = `${observacaoAnterior}Reprogramado no sistema externo após o processamento: referência ${refAntes} → ${refDepois} (sync de ${new Date().toISOString().split('T')[0]}).`;
+                            }
+                        }
                         await eventoExistente.update(eventoData);
                     } else {
                         await EventosPaciente.create(eventoData);
@@ -306,8 +321,14 @@ class PacienteSyncService {
                 `Sincronização com o sistema externo: ${pacientesCriadosCount} paciente(s) novo(s), ${pacientesAtualizadosCount} atualizado(s)${errors.length > 0 ? `, ${errors.length} com erro` : ''}.`
             );
         }
+        if (reprogramadosProcessados.length > 0) {
+            await AuditService.log(
+                userId, 'Sincronização', 'Eventos', null,
+                `Atenção: ${reprogramadosProcessados.length} evento(s) de compra JÁ processado(s) pelo telemonitoramento tiveram a data adiada no sistema externo — possível reaproveitamento da programação para uma nova compra, que NÃO será oferecida automaticamente: ${reprogramadosProcessados.join('; ')}.`
+            );
+        }
 
-        return { successes, errors };
+        return { successes, errors, reprogramadosProcessados };
     }
 }
 
