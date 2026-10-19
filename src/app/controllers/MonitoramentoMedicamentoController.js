@@ -11,6 +11,7 @@ import { addDays, subDays, parseISO } from 'date-fns';
 import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
 import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa, calcularRestanteNaData } from '../../utils/calcularPosologia.js';
+import { chaveLinhaTratamento, mesmaLinha } from '../../utils/linhaTratamento.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
 
@@ -105,16 +106,57 @@ const ehPosteriorAoCicloAtual = (evento, ancora, eventoAtualId) => {
   return isNaN(atualId) ? true : extId > atualId; // sem data de um dos lados: regra antiga por id
 };
 
+// 👇 LINHA DE TRATAMENTO (ver utils/linhaTratamento.js): "mesmo medicamento"
+// passa a ser mesmo princípio ativo, não mesmo id local. Atributos que a
+// comparação precisa carregar em todo include de Medicamentos envolvido.
+const ATRIBUTOS_MEDICAMENTO_LINHA = ['id', 'nome', 'qtd_capsula', 'principio_ativo', 'codigo_tuss'];
+
+// Ids locais de todos os cadastros da mesma linha de um medicamento (a tabela
+// é pequena — ~100 linhas — então carrega tudo e compara pela chave).
+const idsMedicamentosDaLinha = async (medicamento, options = {}) => {
+  const chave = chaveLinhaTratamento(medicamento);
+  const todos = await Medicamentos.findAll({ attributes: ['id', 'principio_ativo', 'codigo_tuss'], ...options });
+  const ids = new Set([medicamento.id]);
+  todos.forEach(m => { if (chaveLinhaTratamento(m) === chave) ids.add(m.id); });
+  return [...ids];
+};
+
+// { [medicamento_id]: chave da linha } pra um conjunto de ids.
+const mapaChavesLinha = async (ids, options = {}) => {
+  const distintos = [...new Set(ids.filter(id => id !== null && id !== undefined))];
+  if (distintos.length === 0) return {};
+  const medicamentos = await Medicamentos.findAll({ where: { id: { [Op.in]: distintos } }, attributes: ['id', 'principio_ativo', 'codigo_tuss'], ...options });
+  const mapa = {};
+  medicamentos.forEach(m => { mapa[m.id] = chaveLinhaTratamento(m); });
+  return mapa;
+};
+
+// Chaves das linhas que o paciente tem em acompanhamento ATIVO (PENDENTE ou
+// PAUSADO), em qualquer grupo. Compra de uma dessas linhas pertence à etapa
+// daquele medicamento — nunca aparece como "novo medicamento" em outra etapa.
+const chavesLinhasAtivasDoPaciente = async (pacienteId, options = {}) => {
+  const ativos = await MonitoramentoMedicamento.findAll({
+    where: { paciente_id: pacienteId, status: { [Op.in]: ['PENDENTE', 'PAUSADO'] } },
+    attributes: ['medicamento_id'],
+    raw: true,
+    ...options
+  });
+  const mapa = await mapaChavesLinha(ativos.map(a => a.medicamento_id), options);
+  return new Set(Object.values(mapa));
+};
+
 const listarEventosAnterioresPendentes = async (eventoEscolhido, monitoramentoAtual, options = {}) => {
+  // compras anteriores da MESMA LINHA (qualquer apresentação) ficam puladas
+  const idsDaLinha = await idsMedicamentosDaLinha(eventoEscolhido.medicamento || { id: eventoEscolhido.medicamento_id }, options);
   const pendentes = await EventosPaciente.findAll({
     where: {
       paciente_id: monitoramentoAtual.paciente_id,
-      medicamento_id: eventoEscolhido.medicamento_id,
+      medicamento_id: { [Op.in]: idsDaLinha },
       recebido: true,
       processado: false,
       external_id: { [Op.ne]: eventoEscolhido.external_id }
     },
-    include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }],
+    include: [{ model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }],
     ...options
   });
   // Só o que está entre o ciclo atual e o evento escolhido: histórico anterior
@@ -155,7 +197,7 @@ const registrarProcessamentoCompra = async ({ compraRevalidada, monitoramentoAtu
   }, { transaction });
   await AuditService.log(
     userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
-    `Aplicou a compra ${descreverEvento(evento)} ao fechar o contato${cicloId ? ` → novo ciclo #${cicloId}` : ''}${novoCiclo?.data_administracao ? `, início ${formatarDataBR(novoCiclo.data_administracao)}` : ''}.`
+    `Aplicou a compra ${descreverEvento(evento)} ao fechar o contato${cicloId ? ` → novo ciclo #${cicloId}` : ''}${novoCiclo?.data_administracao ? `, início ${formatarDataBR(novoCiclo.data_administracao)}` : ''}.${compraRevalidada.mudouApresentacao ? ' Apresentação diferente da anterior (mesmo princípio ativo): o ciclo adota o cadastro da compra.' : ''}`
   );
   if (eventosAnteriores.length > 0) {
     for (const anterior of eventosAnteriores) {
@@ -217,9 +259,11 @@ const calcularCandidatosRetomada = async (idsArray) => {
     include: [{ model: Medicamentos, as: 'medicamento' }]
   });
 
+  // 👇 LINHA DE TRATAMENTO: o par é paciente + linha (princípio ativo), então
+  // Ribociclibe X 21 e X 42 são o mesmo par.
   const porPar = {};
   eventos.forEach(e => {
-    const chave = `${e.paciente_id}-${e.medicamento_id}`;
+    const chave = `${e.paciente_id}-${chaveLinhaTratamento(e.medicamento) || `id:${e.medicamento_id}`}`;
     if (!porPar[chave]) porPar[chave] = { processados: [], pendentes: [] };
     porPar[chave][e.processado ? 'processados' : 'pendentes'].push(e);
   });
@@ -229,9 +273,10 @@ const calcularCandidatosRetomada = async (idsArray) => {
     attributes: ['paciente_id', 'medicamento_id', 'evento_externo_id'],
     raw: true
   });
+  const chavesPorMedicamentoId = await mapaChavesLinha(monitoramentos.map(m => m.medicamento_id));
   const watermarkPorPar = {};
   monitoramentos.forEach(m => {
-    const chave = `${m.paciente_id}-${m.medicamento_id}`;
+    const chave = `${m.paciente_id}-${chavesPorMedicamentoId[m.medicamento_id] || `id:${m.medicamento_id}`}`;
     const extId = parseInt(m.evento_externo_id, 10);
     if (!watermarkPorPar[chave] || extId > watermarkPorPar[chave]) watermarkPorPar[chave] = extId;
   });
@@ -257,6 +302,7 @@ const calcularCandidatosRetomada = async (idsArray) => {
     candidatos[pacienteId].push({
       evento_externo_id: evento.external_id,
       medicamento_id: evento.medicamento_id,
+      linha_tratamento: chaveLinhaTratamento(evento.medicamento), // 👈 LINHA DE TRATAMENTO
       medicamento_nome: evento.medicamento?.nome,
       qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
       qtd_caixas: evento.qtd_caixas,
@@ -297,10 +343,13 @@ const listarParcialmenteEncerrados = async (pacienteWhere, idsComPendente) => {
   });
 
   const candidatos = await calcularCandidatosRetomada(Object.keys(medicamentosDescontinuadosPorPaciente).map(Number));
+  // 👇 LINHA DE TRATAMENTO: "medicamento diferente dos descontinuados" por linha, não por id
+  const chavesPorMedicamentoId = await mapaChavesLinha(descontinuados.map(r => r.medicamento_id));
   const parciais = {};
   Object.entries(candidatos).forEach(([pacienteId, lista]) => {
     const descontinuadosDoPaciente = medicamentosDescontinuadosPorPaciente[pacienteId] || new Set();
-    if (lista.some(c => !descontinuadosDoPaciente.has(c.medicamento_id))) {
+    const linhasDescontinuadas = new Set([...descontinuadosDoPaciente].map(id => chavesPorMedicamentoId[id] || `id:${id}`));
+    if (lista.some(c => !linhasDescontinuadas.has(c.linha_tratamento || `id:${c.medicamento_id}`))) {
       parciais[pacienteId] = dataEncerramentoPorPaciente[pacienteId];
     }
   });
@@ -377,7 +426,14 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
     throw erro;
   }
 
-  const mudouMedicamento = evento.medicamento_id !== monitoramentoAtual.medicamento_id;
+  // 👇 LINHA DE TRATAMENTO: troca de medicamento é mudança de PRINCÍPIO ATIVO.
+  // Mesma linha com outro cadastro (Ribociclibe X 21 → X 42, LETROZOL → FEMARA)
+  // é mudança de apresentação: o ciclo seguinte ADOTA o cadastro da compra
+  // (nome e caixa certos; posologia confirmada pelo operador), sem histórico de troca.
+  const medicamentoAtual = await Medicamentos.findByPk(monitoramentoAtual.medicamento_id, { attributes: ATRIBUTOS_MEDICAMENTO_LINHA, ...options });
+  const mesmaLinhaQueAtual = mesmaLinha(evento.medicamento, medicamentoAtual);
+  const mudouMedicamento = !mesmaLinhaQueAtual;
+  const mudouApresentacao = mesmaLinhaQueAtual && evento.medicamento_id !== monitoramentoAtual.medicamento_id;
   const ehUsoConjunto = mudouMedicamento && modoNovoMedicamento === 'CONJUNTO';
 
   if (ehUsoConjunto) {
@@ -398,6 +454,15 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
       erro.status = 409;
       throw erro;
     }
+    // 👇 LINHA DE TRATAMENTO: só entra como "novo medicamento" uma linha que o
+    // paciente NÃO tem em acompanhamento ativo (em qualquer grupo). Outra
+    // apresentação de um medicamento já acompanhado pertence à etapa dele.
+    const linhasAtivas = await chavesLinhasAtivasDoPaciente(monitoramentoAtual.paciente_id, options);
+    if (linhasAtivas.has(chaveLinhaTratamento(evento.medicamento))) {
+      const erro = new Error(`${evento.medicamento?.nome} é o mesmo medicamento (princípio ativo) de um acompanhamento já ativo deste paciente — aplique a compra na etapa daquele medicamento.`);
+      erro.status = 409;
+      throw erro;
+    }
   }
 
   const totalCapsulasNovas = (evento.medicamento?.qtd_capsula || 0) * (evento.qtd_caixas || 1);
@@ -415,8 +480,9 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
 
   return {
     mudouMedicamento,
+    mudouApresentacao,
     ehUsoConjunto,
-    medicamentoNovoId: evento.medicamento_id,
+    medicamentoNovoId: evento.medicamento_id, // mesma linha com outro cadastro: adota o cadastro da compra
     medicamentoAtualId: monitoramentoAtual.medicamento_id,
     qtdCaixas: evento.qtd_caixas || 1,
     totalCapsulasNovas,
@@ -697,7 +763,7 @@ class MonitoramentoMedicamentoController {
                 { model: PatientEvaluation, as: 'avaliacoes', attributes: ['id', 'total_score', 'createdAt'], required: false },
               ]
             },
-            { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
+            { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA },
             { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
           ],
           order: [['createdAt', 'DESC']]
@@ -764,7 +830,7 @@ class MonitoramentoMedicamentoController {
               { model: PatientEvaluation, as: 'avaliacoes', attributes: ['id', 'total_score', 'createdAt'], required: false },
             ]
           },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA },
           { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
         ],
         order: [['createdAt', 'DESC']]
@@ -1162,7 +1228,12 @@ class MonitoramentoMedicamentoController {
 
   async verificarNovaCompra(req, res) {
     const { id } = req.params;
-    const { excluir_eventos } = req.query;
+    // 👇 LINHA DE TRATAMENTO: novas_linhas=0 (etapas 2+ do contato em conjunto)
+    // só oferece compras do medicamento desta etapa; o medicamento novo de
+    // verdade (linha sem acompanhamento ativo) é oferecido UMA vez, na primeira
+    // etapa / no contato individual, onde o operador decide conjunto ou substituição.
+    const { excluir_eventos, novas_linhas } = req.query;
+    const permitirNovasLinhas = String(novas_linhas ?? '1') !== '0';
     const eventosExcluidos = excluir_eventos
       ? String(excluir_eventos).split(',').map(v => parseInt(v, 10)).filter(v => !isNaN(v))
       : [];
@@ -1170,7 +1241,7 @@ class MonitoramentoMedicamentoController {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['id', 'external_id', 'nome'] },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }
         ]
       });
       if (!monitoramento || !monitoramento.evento_externo_id) return res.json({ novaCompraDetectada: false });
@@ -1186,11 +1257,11 @@ class MonitoramentoMedicamentoController {
         });
         medicamentosDoGrupoIds = [...new Set([monitoramento.medicamento_id, ...irmaos.map(i => i.medicamento_id)])];
       }
+      const linhasDoGrupo = new Set(Object.values(await mapaChavesLinha(medicamentosDoGrupoIds)));
+      // linhas em acompanhamento ativo em QUALQUER ciclo do paciente
+      const linhasAtivas = await chavesLinhasAtivasDoPaciente(monitoramento.paciente_id);
 
-      // 👇 CORREÇÃO: ordem ASC (mais antigo primeiro), pra nunca pular
-      // silenciosamente um evento intermediário que ainda não foi aplicado.
-      // 👇 NOVO: evento já processado (virou ciclo ou foi marcado como usado
-      // ao aplicar uma compra mais recente) nunca volta a ser oferecido.
+      // Ordem ASC (mais antigo primeiro); evento já processado nunca volta.
       const eventos = await EventosPaciente.findAll({
         where: { paciente_id: monitoramento.paciente.id, recebido: true, processado: false },
         order: [['external_id', 'ASC']],
@@ -1199,66 +1270,55 @@ class MonitoramentoMedicamentoController {
       if (eventos.length === 0) return res.json({ novaCompraDetectada: false });
 
       const eventoAtualId = parseInt(monitoramento.evento_externo_id, 10);
-      // 👇 CORREÇÃO: "é posterior ao ciclo atual" por DATA (ver dataAncoraDoCiclo),
-      // não por external_id — o id só decide quando falta data.
+      // "é posterior ao ciclo atual" por DATA (ver dataAncoraDoCiclo), não por external_id.
       const ancora = await dataAncoraDoCiclo(monitoramento);
 
-      const candidatosMesmoMedicamento = eventos.filter(e => {
-        const extId = parseInt(e.external_id, 10);
-        return ehPosteriorAoCicloAtual(e, ancora, eventoAtualId) && e.medicamento_id === monitoramento.medicamento_id && !eventosExcluidos.includes(extId);
-      });
-      const candidatosMedicamentoDiferente = eventos.filter(e => {
-        const extId = parseInt(e.external_id, 10);
-        return ehPosteriorAoCicloAtual(e, ancora, eventoAtualId) && !medicamentosDoGrupoIds.includes(e.medicamento_id) && !eventosExcluidos.includes(extId);
-      });
-
-      // 👇 CORREÇÃO (reprogramação de eventos): o sistema externo pode reprogramar
-      // a data de administração de um evento pra depois de outro evento criado
-      // posteriormente (ex: evento A id=1 reprogramado pra depois do evento B id=2).
-      // Usar só o external_id (ordem de criação) pra decidir qual evento é "o
-      // próximo" quebra nesse cenário. Em vez disso, comparamos a data prevista de
-      // administração ATUAL de cada evento — não importa quando ela foi alterada,
-      // só o valor vigente agora. Isso evita depender de updated_at (que muda por
-      // qualquer edição, não só reprogramação de data).
-      const dataDeReferencia = (evento) =>
-        evento.data_administracao_prevista || evento.data_entrega_prevista || evento.data_entrega_real;
+      // 👇 LINHA DE TRATAMENTO:
+      //  - mesma linha (qualquer apresentação do mesmo princípio ativo) → compra
+      //    deste medicamento, oferecida nesta etapa (com seletor se houver mais de uma);
+      //  - linha ativa em outro ciclo do paciente → pertence à etapa daquele
+      //    medicamento, não entra aqui;
+      //  - linha nova (sem acompanhamento ativo) → "novo medicamento", só com
+      //    novas_linhas permitido, com prioridade sobre a reposição (é evento
+      //    raro e precisa de decisão; a reposição fica avisada e é aplicada no
+      //    próximo contato).
+      const posteriores = eventos.filter(e => ehPosteriorAoCicloAtual(e, ancora, eventoAtualId) && !eventosExcluidos.includes(parseInt(e.external_id, 10)));
+      const candidatosMesmaLinha = posteriores.filter(e => mesmaLinha(e.medicamento, monitoramento.medicamento));
+      const candidatosNovaLinha = permitirNovasLinhas
+        ? posteriores.filter(e => {
+            const chave = chaveLinhaTratamento(e.medicamento);
+            return !mesmaLinha(e.medicamento, monitoramento.medicamento) && !linhasDoGrupo.has(chave) && !linhasAtivas.has(chave);
+          })
+        : [];
 
       const pegarMaisAntigoPorData = (lista) => {
         if (lista.length === 0) return null;
-        return [...lista].sort((a, b) => {
-          const dataA = dataDeReferencia(a);
-          const dataB = dataDeReferencia(b);
-          if (dataA && dataB) return new Date(dataA) - new Date(dataB);
-          if (dataA && !dataB) return -1; // evento com data conhecida vem antes de um sem data
-          if (!dataA && dataB) return 1;
-          return parseInt(a.external_id, 10) - parseInt(b.external_id, 10); // fallback final: ordem de criação
-        })[0];
+        return [...lista].sort(compararEventosPorData)[0];
       };
 
-      // Como 'eventos' está em ordem ASC, o primeiro item de cada lista já é o mais antigo pendente daquele tipo.
-      const novoEventoMesmoMedicamento = pegarMaisAntigoPorData(candidatosMesmoMedicamento);
-      const novoEventoMedicamentoDiferente = pegarMaisAntigoPorData(candidatosMedicamentoDiferente);
+      const novoEventoMesmaLinha = pegarMaisAntigoPorData(candidatosMesmaLinha);
+      // uma compra por linha nova: a mais antiga de cada princípio ativo
+      const maisAntigoPorLinhaNova = {};
+      [...candidatosNovaLinha].sort(compararEventosPorData).forEach(e => {
+        const chave = chaveLinhaTratamento(e.medicamento);
+        if (!maisAntigoPorLinhaNova[chave]) maisAntigoPorLinhaNova[chave] = e;
+      });
+      const novasLinhas = Object.values(maisAntigoPorLinhaNova).sort(compararEventosPorData);
+      const novoEventoNovaLinha = novasLinhas[0] || null;
 
       let novoEvento = null;
       let ehMedicamentoDiferente = false;
-      if (novoEventoMesmoMedicamento && novoEventoMedicamentoDiferente) {
-        const dataA = dataDeReferencia(novoEventoMesmoMedicamento);
-        const dataB = dataDeReferencia(novoEventoMedicamentoDiferente);
-        let aVenceB;
-        if (dataA && dataB) aVenceB = new Date(dataA) <= new Date(dataB);
-        else if (dataA) aVenceB = true;
-        else if (dataB) aVenceB = false;
-        else aVenceB = parseInt(novoEventoMesmoMedicamento.external_id, 10) <= parseInt(novoEventoMedicamentoDiferente.external_id, 10);
-        // Processa sempre o evento cronologicamente mais antigo entre os dois tipos (por data, não por ID).
-        novoEvento = aVenceB ? novoEventoMesmoMedicamento : novoEventoMedicamentoDiferente;
-        ehMedicamentoDiferente = novoEvento === novoEventoMedicamentoDiferente;
-      } else if (novoEventoMedicamentoDiferente) {
-        novoEvento = novoEventoMedicamentoDiferente;
+      if (novoEventoNovaLinha) {
+        novoEvento = novoEventoNovaLinha;
         ehMedicamentoDiferente = true;
-      } else if (novoEventoMesmoMedicamento) {
-        novoEvento = novoEventoMesmoMedicamento;
-        ehMedicamentoDiferente = false;
+      } else if (novoEventoMesmaLinha) {
+        novoEvento = novoEventoMesmaLinha;
       }
+      // compatibilidade com o bloco de resposta abaixo
+      const candidatosMesmoMedicamento = candidatosMesmaLinha;
+      const candidatosMedicamentoDiferente = candidatosNovaLinha;
+      const novoEventoMesmoMedicamento = novoEventoMesmaLinha;
+      const novoEventoMedicamentoDiferente = novoEventoNovaLinha;
       if (!novoEvento) return res.json({ novaCompraDetectada: false });
 
       // 👇 NOVO (múltiplos eventos pendentes): antes, quando existiam DOIS candidatos
@@ -1294,14 +1354,20 @@ class MonitoramentoMedicamentoController {
       };
       const todosCandidatos = [...candidatosMesmoMedicamento, ...candidatosMedicamentoDiferente].sort(compararEventosPorData);
       const montarDetalhesEvento = (evento) => {
-        const mesmoMedicamento = evento.medicamento_id === monitoramento.medicamento_id;
+        // 👇 LINHA DE TRATAMENTO: "mesmo medicamento" = mesmo princípio ativo; o
+        // seletor/anteriores agrupam pela linha (todas as apresentações).
+        const mesmoMedicamento = mesmaLinha(evento.medicamento, monitoramento.medicamento);
+        const mudouApresentacao = mesmoMedicamento && evento.medicamento_id !== monitoramento.medicamento_id;
         const dataAdmin = evento.data_administracao_prevista;
         const totalCapsulas = (evento.medicamento?.qtd_capsula || 0) * evento.qtd_caixas;
-        const doMesmoMedicamento = todosCandidatos.filter(e => e.medicamento_id === evento.medicamento_id && e.id !== evento.id);
+        const chaveDaLinha = chaveLinhaTratamento(evento.medicamento);
+        const doMesmoMedicamento = todosCandidatos.filter(e => chaveLinhaTratamento(e.medicamento) === chaveDaLinha && e.id !== evento.id);
         const dias = diasDesdePrevisao(evento);
         return {
           evento_externo_id: evento.external_id,
           medicamento_id: evento.medicamento_id,
+          mudou_apresentacao: mudouApresentacao,
+          linha_tratamento: chaveDaLinha,
           medicamento_nome: evento.medicamento?.nome,
           mesmo_medicamento_atual: mesmoMedicamento,
           data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
@@ -1320,13 +1386,17 @@ class MonitoramentoMedicamentoController {
           eventos_anteriores: doMesmoMedicamento.filter(e => compararEventosPorData(e, evento) < 0).map(e => e.external_id)
         };
       };
+      // o seletor de compras é dentro da linha do evento escolhido
+      const pendentesDaLinhaEscolhida = todosCandidatos.filter(e => chaveLinhaTratamento(e.medicamento) === chaveLinhaTratamento(novoEvento.medicamento));
 
       return res.json({
         novaCompraDetectada: true,
         detalhes: {
           ...montarDetalhesEvento(novoEvento),
           medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome },
-          eventos_pendentes: todosCandidatos.map(montarDetalhesEvento),
+          eventos_pendentes: pendentesDaLinhaEscolhida.map(montarDetalhesEvento),
+          // 👇 LINHA DE TRATAMENTO: outras linhas novas recebidas (além da oferecida), só informativo
+          outras_linhas_novas: novasLinhas.filter(e => e.id !== novoEvento.id).map(e => ({ evento_externo_id: e.external_id, medicamento_nome: e.medicamento?.nome, data_entrega: e.data_entrega_real || e.data_entrega_prevista })),
           existe_outro_evento_pendente: !!outroCandidatoImediato || totalCandidatosRestantes > 0,
           outro_evento_pendente: outroCandidatoImediato ? {
             evento_externo_id: outroCandidatoImediato.external_id,
@@ -1423,7 +1493,8 @@ class MonitoramentoMedicamentoController {
 
       if (!eventoLocal) return res.json({ requiresConfirmation: false });
 
-      let mudouMedicamento = eventoLocal.medicamento_id !== monitoramento.medicamento_id;
+      // 👇 LINHA DE TRATAMENTO: outra apresentação do mesmo princípio ativo não é troca
+      let mudouMedicamento = !mesmaLinha(eventoLocal.medicamento, monitoramento.medicamento);
       let mudouQtd = eventoLocal.qtd_caixas !== monitoramento.qtd_caixas || eventoLocal.medicamento.qtd_capsula !== monitoramento.medicamento.qtd_capsula;
 
       if (mudouMedicamento || mudouQtd) {
@@ -1475,7 +1546,7 @@ class MonitoramentoMedicamentoController {
       const monitoramentoAtualizado = await MonitoramentoMedicamento.findByPk(id, {
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA },
           { model: PatientEvaluation, as: 'avaliacao', attributes: ['id', 'total_score'] }
         ]
       });
@@ -1490,7 +1561,7 @@ class MonitoramentoMedicamentoController {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'] },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }, // 👈 NOVO: qtd_capsula
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }, // 👈 NOVO: qtd_capsula
           { model: ReacaoAdversa, as: 'reacoesAdversas', through: { attributes: [] } }
         ]
       });
@@ -1619,6 +1690,9 @@ class MonitoramentoMedicamentoController {
           data_descontinuacao: Yup.string().nullable(),
           qtd_restante_informada: Yup.number().integer().min(0).nullable(),
           qtd_restante_confirmada: Yup.boolean().nullable(),
+          // 👇 LINHA DE TRATAMENTO: medicamento novo oferecido na 1ª etapa pode
+          // substituir OUTRO medicamento do grupo — este é o ciclo substituído.
+          substitui_monitoramento_id: Yup.number().integer().nullable(),
           // 👇 NOVO: rastreio de processamento da compra oferecida (mesmos campos do registro individual)
           confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
           compra_oferecida_evento_id: Yup.number().integer().nullable(),
@@ -1631,6 +1705,25 @@ class MonitoramentoMedicamentoController {
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     const { contato_efetivo, data_proximo_contato, motivo_falha_contato_id, registros } = req.body;
+
+    // 👇 LINHA DE TRATAMENTO: a oferta de medicamento novo acontece uma vez, na
+    // primeira etapa. Se o operador disse que ele SUBSTITUI outro medicamento
+    // do grupo, a compra é movida pro registro daquele medicamento — o laço
+    // abaixo já sabe substituir "o medicamento deste registro"; a etapa que
+    // ofereceu segue como contato normal, sem compra e sem exigir motivo.
+    for (const registro of registros) {
+      const alvoId = registro.substitui_monitoramento_id;
+      if (!registro.aplicar_nova_compra || registro.modo_novo_medicamento !== 'SUBSTITUICAO' || !alvoId || Number(alvoId) === Number(registro.monitoramento_id)) continue;
+      const alvo = registros.find(r => Number(r.monitoramento_id) === Number(alvoId));
+      if (!alvo) return res.status(400).json({ error: `O medicamento substituído (monitoramento ${alvoId}) não está neste contato.` });
+      if (alvo.aplicar_nova_compra) return res.status(400).json({ error: 'O medicamento substituído não pode receber uma reposição no mesmo contato em que é substituído.' });
+      if (alvo.descontinuar_medicamento) return res.status(400).json({ error: 'O medicamento substituído não pode ser descontinuado e substituído no mesmo contato.' });
+      ['aplicar_nova_compra', 'dados_nova_compra', 'data_inicio_nova_caixa', 'posologia_nova_caixa', 'modo_novo_medicamento', 'confirmar_consumo_eventos_anteriores'].forEach(campo => {
+        alvo[campo] = registro[campo];
+        registro[campo] = campo === 'aplicar_nova_compra' ? false : null;
+      });
+      registro.compra_oferecida_evento_id = null; // decisão foi tomada: não é "não aplicada"
+    }
 
     if (contato_efetivo) {
       const todosDescontinuados = registros.every(r => r.descontinuar_medicamento);
@@ -2078,7 +2171,7 @@ async atualizarDataProximoContato(req, res) {
         where: { status: 'PENDENTE' },
         include: [
           { model: Pacientes, as: 'paciente', attributes: ['id', 'nome', 'sobrenome'], where: pacienteWhere, required: true },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }
         ],
         order: [['createdAt', 'DESC']]
       });
