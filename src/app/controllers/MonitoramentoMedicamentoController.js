@@ -1157,7 +1157,11 @@ class MonitoramentoMedicamentoController {
           await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: motivo_nao_aplicar_compra, texto: motivo_nao_aplicar_compra_texto, userId: req.userId, transaction });
         }
 
-        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${mudou_posologia}. Uso em conjunto: ${ehUsoConjunto}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}`);
+        // 👇 AUDITORIA: a mudança de posologia sai com os valores (de → para, a partir de quando)
+        const descricaoPosologia = mudou_posologia
+          ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})`
+          : 'não';
+        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${descricaoPosologia}. Uso em conjunto: ${ehUsoConjunto}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}`);
 
         return {
           mensagem: 'Contato registrado e ciclo atualizado com sucesso!',
@@ -1800,7 +1804,9 @@ class MonitoramentoMedicamentoController {
           .find(Boolean) || `grp-${monitoramentosCarregados[0].monitoramentoAtual.paciente_id}-${Date.now()}`;
 
         const resultados = [];
+        let pacienteIdDoContato = null; // 👈 AUDITORIA: log do grupo não tem entity_id, então leva o paciente explícito
         for (const { registro, monitoramentoAtual } of monitoramentosCarregados) {
+          pacienteIdDoContato = monitoramentoAtual.paciente_id;
           const {
             qtd_informada_caixa, nivel_adesao, is_reacao, reacoes_adversas, observacao,
             mudou_posologia, nova_posologia, data_mudanca_posologia,
@@ -1980,12 +1986,18 @@ class MonitoramentoMedicamentoController {
             await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: motivo_nao_aplicar_compra, texto: motivo_nao_aplicar_compra_texto, userId: req.userId, transaction });
           }
 
+          // 👇 AUDITORIA: um log por medicamento do contato em conjunto (antes só
+          // existia o log do grupo, sem dizer o que mudou em cada medicamento)
+          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
+            `Registrou contato (em conjunto, grupo ${grupoMedicamentosId}). Mudou posologia: ${mudou_posologia ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})` : 'não'}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}.`);
+
           resultados.push(novoRegistro);
         }
 
         await AuditService.log(
           req.userId, 'Edição', 'Monitoramento', null,
-          `Registrou contato em conjunto para o grupo ${grupoMedicamentosId}. Data do próximo contato: ${data_proximo_contato || 'N/A (medicamentos descontinuados)'}`
+          `Registrou contato em conjunto para o grupo ${grupoMedicamentosId}. Data do próximo contato: ${data_proximo_contato || 'N/A (medicamentos descontinuados)'}`,
+          pacienteIdDoContato
         );
 
         return { mensagem: `Contato registrado para os ${resultados.length} medicamentos com sucesso!`, registros: resultados };

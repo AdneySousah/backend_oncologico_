@@ -1,11 +1,13 @@
 import AuditLog from '../models/AuditLog.js';
 import User from '../models/User.js';
+import Pacientes from '../models/Pacientes.js';
 import { Op } from 'sequelize';
 
 class AuditLogController {
   async index(req, res) {
     // 1. Extraindo os novos parâmetros (entity e action_type)
-    const { user_id, data_inicio, data_fim, entity, action_type, page = 1, limit = 20 } = req.query;
+    // 👇 NOVO: paciente — id numérico, ou trecho do nome/sobrenome/CPF
+    const { user_id, data_inicio, data_fim, entity, action_type, paciente, page = 1, limit = 20 } = req.query;
     const offset = (page - 1) * limit;
 
     let whereClause = {};
@@ -45,6 +47,31 @@ class AuditLogController {
       whereClause.action_type = { [Op.iLike]: action_type };
     }
 
+    // 👇 NOVO: filtro por paciente (quem foi afetado). Número = id; texto = nome/sobrenome/CPF.
+    const termoPaciente = String(paciente || '').trim();
+    const includePaciente = {
+      model: Pacientes,
+      as: 'paciente',
+      attributes: ['id', 'nome', 'sobrenome', 'cpf'],
+      required: false
+    };
+    if (termoPaciente) {
+      if (/^\d+$/.test(termoPaciente)) {
+        whereClause.paciente_id = Number(termoPaciente);
+      } else {
+        includePaciente.required = true;
+        const somenteDigitos = termoPaciente.replace(/\D/g, '');
+        includePaciente.where = {
+          [Op.or]: [
+            { nome: { [Op.iLike]: `%${termoPaciente}%` } },
+            { sobrenome: { [Op.iLike]: `%${termoPaciente}%` } },
+            // CPF só entra quando o termo tem dígitos — senão "%%" casaria com todos
+            ...(somenteDigitos ? [{ cpf: { [Op.iLike]: `%${somenteDigitos}%` } }] : [])
+          ]
+        };
+      }
+    }
+
     try {
       const { count, rows: logs } = await AuditLog.findAndCountAll({
         where: whereClause,
@@ -53,8 +80,10 @@ class AuditLogController {
             model: User,
             as: 'usuario',
             attributes: ['id', 'name', 'email'] // Retorna o nome do usuário para o Front
-          }
+          },
+          includePaciente
         ],
+        distinct: true,
         order: [['createdAt', 'DESC']],
         limit: parseInt(limit),
         offset: parseInt(offset)
