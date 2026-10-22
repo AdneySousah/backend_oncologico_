@@ -9,6 +9,7 @@ import PacienteSyncService from '../../services/SyncService.js';
 import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import EventosPaciente from '../models/EventosPaciente.js';
 import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
+import { chaveLinhaTratamento } from '../../utils/linhaTratamento.js';
 
 
 class PacientesController {
@@ -285,32 +286,49 @@ class PacientesController {
         const { id } = req.params;
         try {
             const eventos = await EventosPaciente.findAll({
-                where: { paciente_id: id, recebido: true },
+                where: { paciente_id: id, recebido: true, excluido_externo: false }, // 👈 NOVO: excluído no externo não conta
                 order: [['external_id', 'DESC']],
-                include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula'] }]
+                include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome', 'qtd_capsula', 'principio_ativo', 'codigo_tuss'] }]
             });
 
             if (eventos.length === 0) {
                 return res.json({ medicamentos: [] });
             }
 
-            // Mantém só o evento mais recente de cada medicamento DISTINTO — evita
-            // listar a mesma substância várias vezes por reposições/recompras antigas.
-            const medicamentosVistos = new Set();
-            const medicamentosAtivos = [];
-
+            // 👇 SELETOR DE COMPRA-BASE / LINHA DE TRATAMENTO: um item por LINHA
+            // (princípio ativo), com todas as compras pendentes dela — o
+            // operador escolhe qual é a atual e as anteriores viram "consumidas".
+            // O padrão é a mais ANTIGA pendente (nunca se pula compra sem
+            // confirmação); sem pendente, a mais recente conhecida, como antes.
+            const dataRef = (e) => e.data_administracao_prevista || e.data_entrega_prevista || e.data_entrega_real || '';
+            const porLinha = new Map();
             for (const evento of eventos) {
-                if (!evento.medicamento || medicamentosVistos.has(evento.medicamento_id)) continue;
-                medicamentosVistos.add(evento.medicamento_id);
-
+                if (!evento.medicamento) continue;
+                const chave = chaveLinhaTratamento(evento.medicamento) || `id:${evento.medicamento_id}`;
+                if (!porLinha.has(chave)) porLinha.set(chave, []);
+                porLinha.get(chave).push(evento);
+            }
+            const medicamentosAtivos = [];
+            for (const lista of porLinha.values()) {
+                const pendentes = lista.filter(e => !e.processado).sort((a, b) => String(dataRef(a)).localeCompare(String(dataRef(b))) || (Number(a.external_id) - Number(b.external_id)));
+                const base = pendentes[0] || [...lista].sort((a, b) => String(dataRef(a)).localeCompare(String(dataRef(b))) || (Number(a.external_id) - Number(b.external_id))).pop();
                 medicamentosAtivos.push({
-                    id: evento.medicamento.id,
-                    nome: evento.medicamento.nome,
-                    qtd_capsula: evento.medicamento.qtd_capsula,
-                    data_entrega_medicamento: evento.data_entrega_real || evento.data_entrega_prevista,
-                    qtd_caixas: evento.qtd_caixas || 1
+                    id: base.medicamento.id,
+                    nome: base.medicamento.nome,
+                    qtd_capsula: base.medicamento.qtd_capsula,
+                    data_entrega_medicamento: base.data_entrega_real || base.data_entrega_prevista,
+                    qtd_caixas: base.qtd_caixas || 1,
+                    evento_externo_id: base.external_id,
+                    eventos_pendentes: pendentes.map(e => ({
+                        evento_externo_id: e.external_id,
+                        medicamento_id: e.medicamento_id,
+                        medicamento_nome: e.medicamento.nome,
+                        qtd_capsula: e.medicamento.qtd_capsula,
+                        qtd_caixas: e.qtd_caixas || 1,
+                        data_entrega: e.data_entrega_real || e.data_entrega_prevista,
+                        data_administracao_prevista: e.data_administracao_prevista
+                    }))
                 });
-
                 if (medicamentosAtivos.length === 10) break; // teto de segurança, não uma regra de negócio — evita listas absurdas em caso de dado inconsistente
             }
 

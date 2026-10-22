@@ -3,6 +3,7 @@ import Operadora from '../app/models/Operadora.js';
 import Medicamentos from '../app/models/Medicamentos.js';
 import EventosPaciente from '../app/models/EventosPaciente.js';
 import AuditService from './AuditService.js';
+import { Op } from 'sequelize';
 
 const formatarCelularWhatsapp = (numero) => {
     if (!numero) return null;
@@ -50,6 +51,11 @@ class PacienteSyncService {
         // como compra nova — o id já está num ciclo — então fica na
         // auditoria pra alguém conferir.
         const reprogramadosProcessados = [];
+        // 👇 NOVO: eventos que deixaram de existir no sistema externo (excluídos
+        // lá). O externo não manda marca de exclusão — o evento só some da
+        // lista do paciente — então a regra é: tinha aqui, não veio mais em uma
+        // resposta que trouxe os eventos do paciente => excluido_externo.
+        const excluidosDetectados = [];
 
         for (const extPatient of pacientesExternos) {
             try {
@@ -277,7 +283,10 @@ class PacienteSyncService {
                         preco: extEvent.price ? parseFloat(extEvent.price) : null,
 
                         // 🔥 CORREÇÃO: Respeitar o status real do recebimento
-                        recebido: String(extEvent.medicament_received) === '1'
+                        recebido: String(extEvent.medicament_received) === '1',
+                        // 👇 NOVO: veio na resposta => existe no externo (desfaz uma exclusão detectada antes)
+                        excluido_externo: false,
+                        excluido_em: null
                     };
 
                     const eventoExistente = await EventosPaciente.findOne({ where: { external_id: extEvent.id } });
@@ -304,6 +313,23 @@ class PacienteSyncService {
                     }
                 }
 
+                // 👇 NOVO: eventos locais deste paciente que NÃO vieram na resposta
+                // (qualquer tipo/status) foram excluídos no externo. Só decide
+                // quando a resposta trouxe a lista de eventos do paciente — uma
+                // resposta sem "events" não é prova de exclusão. Eventos já usados
+                // por um ciclo também são marcados (o ciclo continua; fica o aviso).
+                if (Array.isArray(extPatient.events) && extPatient.events.length > 0) {
+                    const idsNoExterno = extPatient.events.map(e => parseInt(e.id, 10)).filter(n => !isNaN(n));
+                    const ausentes = await EventosPaciente.findAll({
+                        where: { paciente_id: paciente.id, excluido_externo: false, external_id: { [Op.notIn]: idsNoExterno } },
+                        attributes: ['id', 'external_id', 'processado']
+                    });
+                    for (const ausente of ausentes) {
+                        await ausente.update({ excluido_externo: true, excluido_em: new Date() });
+                        excluidosDetectados.push(`#${ausente.external_id} (paciente ${paciente.id}${ausente.processado ? ', já usado por um ciclo' : ''})`);
+                    }
+                }
+
                 successes.push({ nome: extPatient.name, cpf: extPatient.cpf });
             } catch (err) {
                 console.error(`Erro ao sincronizar paciente ${extPatient.name}:`, err.message);
@@ -327,8 +353,14 @@ class PacienteSyncService {
                 `Atenção: ${reprogramadosProcessados.length} evento(s) de compra JÁ processado(s) pelo telemonitoramento tiveram a data adiada no sistema externo — possível reaproveitamento da programação para uma nova compra, que NÃO será oferecida automaticamente: ${reprogramadosProcessados.join('; ')}.`
             );
         }
+        if (excluidosDetectados.length > 0) {
+            await AuditService.log(
+                userId, 'Sincronização', 'Eventos', null,
+                `${excluidosDetectados.length} evento(s) de compra deixaram de existir no sistema externo e foram marcados como excluídos (saem das compras pendentes): ${excluidosDetectados.join('; ')}.`
+            );
+        }
 
-        return { successes, errors, reprogramadosProcessados };
+        return { successes, errors, reprogramadosProcessados, excluidosDetectados };
     }
 }
 

@@ -145,6 +145,22 @@ const chavesLinhasAtivasDoPaciente = async (pacienteId, options = {}) => {
   return new Set(Object.values(mapa));
 };
 
+// 👇 SELETOR DE COMPRA-BASE: resumo de uma compra pendente pro operador escolher
+// qual é a atual (usado por candidatos de retomada, linhas novas e medicamentosAtivos).
+const resumirEventoPendente = (evento) => {
+  const referencia = evento.data_administracao_prevista || evento.data_entrega_prevista || evento.data_entrega_real;
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  return {
+    evento_externo_id: evento.external_id,
+    medicamento_id: evento.medicamento_id,
+    medicamento_nome: evento.medicamento?.nome,
+    qtd_caixas: evento.qtd_caixas,
+    data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
+    data_administracao_prevista: evento.data_administracao_prevista,
+    dias_desde_previsao: referencia ? Math.floor((hoje - new Date(`${String(referencia).split('T')[0]}T00:00:00`)) / (1000 * 60 * 60 * 24)) : null
+  };
+};
+
 const listarEventosAnterioresPendentes = async (eventoEscolhido, monitoramentoAtual, options = {}) => {
   // compras anteriores da MESMA LINHA (qualquer apresentação) ficam puladas
   const idsDaLinha = await idsMedicamentosDaLinha(eventoEscolhido.medicamento || { id: eventoEscolhido.medicamento_id }, options);
@@ -154,6 +170,7 @@ const listarEventosAnterioresPendentes = async (eventoEscolhido, monitoramentoAt
       medicamento_id: { [Op.in]: idsDaLinha },
       recebido: true,
       processado: false,
+      excluido_externo: false, // 👈 NOVO: excluído no externo não conta
       external_id: { [Op.ne]: eventoEscolhido.external_id }
     },
     include: [{ model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }],
@@ -255,7 +272,7 @@ const calcularCandidatosRetomada = async (idsArray) => {
   // recebido, não processado e posterior a ele. Sem evento processado no par,
   // vale a marca d'água antiga por id (ciclos cujo evento nunca foi importado).
   const eventos = await EventosPaciente.findAll({
-    where: { paciente_id: { [Op.in]: idsArray }, recebido: true },
+    where: { paciente_id: { [Op.in]: idsArray }, recebido: true, excluido_externo: false }, // 👈 NOVO: excluído no externo não conta
     include: [{ model: Medicamentos, as: 'medicamento' }]
   });
 
@@ -284,17 +301,21 @@ const calcularCandidatosRetomada = async (idsArray) => {
   const candidatos = {};
   Object.entries(porPar).forEach(([chave, { processados, pendentes }]) => {
     if (pendentes.length === 0) return;
-    // o mais recente (por data; id como desempate) entre os não processados
-    const evento = [...pendentes].sort(compararEventosPorData).pop();
-    let ehCandidato;
+    // 👇 SELETOR DE COMPRA-BASE: todas as compras pendentes posteriores ao último
+    // processado (ou à marca d'água) entram, da mais antiga pra mais recente; o
+    // candidato é a MAIS ANTIGA delas (nunca se pula compra sem confirmação) e
+    // leva a lista inteira pro operador escolher.
+    const ordenadas = [...pendentes].sort(compararEventosPorData);
+    let posteriores;
     if (processados.length > 0) {
       const ultimoProcessado = [...processados].sort(compararEventosPorData).pop();
-      ehCandidato = compararEventosPorData(evento, ultimoProcessado) > 0;
+      posteriores = ordenadas.filter(e => compararEventosPorData(e, ultimoProcessado) > 0);
     } else {
       const marca = watermarkPorPar[chave];
-      ehCandidato = marca === undefined || parseInt(evento.external_id, 10) > marca;
+      posteriores = marca === undefined ? ordenadas : ordenadas.filter(e => parseInt(e.external_id, 10) > marca);
     }
-    if (!ehCandidato) return;
+    if (posteriores.length === 0) return;
+    const evento = posteriores[0];
 
     const pacienteId = evento.paciente_id;
     if (!candidatos[pacienteId]) candidatos[pacienteId] = [];
@@ -308,7 +329,8 @@ const calcularCandidatosRetomada = async (idsArray) => {
       qtd_caixas: evento.qtd_caixas,
       data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
       data_previsao_administracao: dataAdminExterna,
-      data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
+      data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null,
+      eventos_pendentes: posteriores.map(resumirEventoPendente) // 👈 SELETOR DE COMPRA-BASE
     });
   });
   return candidatos;
@@ -425,6 +447,12 @@ const revalidarDadosNovaCompra = async (monitoramentoAtual, dadosNovaCompraClien
     erro.status = 409;
     throw erro;
   }
+  // 👇 NOVO: evento excluído no sistema externo (sumiu da lista no sync) não pode virar ciclo
+  if (evento.excluido_externo) {
+    const erro = new Error(`A compra #${evento.external_id} foi excluída no sistema externo e não pode ser aplicada. Atualize a tela.`);
+    erro.status = 409;
+    throw erro;
+  }
 
   // 👇 LINHA DE TRATAMENTO: troca de medicamento é mudança de PRINCÍPIO ATIVO.
   // Mesma linha com outro cadastro (Ribociclibe X 21 → X 42, LETROZOL → FEMARA)
@@ -529,6 +557,9 @@ class MonitoramentoMedicamentoController {
           posologia_ciclo_dias_pausa: Yup.number().integer().min(0).nullable(),
           posologia_intervalo_dias: Yup.number().integer().positive().nullable(),
           posologia_datas_personalizadas: Yup.array().of(Yup.date()).nullable(),
+          // 👇 SELETOR DE COMPRA-BASE: o operador escolheu qual compra pendente é a
+          // atual; as anteriores da mesma linha são marcadas como consumidas sem ciclo.
+          confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
           // 👇 NOVO: presente quando o medicamento vem de um candidato de
           // retomada detectado automaticamente. Se ausente (fluxo original de
           // onboarding), o comportamento continua igual ao de antes.
@@ -546,17 +577,22 @@ class MonitoramentoMedicamentoController {
       // qualquer ciclo ativo. Sem essa trava, esse endpoint reaproveitado pra
       // retomada poderia, por engano ou corrida entre abas, criar um segundo
       // conjunto de ciclos por cima de um paciente já em acompanhamento.
-      const pendenteExistente = await MonitoramentoMedicamento.findOne({
-        where: { paciente_id, status: 'PENDENTE' }
+      // 👇 LINHA DE TRATAMENTO: com o paciente já em acompanhamento, este endpoint
+      // passa a servir pra INICIAR um medicamento novo (linha sem ciclo ativo) em
+      // conjunto — o ciclo novo entra no grupo dos ativos. Linha que já tem ciclo
+      // ativo continua bloqueada (seria um segundo ciclo do mesmo medicamento).
+      const ciclosAtivos = await MonitoramentoMedicamento.findAll({
+        where: { paciente_id, status: { [Op.in]: ['PENDENTE', 'PAUSADO'] } }
       });
-      if (pendenteExistente) {
-        return res.status(409).json({ error: 'Este paciente já possui um tratamento ativo. Não é possível iniciar um novo agora.' });
-      }
+      const chavesAtivas = new Set(Object.values(await mapaChavesLinha(ciclosAtivos.map(c => c.medicamento_id))));
 
       const medicamentosCarregados = [];
       for (let item of medicamentos_confirmados) {
         const medicamento = await Medicamentos.findByPk(item.medicamento_id);
         if (!medicamento) return res.status(404).json({ error: `Medicamento não encontrado.` });
+        if (chavesAtivas.has(chaveLinhaTratamento(medicamento))) {
+          return res.status(409).json({ error: `${medicamento.nome} já está em acompanhamento ativo para este paciente. Aplique a compra pelo contato de telemonitoramento desse medicamento.` });
+        }
         const qtdPorCaixa = item.qtd_capsula_manual || medicamento.qtd_capsula;
         if (!qtdPorCaixa) {
           return res.status(400).json({
@@ -572,23 +608,38 @@ class MonitoramentoMedicamentoController {
         // a este paciente+medicamento antes de usar como baseline — nunca
         // confia cegamente no id enviado. Se não bater (ou não foi enviado),
         // cai no comportamento original: pega o último evento conhecido.
+        // 👇 SELETOR DE COMPRA-BASE (mesma regra do telemonitoramento): a compra-base
+        // é a escolhida pelo operador entre as pendentes DA LINHA (qualquer
+        // apresentação do princípio ativo); sem escolha, a mais ANTIGA pendente —
+        // nunca se pula compra sem alguém dizer que a caixa já foi consumida.
+        // Compras anteriores à escolhida só são puladas com a confirmação explícita
+        // e ficam marcadas como CONSUMIDO_SEM_CICLO.
+        const idsDaLinha = await idsMedicamentosDaLinha(medicamento);
+        const pendentesDaLinha = (await EventosPaciente.findAll({
+          where: { paciente_id, medicamento_id: { [Op.in]: idsDaLinha }, recebido: true, processado: false, excluido_externo: false },
+          include: [{ model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }]
+        })).sort(compararEventosPorData);
         let eventoExternoIdBase = null;
+        let eventosAnterioresAConsumir = [];
         if (item.evento_externo_id) {
-          const eventoInformado = await EventosPaciente.findOne({
-            where: { external_id: item.evento_externo_id, paciente_id, medicamento_id: item.medicamento_id }
-          });
-          eventoExternoIdBase = eventoInformado ? eventoInformado.external_id : null;
-        }
-        if (!eventoExternoIdBase) {
-          // 👇 CORREÇÃO (cronologia por data): a compra-base é a mais recente
-          // POR DATA entre as não processadas (ou, sem nenhuma, a mais recente
-          // de todas) — não a de maior external_id, que pode ser uma compra antiga
-          // quando o sistema externo reaproveita programações editando datas.
-          const eventosDesteMedicamento = await EventosPaciente.findAll({
-            where: { paciente_id, medicamento_id: item.medicamento_id }
-          });
-          const naoProcessados = eventosDesteMedicamento.filter(e => !e.processado);
-          const base = [...(naoProcessados.length > 0 ? naoProcessados : eventosDesteMedicamento)].sort(compararEventosPorData).pop();
+          const escolhido = pendentesDaLinha.find(e => Number(e.external_id) === Number(item.evento_externo_id));
+          if (!escolhido) {
+            return res.status(409).json({ error: `A compra #${item.evento_externo_id} não está mais disponível para ${medicamento.nome} (já processada, excluída ou de outro medicamento). Atualize a tela.` });
+          }
+          eventoExternoIdBase = escolhido.external_id;
+          eventosAnterioresAConsumir = pendentesDaLinha.filter(e => compararEventosPorData(e, escolhido) < 0);
+          if (eventosAnterioresAConsumir.length > 0 && item.confirmar_consumo_eventos_anteriores !== true) {
+            return res.status(400).json({
+              error: `Há ${eventosAnterioresAConsumir.length} compra(s) de ${medicamento.nome} anterior(es) à escolhida. Confirme que o paciente já as utilizou para continuar.`,
+              eventos_anteriores: eventosAnterioresAConsumir.map(e => e.external_id)
+            });
+          }
+        } else if (pendentesDaLinha.length > 0) {
+          eventoExternoIdBase = pendentesDaLinha[0].external_id;
+        } else {
+          // sem pendente nenhum (ex.: retomada com tudo já consumido): a mais recente de todas
+          const todos = await EventosPaciente.findAll({ where: { paciente_id, medicamento_id: { [Op.in]: idsDaLinha } } });
+          const base = [...todos].sort(compararEventosPorData).pop();
           eventoExternoIdBase = base ? base.external_id : null;
         }
 
@@ -605,17 +656,26 @@ class MonitoramentoMedicamentoController {
           medicamento,
           qtdPorCaixa,
           eventoExternoIdBase,
+          eventosAnterioresAConsumir,
           retomadoDeId: cicloDescontinuadoAnterior ? cicloDescontinuadoAnterior.id : null
         });
       }
 
-      const grupoMedicamentosId = medicamentos_confirmados.length > 1
-        ? `grp-${paciente_id}-${Date.now()}`
-        : null;
+      // 👇 LINHA DE TRATAMENTO: se o paciente já tem ciclo ativo, o novo entra no
+      // grupo dele (ou cria o grupo e põe os ativos dentro) — vira contato em conjunto.
+      const grupoExistente = ciclosAtivos.find(c => c.grupo_medicamentos_id)?.grupo_medicamentos_id || null;
+      const grupoMedicamentosId = grupoExistente
+        || ((ciclosAtivos.length + medicamentos_confirmados.length) > 1 ? `grp-${paciente_id}-${Date.now()}` : null);
 
       const agendamentos = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
+        if (grupoMedicamentosId && ciclosAtivos.length > 0) {
+          await MonitoramentoMedicamento.update(
+            { grupo_medicamentos_id: grupoMedicamentosId },
+            { where: { id: { [Op.in]: ciclosAtivos.map(c => c.id) }, grupo_medicamentos_id: null }, transaction }
+          );
+        }
         const criados = [];
-        for (let { item, medicamento, qtdPorCaixa, eventoExternoIdBase, retomadoDeId } of medicamentosCarregados) {
+        for (let { item, medicamento, qtdPorCaixa, eventoExternoIdBase, eventosAnterioresAConsumir, retomadoDeId } of medicamentosCarregados) {
           if (item.qtd_capsula_manual && !medicamento.qtd_capsula) {
             await medicamento.update({ qtd_capsula: item.qtd_capsula_manual }, { transaction });
           }
@@ -662,6 +722,19 @@ class MonitoramentoMedicamentoController {
             }, { transaction });
             if (marcou) {
               await AuditService.log(req.userId, 'Criação', 'Monitoramento', novoMonitoramento.id, `Iniciou o acompanhamento de ${medicamento.nome} a partir da compra ${descreverEvento(eventoBase)}.`);
+            }
+          }
+          // 👇 SELETOR DE COMPRA-BASE: compras anteriores à escolhida, confirmadas
+          // como já utilizadas, saem das pendentes sem virar ciclo.
+          for (const anterior of (eventosAnterioresAConsumir || [])) {
+            const marcou = await marcarEventoProcessado(anterior, {
+              userId: req.userId,
+              monitoramentoId: novoMonitoramento.id,
+              tipo: 'CONSUMIDO_SEM_CICLO',
+              observacao: `Compra anterior à escolhida como base (#${eventoExternoIdBase}) ao iniciar o acompanhamento; o operador confirmou que já foi utilizada.`
+            }, { transaction });
+            if (marcou) {
+              await AuditService.log(req.userId, 'Edição', 'Monitoramento', novoMonitoramento.id, `Ao iniciar o acompanhamento de ${medicamento.nome} pela compra #${eventoExternoIdBase}, marcou a compra ${descreverEvento(anterior)} como já utilizada (sem ciclo).`);
             }
           }
 
@@ -853,6 +926,12 @@ class MonitoramentoMedicamentoController {
       dados_nova_compra: Yup.object().nullable(),
       data_inicio_nova_caixa: Yup.date().nullable(),
       posologia_nova_caixa: Yup.number().integer().nullable(),
+      // 👇 PADRÃO DA NOVA CAIXA (reposição): diário/cíclico/intervalo/personalizado
+      tipo_posologia_nova_caixa: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+      posologia_ciclo_dias_toma_nova_caixa: Yup.number().integer().positive().nullable(),
+      posologia_ciclo_dias_pausa_nova_caixa: Yup.number().integer().min(0).nullable(),
+      posologia_intervalo_dias_nova_caixa: Yup.number().integer().positive().nullable(),
+      posologia_datas_personalizadas_nova_caixa: Yup.array().of(Yup.string()).nullable(),
       mudou_posologia: Yup.boolean().nullable(),
       nova_posologia: Yup.number().integer().nullable(),
       data_mudanca_posologia: Yup.date().nullable(),
@@ -1063,6 +1142,18 @@ class MonitoramentoMedicamentoController {
               posologia_datas_personalizadas: posologia_datas_personalizadas_nova
             }
           : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
+        // 👇 PADRÃO DA NOVA CAIXA: ao aplicar uma reposição o operador pode definir
+        // o padrão (diário/cíclico/intervalo/personalizado) do ciclo novo; sem
+        // informar, o ciclo herda o padrão atual.
+        if (aplicar_nova_compra && req.body.tipo_posologia_nova_caixa) {
+          proximoPadraoPosologia.tipo_posologia = req.body.tipo_posologia_nova_caixa;
+          Object.assign(proximoPadraoPosologia, extrairParametrosPosologia({
+            posologia_ciclo_dias_toma: req.body.posologia_ciclo_dias_toma_nova_caixa,
+            posologia_ciclo_dias_pausa: req.body.posologia_ciclo_dias_pausa_nova_caixa,
+            posologia_intervalo_dias: req.body.posologia_intervalo_dias_nova_caixa,
+            posologia_datas_personalizadas: req.body.posologia_datas_personalizadas_nova_caixa
+          }));
+        }
 
         // 👇 A cada contato em que o paciente informa quanto lhe resta,
         // 👇 REGRA DEFINITIVA: qtd_total_capsulas (o total real da caixa,
@@ -1267,7 +1358,7 @@ class MonitoramentoMedicamentoController {
 
       // Ordem ASC (mais antigo primeiro); evento já processado nunca volta.
       const eventos = await EventosPaciente.findAll({
-        where: { paciente_id: monitoramento.paciente.id, recebido: true, processado: false },
+        where: { paciente_id: monitoramento.paciente.id, recebido: true, processado: false, excluido_externo: false }, // 👈 NOVO: excluído no externo não conta
         order: [['external_id', 'ASC']],
         include: [{ model: Medicamentos, as: 'medicamento' }]
       });
@@ -1310,13 +1401,19 @@ class MonitoramentoMedicamentoController {
       const novasLinhas = Object.values(maisAntigoPorLinhaNova).sort(compararEventosPorData);
       const novoEventoNovaLinha = novasLinhas[0] || null;
 
+      // 👇 PRIORIDADE (regra de negócio): a reposição do medicamento desta etapa
+      // vem SEMPRE primeiro. O medicamento novo (linha sem acompanhamento) só é
+      // oferecido aqui quando não há compra pendente da própria linha; quando
+      // há, ele vai em "novas_linhas_pendentes" e, logo após o contato ser
+      // registrado, a tela oferece iniciar o acompanhamento dele (endpoint
+      // novasLinhasPendentes + store entrando no grupo).
       let novoEvento = null;
       let ehMedicamentoDiferente = false;
-      if (novoEventoNovaLinha) {
+      if (novoEventoMesmaLinha) {
+        novoEvento = novoEventoMesmaLinha;
+      } else if (novoEventoNovaLinha) {
         novoEvento = novoEventoNovaLinha;
         ehMedicamentoDiferente = true;
-      } else if (novoEventoMesmaLinha) {
-        novoEvento = novoEventoMesmaLinha;
       }
       // compatibilidade com o bloco de resposta abaixo
       const candidatosMesmoMedicamento = candidatosMesmaLinha;
@@ -1399,8 +1496,9 @@ class MonitoramentoMedicamentoController {
           ...montarDetalhesEvento(novoEvento),
           medicamento_atual: { id: monitoramento.medicamento_id, nome: monitoramento.medicamento.nome },
           eventos_pendentes: pendentesDaLinhaEscolhida.map(montarDetalhesEvento),
-          // 👇 LINHA DE TRATAMENTO: outras linhas novas recebidas (além da oferecida), só informativo
-          outras_linhas_novas: novasLinhas.filter(e => e.id !== novoEvento.id).map(e => ({ evento_externo_id: e.external_id, medicamento_nome: e.medicamento?.nome, data_entrega: e.data_entrega_real || e.data_entrega_prevista })),
+          // 👇 LINHA DE TRATAMENTO: medicamentos novos recebidos que NÃO estão sendo
+          // oferecidos nesta etapa (quando a reposição tem prioridade, são todos) — só informativo
+          novas_linhas_pendentes: novasLinhas.filter(e => e.id !== novoEvento.id).map(e => ({ evento_externo_id: e.external_id, medicamento_nome: e.medicamento?.nome, data_entrega: e.data_entrega_real || e.data_entrega_prevista })),
           existe_outro_evento_pendente: !!outroCandidatoImediato || totalCandidatosRestantes > 0,
           outro_evento_pendente: outroCandidatoImediato ? {
             evento_externo_id: outroCandidatoImediato.external_id,
@@ -1685,6 +1783,12 @@ class MonitoramentoMedicamentoController {
           dados_nova_compra: Yup.object().nullable(),
           data_inicio_nova_caixa: Yup.date().nullable(),
           posologia_nova_caixa: Yup.number().integer().nullable(),
+          // 👇 PADRÃO DA NOVA CAIXA (reposição)
+          tipo_posologia_nova_caixa: Yup.string().oneOf(['diaria', 'ciclica', 'intervalo', 'personalizada']).nullable(),
+          posologia_ciclo_dias_toma_nova_caixa: Yup.number().integer().positive().nullable(),
+          posologia_ciclo_dias_pausa_nova_caixa: Yup.number().integer().min(0).nullable(),
+          posologia_intervalo_dias_nova_caixa: Yup.number().integer().positive().nullable(),
+          posologia_datas_personalizadas_nova_caixa: Yup.array().of(Yup.string()).nullable(),
           modo_novo_medicamento: Yup.string().oneOf(['CONJUNTO', 'SUBSTITUICAO']).nullable(),
           // 👇 NOVO
           descontinuar_medicamento: Yup.boolean().nullable(),
@@ -1899,6 +2003,16 @@ class MonitoramentoMedicamentoController {
                 posologia_datas_personalizadas: posologia_datas_personalizadas_nova
               }
             : { tipo_posologia: monitoramentoAtual.tipo_posologia, ...extrairParametrosPosologia(monitoramentoAtual) };
+          // 👇 PADRÃO DA NOVA CAIXA (reposição) informado pelo operador neste registro
+          if (aplicar_nova_compra && registro.tipo_posologia_nova_caixa) {
+            proximoPadraoPosologia.tipo_posologia = registro.tipo_posologia_nova_caixa;
+            Object.assign(proximoPadraoPosologia, extrairParametrosPosologia({
+              posologia_ciclo_dias_toma: registro.posologia_ciclo_dias_toma_nova_caixa,
+              posologia_ciclo_dias_pausa: registro.posologia_ciclo_dias_pausa_nova_caixa,
+              posologia_intervalo_dias: registro.posologia_intervalo_dias_nova_caixa,
+              posologia_datas_personalizadas: registro.posologia_datas_personalizadas_nova_caixa
+            }));
+          }
 
           // 👇 Mesmo raciocínio da versão única — ver comentário lá.
           // qtd_total_capsulas e data_administracao são imutáveis.
@@ -2007,6 +2121,51 @@ class MonitoramentoMedicamentoController {
     } catch (error) {
       const status = error.status || 500;
       return res.status(status).json({ error: status === 500 ? 'Erro ao registrar contato em conjunto' : error.message, details: error.message });
+    }
+  }
+
+  // 👇 LINHA DE TRATAMENTO: medicamentos novos recebidos (compra pendente de
+  // uma linha SEM acompanhamento ativo), um por linha, no mesmo formato dos
+  // candidatos de retomada — a tela abre o "Iniciar Tratamento" com isso logo
+  // após o contato ser registrado (a reposição do medicamento atual tem
+  // prioridade na etapa; o novo entra em seguida, em conjunto).
+  async novasLinhasPendentes(req, res) {
+    const { pacienteId } = req.params;
+    try {
+      const linhasAtivas = await chavesLinhasAtivasDoPaciente(pacienteId);
+      const eventos = await EventosPaciente.findAll({
+        where: { paciente_id: pacienteId, recebido: true, processado: false, excluido_externo: false },
+        include: [{ model: Medicamentos, as: 'medicamento' }]
+      });
+      const porLinha = {};
+      eventos
+        .filter(e => e.medicamento && !linhasAtivas.has(chaveLinhaTratamento(e.medicamento)))
+        .sort(compararEventosPorData)
+        .forEach(e => {
+          const chave = chaveLinhaTratamento(e.medicamento);
+          if (!porLinha[chave]) porLinha[chave] = [];
+          porLinha[chave].push(e);
+        });
+      const candidatos = Object.values(porLinha).map(lista => {
+        const evento = lista[0]; // a mais antiga; a lista inteira vai pro seletor
+        const dataAdminExterna = evento.data_administracao_prevista;
+        return {
+          eventos_pendentes: lista.map(resumirEventoPendente), // 👈 SELETOR DE COMPRA-BASE
+          evento_externo_id: evento.external_id,
+          medicamento_id: evento.medicamento_id,
+          linha_tratamento: chaveLinhaTratamento(evento.medicamento),
+          medicamento_nome: evento.medicamento?.nome,
+          qtd_capsula_conhecida: evento.medicamento?.qtd_capsula != null,
+          qtd_caixas: evento.qtd_caixas,
+          data_entrega: evento.data_entrega_real || evento.data_entrega_prevista,
+          data_previsao_administracao: dataAdminExterna,
+          data_sugerida_primeiro_contato: dataAdminExterna ? calcularDataTelemonitoramento(parseISO(dataAdminExterna)) : null
+        };
+      });
+      return res.json({ candidatos });
+    } catch (err) {
+      console.error('Erro ao listar medicamentos novos pendentes:', err);
+      return res.status(500).json({ error: 'Erro ao listar medicamentos novos pendentes.' });
     }
   }
 

@@ -142,6 +142,8 @@ router.get('/nps/paciente/:id/atendimento/:monitoramento_id/status', NpsControll
 router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.store);
 router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
 router.get('/monitoramento-medicamentos/candidatos-retomada', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.candidatosRetomada);
+// 👇 LINHA DE TRATAMENTO: medicamentos novos recebidos de um paciente em acompanhamento (oferecidos logo após o contato)
+router.get('/monitoramento-medicamentos/paciente/:pacienteId/novas-linhas', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.novasLinhasPendentes);
 router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline);
 
 router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);

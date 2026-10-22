@@ -22,7 +22,11 @@ class EventosPaciente extends Model {
             // CICLO = gerou um ciclo; CONSUMIDO_SEM_CICLO = medicamento usado,
             // mas pulado ao aplicar uma compra mais recente.
             tipo_processamento: Sequelize.ENUM('CICLO', 'CONSUMIDO_SEM_CICLO'),
-            processamento_observacao: Sequelize.TEXT
+            processamento_observacao: Sequelize.TEXT,
+            // 👇 NOVO: evento excluído no sistema externo (deixou de vir no sync) —
+            // fica fora das compras pendentes, mas a linha é mantida pro histórico.
+            excluido_externo: Sequelize.BOOLEAN,
+            excluido_em: Sequelize.DATE
         }, {
             sequelize,
             tableName: 'eventos_pacientes',
