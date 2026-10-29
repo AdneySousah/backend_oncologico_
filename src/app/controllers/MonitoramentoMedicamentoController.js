@@ -2105,6 +2105,7 @@ class MonitoramentoMedicamentoController {
           await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
             `Registrou contato (em conjunto, grupo ${grupoMedicamentosId}). Mudou posologia: ${mudou_posologia ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})` : 'não'}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}.`);
 
+          novoRegistro.setDataValue('origem_monitoramento_id', monitoramentoAtual.id); // 👈 pro front localizar o ciclo novo (pausa com compra)
           resultados.push(novoRegistro);
         }
 
