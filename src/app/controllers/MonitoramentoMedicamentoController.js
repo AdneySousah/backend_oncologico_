@@ -115,7 +115,11 @@ const ATRIBUTOS_MEDICAMENTO_LINHA = ['id', 'nome', 'qtd_capsula', 'principio_ati
 // é pequena — ~100 linhas — então carrega tudo e compara pela chave).
 const idsMedicamentosDaLinha = async (medicamento, options = {}) => {
   const chave = chaveLinhaTratamento(medicamento);
-  const todos = await Medicamentos.findAll({ attributes: ['id', 'principio_ativo', 'codigo_tuss'], ...options });
+  // 👇 CORREÇÃO: a chave lê a concentração do NOME — sem ele, Temozolomida 20 e
+  // 100 mg viravam a mesma linha aqui e linhas diferentes na compra (que vem
+  // com o cadastro completo), e a compra de um medicamento já ativo era
+  // oferecida como "novo" na etapa de outro.
+  const todos = await Medicamentos.findAll({ attributes: ['id', 'nome', 'principio_ativo', 'codigo_tuss'], ...options });
   const ids = new Set([medicamento.id]);
   todos.forEach(m => { if (chaveLinhaTratamento(m) === chave) ids.add(m.id); });
   return [...ids];
@@ -125,7 +129,7 @@ const idsMedicamentosDaLinha = async (medicamento, options = {}) => {
 const mapaChavesLinha = async (ids, options = {}) => {
   const distintos = [...new Set(ids.filter(id => id !== null && id !== undefined))];
   if (distintos.length === 0) return {};
-  const medicamentos = await Medicamentos.findAll({ where: { id: { [Op.in]: distintos } }, attributes: ['id', 'principio_ativo', 'codigo_tuss'], ...options });
+  const medicamentos = await Medicamentos.findAll({ where: { id: { [Op.in]: distintos } }, attributes: ['id', 'nome', 'principio_ativo', 'codigo_tuss'], ...options }); // 👈 nome: a chave usa a concentração
   const mapa = {};
   medicamentos.forEach(m => { mapa[m.id] = chaveLinhaTratamento(m); });
   return mapa;
