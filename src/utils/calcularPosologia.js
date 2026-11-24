@@ -9,7 +9,7 @@ import { addDays, startOfDay, parseISO } from 'date-fns';
 // parseISO() do date-fns interpreta "AAAA-MM-DD" como data LOCAL, evitando
 // essa armadilha. Esse helper aceita tanto string quanto um Date já pronto
 // (alguns lugares já chamam esta função com um Date, outros com string).
-function paraDataLocal(valor) {
+export function paraDataLocal(valor) {
   if (valor instanceof Date) return valor;
   return parseISO(valor);
 }
@@ -84,6 +84,9 @@ export function ehDiaDeToma(offsetDias, tipoPosologia, parametros = {}) {
  */
 export function calcularDataFimCaixa(dataInicio, totalCapsulas, posologiaDiaria, tipoPosologia = 'diaria', parametros = {}, periodosPausa = []) {
   if (!dataInicio || !totalCapsulas || !posologiaDiaria) return dataInicio;
+  // "AAAA-MM-DD" (DATEONLY) vira data LOCAL. Antes uma string chegava aqui e o addDays
+  // a lia como meia-noite UTC (21h do dia anterior em Brasília): fim de caixa 1 dia antes.
+  dataInicio = paraDataLocal(dataInicio);
 
   if (tipoPosologia === 'personalizada') {
     const datas = Array.isArray(parametros.posologia_datas_personalizadas) ? parametros.posologia_datas_personalizadas : [];
@@ -223,4 +226,25 @@ export function extrairParametrosPosologia(origem) {
     posologia_intervalo_dias: origem.posologia_intervalo_dias ?? null,
     posologia_datas_personalizadas: origem.posologia_datas_personalizadas ?? null,
   };
+}
+
+/**
+ * Fim de caixa a partir de "quanto resta hoje", mantendo a FASE do ciclo.
+ *
+ * Antes o cálculo partia de hoje como se fosse o 1º dia do padrão: num regime
+ * cíclico (ex.: 21 dias toma / 7 pausa) informado durante a semana de pausa, o
+ * sistema assumia que hoje era dia de toma e o fim de caixa saía até 7 dias antes.
+ * Para cíclica/intervalo, soma o que já foi consumido desde a âncora (início da
+ * caixa ou da nova posologia) ao restante informado e calcula a partir da âncora.
+ * Diária e personalizada não têm fase: continuam calculando a partir de hoje.
+ */
+export function calcularDataFimPorRestante(ancora, restanteHoje, posologiaDiaria, tipoPosologia = 'diaria', parametros = {}, periodosPausa = [], hoje = new Date()) {
+  const usaFase = tipoPosologia === 'ciclica' || tipoPosologia === 'intervalo';
+  const inicio = ancora ? startOfDay(paraDataLocal(ancora)) : null;
+  const dia = startOfDay(hoje);
+  if (!usaFase || !inicio || inicio >= dia) {
+    return calcularDataFimCaixa(hoje, restanteHoje, posologiaDiaria, tipoPosologia, parametros, periodosPausa);
+  }
+  const { consumidos } = calcularRestanteNaData(inicio, Number.MAX_SAFE_INTEGER, posologiaDiaria, tipoPosologia, parametros, periodosPausa, dia);
+  return calcularDataFimCaixa(inicio, consumidos + Number(restanteHoje), posologiaDiaria, tipoPosologia, parametros, periodosPausa);
 }

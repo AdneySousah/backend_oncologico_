@@ -41,22 +41,33 @@ class AuditService {
    * @param {number|null} entityId - ID do registro afetado (se houver)
    * @param {string} details - Detalhes traduzidos da ação
    * @param {number|null} pacienteId - 👈 NOVO: paciente afetado; se omitido, é deduzido de entity/entityId
+   * @param {{ transaction?: import('sequelize').Transaction }} opcoes - chamada dentro de uma
+   *   transação: o log só é gravado DEPOIS do commit. Antes ele era gravado na hora e ficava
+   *   registrado mesmo quando a operação dava erro e era desfeita (rollback).
    */
-  static async log(userId, actionType, entity, entityId = null, details = '', pacienteId = null) {
-    try {
-      const paciente_id = pacienteId ?? await resolverPacienteId(entity, entityId);
-      await AuditLog.create({
-        user_id: userId,
-        action_type: actionType,
-        entity,
-        entity_id: entityId,
-        details,
-        paciente_id
-      });
-    } catch (error) {
-      // Usamos apenas um console.error para não quebrar a aplicação original caso o log falhe
-      console.error('Falha ao registrar log de auditoria:', error);
+  static async log(userId, actionType, entity, entityId = null, details = '', pacienteId = null, opcoes = {}) {
+    const gravar = async () => {
+      try {
+        const paciente_id = pacienteId ?? await resolverPacienteId(entity, entityId);
+        await AuditLog.create({
+          user_id: userId,
+          action_type: actionType,
+          entity,
+          entity_id: entityId,
+          details,
+          paciente_id
+        });
+      } catch (error) {
+        // Usamos apenas um console.error para não quebrar a aplicação original caso o log falhe
+        console.error('Falha ao registrar log de auditoria:', error);
+      }
+    };
+
+    if (opcoes && opcoes.transaction) {
+      opcoes.transaction.afterCommit(() => gravar());
+      return;
     }
+    await gravar();
   }
 }
 

@@ -16,7 +16,8 @@ export async function getWhatsappStatus() {
                 // Fallback: Tenta acessar via recurso de Senders se a versão suportar
                 return await client.messaging.v1.whatsappSenders(sid).fetch();
             })
-            .catch(() => ({ qualityRating: 'High', registrationStatus: 'verified' }));
+            // Sem conseguir consultar a Twilio a qualidade é DESCONHECIDA (antes fingia "High"/verde)
+            .catch(() => ({ qualityRating: null, registrationStatus: 'indisponivel' }));
 
         // Busca de Saldo: O endpoint correto para saldo na maioria das versões é este:
         let saldoFormatado = 'Indisponível';
@@ -38,15 +39,15 @@ export async function getWhatsappStatus() {
 
         return {
             status: sender.registrationStatus || 'ativo',
-            qualidade: qualityMap[sender.qualityRating] || 'Green',
+            qualidade: qualityMap[sender.qualityRating] || 'Desconhecida',
             saldo: saldoFormatado
         };
 
     } catch (error) {
         console.error('❌ Erro Crítico Twilio:', error.message);
-        return { 
-            status: 'online', 
-            qualidade: 'Green',
+        return {
+            status: 'indisponivel',
+            qualidade: 'Desconhecida',
             saldo: 'Erro API'
         };
     }

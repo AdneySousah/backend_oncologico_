@@ -7,6 +7,8 @@ import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
 import twilio from 'twilio';
 import AuditService from '../../services/AuditService.js';
 import { enviarMensagemWhatsApp, enviarLinkNPS } from '../../services/whatsapp.js';
+import { mesmoTelefoneBR } from '../../utils/telefone.js';
+import { prepararTokenTermo, montarLinkTermo } from '../../utils/termoLink.js';
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
@@ -24,7 +26,8 @@ class ChatController {
 
       const ultimos8 = celularLimpo.slice(-8);
 
-      const paciente = await Pacientes.findOne({
+      // Busca pelos 8 últimos dígitos (nono dígito do WhatsApp) e confirma o DDD.
+      const candidatos = await Pacientes.findAll({
         where: {
           [Op.or]: [
             { celular: { [Op.like]: `%${ultimos8}` } },
@@ -32,10 +35,12 @@ class ChatController {
           ]
         }
       });
+      const paciente = candidatos.find(p => mesmoTelefoneBR(p.celular, celularLimpo) || mesmoTelefoneBR(p.contato_cuidador, celularLimpo)) || null;
 
-      let conversation = await Conversation.findOne({
+      const conversasCandidatas = await Conversation.findAll({
         where: { phone_number: { [Op.like]: `%${ultimos8}` } }
       });
+      let conversation = conversasCandidatas.find(c => mesmoTelefoneBR(c.phone_number, celularLimpo)) || null;
 
       if (!conversation) {
         conversation = await Conversation.create({
@@ -206,7 +211,11 @@ class ChatController {
         if (!conversation.paciente) {
           return res.status(400).json({ error: 'Esta conversa não está vinculada a um paciente cadastrado — não é possível montar o link do termo.' });
         }
-        const linkTermo = `${frontUrl}/paciente/termo/${conversation.paciente.id}`;
+        // Link com token (o id do paciente não abre mais o termo — ver utils/termoLink.js).
+        // Reaproveita o token atual se o termo está Pendente; senão gera um novo.
+        prepararTokenTermo(conversation.paciente);
+        await conversation.paciente.save({ fields: ['termo_token'] });
+        const linkTermo = montarLinkTermo(conversation.paciente);
         enviado = await enviarMensagemWhatsApp(numeroDestino, pacienteNome, operadoraNome, userName, linkTermo, req.userId);
         tipoTemplateLabel = 'Termo';
       }

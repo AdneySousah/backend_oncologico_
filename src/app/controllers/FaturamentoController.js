@@ -29,8 +29,12 @@ class FaturamentoController {
       }
 
       // 1. REGRA DE NEGÓCIO: Faturamento baseado na Administração
+      // Ciclo cancelado (substituído por reembolso) e ciclo de reembolso não são
+      // cobrados da operadora: a caixa foi paga pelo paciente.
       let monitoramentoWhere = {
-        data_administracao: { [Op.not]: null }
+        data_administracao: { [Op.not]: null },
+        status: { [Op.ne]: 'CANCELADO' },
+        eh_reembolso: { [Op.not]: true }
       };
 
       if (data_inicio && data_fim) {
@@ -75,10 +79,24 @@ class FaturamentoController {
         order: [['data_administracao', 'ASC']]
       });
 
+      // Os ciclos seguintes de uma caixa reembolsada não herdam eh_reembolso, mas
+      // repetem paciente + medicamento + data de administração do ciclo de reembolso.
+      const reembolsos = await MonitoramentoMedicamento.findAll({
+        where: { eh_reembolso: true },
+        attributes: ['paciente_id', 'medicamento_id', 'data_administracao']
+      });
+      const caixasReembolsadas = new Set(reembolsos.map(r => `${r.paciente_id}|${r.medicamento_id}|${r.data_administracao}`));
+
+      // Uma linha por COMPRA (evento do sistema externo): cada contato cria um ciclo
+      // novo da mesma caixa, e todos repetem o evento. Antes a chave era
+      // paciente + medicamento, e compras diferentes no período viravam uma linha só.
       const mapDeduplicacao = new Map();
 
       monitoramentos.forEach(item => {
-        const chaveUnica = `${item.paciente_id}-${item.medicamento_id}`;
+        if (caixasReembolsadas.has(`${item.paciente_id}|${item.medicamento_id}|${item.data_administracao}`)) return;
+        const chaveUnica = item.evento_externo_id
+          ? `evento-${item.evento_externo_id}`
+          : `${item.paciente_id}-${item.medicamento_id}-${item.data_administracao}`;
         if (!mapDeduplicacao.has(chaveUnica)) {
           mapDeduplicacao.set(chaveUnica, item);
         }

@@ -1,4 +1,4 @@
-import { Op, Sequelize } from 'sequelize';
+import { Op } from 'sequelize';
 import Pacientes from '../models/Pacientes.js';
 import PatientEvaluation from '../models/PatientEvaluation.js';
 import EvaluationTemplate from '../models/EvaluationTemplate.js';
@@ -642,6 +642,20 @@ class DashboardController {
 
       const periodoOperadoraId = operadora_id || (permission.whereClause && permission.whereClause.operadora_id) || null;
 
+      // O snapshot de mês fechado é gravado por UMA operadora (ou todas = null).
+      // Usuário com 2+ operadoras e sem filtro tem where { [Op.in]: [...] }: aí não
+      // existe snapshot equivalente e o findOne devolvia o de uma operadora qualquer.
+      let operadoraDoSnapshot = null;
+      let podeUsarSnapshot = true;
+      if (operadora_id) {
+        operadoraDoSnapshot = Number(operadora_id);
+      } else if (permission.whereClause && permission.whereClause.operadora_id) {
+        const filtro = permission.whereClause.operadora_id;
+        const lista = typeof filtro === 'object' ? filtro[Op.in] : [filtro];
+        if (Array.isArray(lista) && lista.length === 1) operadoraDoSnapshot = Number(lista[0]);
+        else podeUsarSnapshot = false;
+      }
+
       // ================================================================
       // NOVO: se o período pedido é um mês fechado de calendário E esse
       // mês já terminou, tenta servir o snapshot congelado em vez de
@@ -650,12 +664,12 @@ class DashboardController {
       // ================================================================
       const mesCompleto = identificarMesCompleto(data_inicio, data_fim);
 
-      if (mesCompleto && mesJaTerminou(mesCompleto.ano, mesCompleto.mes)) {
+      if (podeUsarSnapshot && mesCompleto && mesJaTerminou(mesCompleto.ano, mesCompleto.mes)) {
         const snapshot = await DashboardSnapshot.findOne({
           where: {
             ano: mesCompleto.ano,
             mes: mesCompleto.mes,
-            operadora_id: periodoOperadoraId,
+            operadora_id: operadoraDoSnapshot,
           }
         });
 

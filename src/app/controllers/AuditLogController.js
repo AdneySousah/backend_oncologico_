@@ -17,18 +17,18 @@ class AuditLogController {
       whereClause.user_id = user_id;
     }
 
-    // Filtro por Data
+    // Filtro por Data (dia no horário de Brasília; antes usava UTC e logs entre 21h e 24h caíam no dia seguinte)
     if (data_inicio && data_fim) {
-      const start = new Date(`${data_inicio}T00:00:00.000Z`);
-      const end = new Date(`${data_fim}T23:59:59.999Z`);
+      const start = new Date(`${data_inicio}T00:00:00.000-03:00`);
+      const end = new Date(`${data_fim}T23:59:59.999-03:00`);
       whereClause.createdAt = {
         [Op.between]: [start, end]
       };
     } else if (data_inicio) {
-      whereClause.createdAt = { [Op.gte]: new Date(`${data_inicio}T00:00:00.000Z`) };
+      whereClause.createdAt = { [Op.gte]: new Date(`${data_inicio}T00:00:00.000-03:00`) };
     } else if (data_fim) {
       // Adicionado caso o usuário preencha só a data final
-      whereClause.createdAt = { [Op.lte]: new Date(`${data_fim}T23:59:59.999Z`) }; 
+      whereClause.createdAt = { [Op.lte]: new Date(`${data_fim}T23:59:59.999-03:00`) }; 
     }
 
     // 2. Filtro por Módulo (entity) - Busca parcial, sem diferenciar maiúsculas/minúsculas

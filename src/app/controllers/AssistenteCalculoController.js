@@ -15,7 +15,7 @@ class AssistenteCalculoController {
   async calcular(req, res) {
 
     const { mensagem, historico, data_referencia } = req.body;
-    if (!mensagem || !mensagem.trim()) {
+    if (typeof mensagem !== 'string' || !mensagem.trim()) {
       return res.status(400).json({ error: 'Envie uma pergunta.' });
     }
     try {

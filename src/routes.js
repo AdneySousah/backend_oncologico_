@@ -4,7 +4,10 @@ import multer from 'multer';
 import multerConfig from './config/multer.cjs';
 
 import authMiddleware from "./middlewares/auth.js";
-import checkPermission from "./middlewares/checkPermission.js"; // Importe o novo middleware
+import limiteTentativas from "./middlewares/limiteTentativas.js";
+import validarAssinaturaTwilio from "./middlewares/twilioSignature.js";
+import checkPermission from "./middlewares/checkPermission.js";
+import { exigirPacienteDaOperadora, exigirMonitoramentoDaOperadora, exigirIdNumerico } from "./utils/permissionUtils.js";
 
 import UserController from "./app/controllers/UserController.js";
 import SessionController from "./app/controllers/SessionController.js";
@@ -36,17 +39,17 @@ const router = Router();
 const upload = multer(multerConfig);
 
 
-router.post('/session', SessionController.store)
+// Limite de tentativas por usuário/e-mail (força bruta de senha e de código)
+router.post('/session', limiteTentativas({ maximo: 10, janelaMinutos: 15, mensagem: 'Muitas tentativas de login. Aguarde alguns minutos e tente de novo.' }), SessionController.store)
 
-router.post('/nps/manual',  NpsController.manualSubmit); // <-- ADICIONE ESTA LINHA
 router.get('/nps/paciente/:paciente_id/atendimento/:monitoramento_id', NpsController.verifyNpsPatient);
 router.post('/nps/paciente/:paciente_id/atendimento/:monitoramento_id/responder', NpsController.answerNps);
 
 
 
 /* rota publica chat ativo */
-router.post('/webhooks/twilio/whatsapp', ChatController.receiveWebhook);
-// Rota Pública (O paciente clica no link do zap e essa rota não pode ter authMiddleware)
+router.post('/webhooks/twilio/whatsapp', validarAssinaturaTwilio, ChatController.receiveWebhook);
+// Rotas públicas do termo: :id é o TOKEN do link (ver utils/termoLink.js), não o id do paciente
 router.post('/termos/paciente/:id', TermoController.answerTerm);
 
 router.get('/pacientes/:id', TermoController.verifyResponse);
@@ -55,16 +58,18 @@ router.get('/termos/paciente/:id/preview-pdf', TermoController.previewPdf);
 
 
 
-router.post('/forgot-password', PasswordResetController.forgotPassword);
-router.post('/verify-code', PasswordResetController.verifyCode);
-router.post('/reset-password', PasswordResetController.resetPassword);
+router.post('/forgot-password', limiteTentativas({ maximo: 5, janelaMinutos: 60 }), PasswordResetController.forgotPassword);
+router.post('/verify-code', limiteTentativas({ maximo: 5, janelaMinutos: 15 }), PasswordResetController.verifyCode);
+router.post('/reset-password', limiteTentativas({ maximo: 5, janelaMinutos: 15 }), PasswordResetController.resetPassword);
 
 
 // ==========================================
 // 1ª CAMADA DE SEGURANÇA: EXIGE LOGIN VÁLIDO
 // ==========================================
-router.post('/users'/* , checkPermission('usuarios', 'editar') */, UserController.store);
 router.use(authMiddleware)
+
+// Criação de usuário exige login e permissão (antes ficava pública, antes do authMiddleware).
+router.post('/users', checkPermission('usuarios', 'editar'), UserController.store);
 
 
 
@@ -79,8 +84,8 @@ router.delete('/users/:id', checkPermission('usuarios', 'excluir'), UserControll
 // Vinculei os perfis à permissão de 'usuarios' pois fazem parte do mesmo contexto administrativo
 router.post('/perfis', checkPermission('usuarios', 'editar'), PerfilController.store);
 router.get('/perfis', checkPermission('usuarios', 'acessar'), PerfilController.index);
-router.get('/perfis/:id', checkPermission('usuarios', 'acessar'), PerfilController.show);
-router.put('/perfis/:id', checkPermission('usuarios', 'editar'), PerfilController.update);
+router.get('/perfis/:id', checkPermission('usuarios', 'acessar'), exigirIdNumerico(), PerfilController.show);
+router.put('/perfis/:id', checkPermission('usuarios', 'editar'), exigirIdNumerico(), PerfilController.update);
 
 
 // --- ROTAS DE OPERADORAS ---
@@ -95,12 +100,12 @@ router.patch('/operadoras/:id/status', checkPermission('operadoras', 'editar'), 
 // externa (rotas abaixo). Mantidos apenas os endpoints que a "Necessidade de Navegação"
 // e a "Nova Avaliação" realmente consomem.
 router.post('/pacientes/sync', checkPermission('pacientes', 'editar'), PacientesController.syncExternal);
-router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), PacientesController.show);
-router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), PacientesController.medicamentosAtivos);
-router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), PacientesController.syncIndividual);
+router.get('/pacientes/detalhes/:id', checkPermission('pacientes', 'acessar'), exigirPacienteDaOperadora('id'), PacientesController.show);
+router.get('/pacientes/:id/medicamentos-ativos', checkPermission('pacientes', 'acessar'), exigirPacienteDaOperadora('id'), PacientesController.medicamentosAtivos);
+router.post('/pacientes/:id/sync-individual', checkPermission('pacientes', 'editar'), exigirPacienteDaOperadora('id'), PacientesController.syncIndividual);
 router.get('/sync/pacientes/check', checkPermission('pacientes', 'acessar'), PacientesController.checkSync);
-router.patch('/pacientes/:id/pausar-tratamento', checkPermission('pacientes', 'editar'), PacientesController.pausarTratamento);
-router.patch('/pacientes/:id/retomar-tratamento', checkPermission('pacientes', 'editar'), PacientesController.retomarTratamento);
+router.patch('/pacientes/:id/pausar-tratamento', checkPermission('pacientes', 'editar'), exigirPacienteDaOperadora('id'), PacientesController.pausarTratamento);
+router.patch('/pacientes/:id/retomar-tratamento', checkPermission('pacientes', 'editar'), exigirPacienteDaOperadora('id'), PacientesController.retomarTratamento);
 
 
 // --- ROTAS DE AVALIAÇÕES (QUESTIONÁRIOS) ---
@@ -109,82 +114,91 @@ router.patch('/evaluations/templates/:id/status', checkPermission('avaliacoes', 
 router.get('/evaluations/templates', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.index);
 
 // Rota de buscar os pendentes do paciente
-router.get('/evaluations/templates/pending/:paciente_id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.getPendingForPatient);
+router.get('/evaluations/templates/pending/:paciente_id', checkPermission('avaliacoes', 'acessar'), exigirPacienteDaOperadora('paciente_id'), EvaluationBuilderController.getPendingForPatient);
 
 // NOVA ROTA AQUI: Buscar um template específico pelo ID (deve ficar abaixo da rota de pending!)
-router.get('/evaluations/templates/:id', checkPermission('avaliacoes', 'acessar'), EvaluationBuilderController.show);
+router.get('/evaluations/templates/:id', checkPermission('avaliacoes', 'acessar'), exigirIdNumerico(), EvaluationBuilderController.show);
 
-router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), EvaluationBuilderController.update);
+router.put('/evaluations/templates/:id', checkPermission('avaliacoes', 'editar'), exigirIdNumerico(), EvaluationBuilderController.update);
 
 // Rotas de respostas e histórico
-router.post('/evaluations/responses', checkPermission('avaliacoes', 'editar'), EvaluationResponseController.store);
+router.post('/evaluations/responses', checkPermission('avaliacoes', 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), EvaluationResponseController.store);
 router.get('/evaluations/responses', checkPermission('avaliacoes', 'acessar'), EvaluationResponseController.index);
-router.get('/evaluations/paciente/:paciente_id/history', EvaluationResponseController.history);
-router.get('/evaluations/pendentes-alerta', EvaluationResponseController.pendentesAlerta);
+router.get('/evaluations/paciente/:paciente_id/history', checkPermission('avaliacoes', 'acessar'), exigirPacienteDaOperadora('paciente_id'), EvaluationResponseController.history);
+router.get('/evaluations/pendentes-alerta', checkPermission(['avaliacoes', 'telemonitoramento', 'pacientes'], 'acessar'), EvaluationResponseController.pendentesAlerta);
 
 // --- TIMELINE DE AVALIAÇÕES ---
-router.get('/avaliacoes',  EvaluationResponseController.index);
+router.get('/avaliacoes', checkPermission(['linhadotempo', 'avaliacoes'], 'acessar'), EvaluationResponseController.index);
 
 
 // --- ROTAS DE TERMOS ---
-router.post('/termos/send', checkPermission('termos', 'editar'), TermoController.sendLink);
-router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), TermoController.checkStatus);
-router.patch('/termos/paciente/:id/cancelar', checkPermission('termos', 'editar'), TermoController.cancelarTermo);
+router.post('/termos/send', checkPermission('termos', 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), TermoController.sendLink);
+router.get('/termos/paciente/:id/status', checkPermission('termos', 'acessar'), exigirPacienteDaOperadora('id'), TermoController.checkStatus);
+router.patch('/termos/paciente/:id/cancelar', checkPermission('termos', 'editar'), exigirPacienteDaOperadora('id'), TermoController.cancelarTermo);
+// Resposta do termo registrada pelo operador (paciente respondeu por telefone)
+router.post('/termos/paciente/:id/resposta-operador', checkPermission('termos', 'editar'), exigirPacienteDaOperadora('id'), TermoController.registrarRespostaOperador);
+// PDF do termo para a equipe (tela Termos Assinados) — a rota pública agora só aceita o token do link
+router.get('/termos/paciente/:id/pdf', checkPermission('termo', 'acessar'), exigirPacienteDaOperadora('id'), TermoController.pdfAdmin);
 
-router.post('/nps/send', checkPermission('avaliacoes', 'editar'), NpsController.sendNps); 
+router.post('/nps/send', checkPermission('avaliacoes', 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), NpsController.sendNps);
+// Nota de NPS informada pelo atendente (antes ficava pública, antes do authMiddleware)
+router.post('/nps/manual', checkPermission(['avaliacoes', 'telemonitoramento'], 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), NpsController.manualSubmit); 
 router.get('/nps', checkPermission('dashboard', 'acessar'), NpsController.index); 
-router.get('/nps/paciente/:id/atendimento/:monitoramento_id/status', NpsController.checkPatientStatus);
+router.get('/nps/paciente/:id/atendimento/:monitoramento_id/status', checkPermission(['telemonitoramento', 'avaliacoes'], 'acessar'), exigirPacienteDaOperadora('id'), NpsController.checkPatientStatus);
 
 
 
 // Rotas de monitoramento
 
-router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.store);
+router.post('/monitoramento-medicamentos', checkPermission('telemonitoramento', 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), MonitoramentoMedicamentoController.store);
 router.get('/monitoramento-medicamentos/pendentes', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.index);
 router.get('/monitoramento-medicamentos/candidatos-retomada', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.candidatosRetomada);
 // 👇 LINHA DE TRATAMENTO: medicamentos novos recebidos de um paciente em acompanhamento (oferecidos logo após o contato)
-router.get('/monitoramento-medicamentos/paciente/:pacienteId/novas-linhas', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.novasLinhasPendentes);
-router.get('/monitoramento/timeline', MonitoramentoMedicamentoController.timeline);
+router.get('/monitoramento-medicamentos/paciente/:pacienteId/novas-linhas', checkPermission('telemonitoramento', 'acessar'), exigirPacienteDaOperadora('pacienteId'), MonitoramentoMedicamentoController.novasLinhasPendentes);
+router.get('/monitoramento/timeline', checkPermission(['linhadotempo', 'telemonitoramento'], 'acessar'), MonitoramentoMedicamentoController.timeline);
 
-router.put('/monitoramento-medicamentos/vincular-avaliacao', MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
+router.put('/monitoramento-medicamentos/vincular-avaliacao', checkPermission('avaliacoes', 'editar'), exigirPacienteDaOperadora('paciente_id', 'body'), MonitoramentoMedicamentoController.vincularAvaliacaoSilencioso);
 
 
 // Rotas de sincronização em tempo real do evento atual
-router.get('/monitoramento-medicamentos/:id/historico-aberturas', MonitoramentoMedicamentoController.historicoAberturas);
-router.get('/monitoramento-medicamentos/:id/historico-compras', MonitoramentoMedicamentoController.historicoCompras);
-router.get('/monitoramento-medicamentos/:id/verificar-sincronizacao-atual', MonitoramentoMedicamentoController.verificarSincronizacaoAtual);
-router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', MonitoramentoMedicamentoController.confirmarSincronizacaoAtual);
-router.get('/monitoramento-medicamentos/:id/verificar-compra', MonitoramentoMedicamentoController.verificarNovaCompra);
-router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.informarDataAdministracao);
-router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.update);
-router.put('/monitoramento-medicamentos/:id/reembolso', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.criarEventoReembolso);
-router.put('/monitoramento-medicamentos/conjunto/registrar', MonitoramentoMedicamentoController.registrarContatoConjunto);
-router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.atualizarDataProximoContato);
+router.get('/monitoramento-medicamentos/:id/historico-aberturas', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.historicoAberturas);
+router.get('/monitoramento-medicamentos/:id/historico-compras', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.historicoCompras);
+router.get('/monitoramento-medicamentos/:id/verificar-sincronizacao-atual', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.verificarSincronizacaoAtual);
+router.put('/monitoramento-medicamentos/:id/confirmar-sincronizacao-atual', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.confirmarSincronizacaoAtual);
+router.get('/monitoramento-medicamentos/:id/verificar-compra', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.verificarNovaCompra);
+router.put('/monitoramento-medicamentos/:id/data-administracao', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.informarDataAdministracao);
+router.put('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.update);
+router.put('/monitoramento-medicamentos/:id/reembolso', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.criarEventoReembolso);
+router.put('/monitoramento-medicamentos/conjunto/registrar', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora((req) => (req.body?.registros || []).map(r => r.monitoramento_id)), MonitoramentoMedicamentoController.registrarContatoConjunto);
+router.put('/monitoramento-medicamentos/:id/data-proximo-contato', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.atualizarDataProximoContato);
 router.get('/monitoramento-medicamentos/recalculaveis', checkPermission('recalculo', 'acessar'), MonitoramentoMedicamentoController.listarRecalculaveis);
-router.put('/monitoramento-medicamentos/:id/recalcular', checkPermission('recalculo', 'editar'), MonitoramentoMedicamentoController.recalcular);
+router.put('/monitoramento-medicamentos/:id/recalcular', checkPermission('recalculo', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.recalcular);
 router.get('/monitoramento-medicamentos/pausados', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.listarPausados);
-router.patch('/monitoramento-medicamentos/:id/pausar', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.pausarMedicamento);
-router.patch('/monitoramento-medicamentos/:id/destravar-pausa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.destravarPausaMedicamento);
-router.patch('/monitoramento-medicamentos/:id/estender-pausa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.estenderPausaMedicamento);
+router.patch('/monitoramento-medicamentos/:id/pausar', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.pausarMedicamento);
+router.patch('/monitoramento-medicamentos/:id/destravar-pausa', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.destravarPausaMedicamento);
+router.patch('/monitoramento-medicamentos/:id/estender-pausa', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.estenderPausaMedicamento);
+// ACUMULAR SOBRAS: marcar/desmarcar (com histórico) e consultar o histórico do medicamento
+router.patch('/monitoramento-medicamentos/:id/acumular-sobras', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.definirAcumuloSobras);
+router.get('/monitoramento-medicamentos/:id/acumular-sobras/historico', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.historicoAcumuloSobras);
 // Cálculo puro (sem dado sensível), usado pela tela de confirmação de
 // posologia em vários lugares — só exige estar logado, sem permissão
 // de módulo específica.
-router.post('/monitoramento-medicamentos/preview-posologia', MonitoramentoMedicamentoController.previewPosologia);
+router.post('/monitoramento-medicamentos/preview-posologia', checkPermission(['telemonitoramento', 'avaliacoes', 'recalculo'], 'acessar'), MonitoramentoMedicamentoController.previewPosologia);
 // 👇 NOVO: "com essa pausa/descontinuação o paciente deve ter X comprimidos" —
 // projeção na data em que parou de tomar, pra confirmar com o paciente.
-router.post('/monitoramento-medicamentos/:id/projecao-restante', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.projecaoRestante);
+router.post('/monitoramento-medicamentos/:id/projecao-restante', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.projecaoRestante);
 
 // Buscar detalhes de um monitoramento específico (necessário para carregar o modal de edição)
-router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), MonitoramentoMedicamentoController.show);
+router.get('/monitoramento-medicamentos/:id', checkPermission('telemonitoramento', 'acessar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.show);
 
 // Edição retroativa de um contato já concluído
-router.put('/monitoramento-medicamentos/:id/edicao-retroativa', checkPermission('telemonitoramento', 'editar'), MonitoramentoMedicamentoController.updateRetroativo);
+router.put('/monitoramento-medicamentos/:id/edicao-retroativa', checkPermission('telemonitoramento', 'editar'), exigirMonitoramentoDaOperadora(), MonitoramentoMedicamentoController.updateRetroativo);
 
 /* Rotas de ficha ram */
 router.post('/reacao-adversa', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.store);
 router.get('/reacao-adversa', checkPermission('reacao_adversa', 'acessar'), ReacaoAdversaController.index);
-router.put('/reacao-adversa/:id', ReacaoAdversaController.update);
-router.delete('/reacao-adversa/:id', ReacaoAdversaController.delete);
+router.put('/reacao-adversa/:id', checkPermission('reacao_adversa', 'editar'), ReacaoAdversaController.update);
+router.delete('/reacao-adversa/:id', checkPermission('reacao_adversa', 'excluir'), ReacaoAdversaController.delete);
 router.post('/reacao-adversa/validate', checkPermission('reacao_adversa', 'editar'), upload.single('file'), ReacaoAdversaController.validateExcel);
 router.post('/reacao-adversa/import', checkPermission('reacao_adversa', 'editar'), upload.single('file'), ReacaoAdversaController.importExcel);
 
@@ -202,14 +216,14 @@ router.get('/nps/health',checkPermission('check-saude', 'acessar'), NpsHealthCon
 
 
 router.get('/chat/conversations', checkPermission('chat', 'acessar'), ChatController.listConversations);
-router.get('/chat/conversations/:id', checkPermission('chat', 'acessar'), ChatController.getHistory);
+router.get('/chat/conversations/:id', checkPermission('chat', 'acessar'), exigirIdNumerico(), ChatController.getHistory);
 router.post('/chat/send', checkPermission('chat', 'editar'), ChatController.sendMessage);
 router.post('/chat/reopen', checkPermission('chat', 'editar'), ChatController.reopenWindow);
 router.get('/chat/unread', checkPermission('chat', 'acessar'), ChatController.getUnreadCounts);
-router.delete('/chat/conversations/:id', checkPermission('chat', 'excluir'), ChatController.deleteConversation);
+router.delete('/chat/conversations/:id', checkPermission('chat', 'excluir'), exigirIdNumerico(), ChatController.deleteConversation);
 
 
-router.get('/faturamento', FaturamentoController.index);
+router.get('/faturamento', checkPermission('faturamento', 'acessar'), FaturamentoController.index);
 
 
 router.get('/termos-anexos/todos', checkPermission('termo', 'acessar'), TermoController.listarTermosAceitos);
@@ -222,26 +236,28 @@ router.post('/termos/versoes', checkPermission('termo', 'editar'), TermoControll
 // ROTAS: Motivos de Falha de Contato
 // ==========================================
 router.get('/motivos-falha-contato', MotivoFalhaContatoController.index);
-router.post('/motivos-falha-contato', MotivoFalhaContatoController.store);
-router.put('/motivos-falha-contato/:id', MotivoFalhaContatoController.update);
-router.delete('/motivos-falha-contato/:id', MotivoFalhaContatoController.delete);
+// a leitura fica livre para quem está logado: o Telemonitoramento usa a lista
+router.post('/motivos-falha-contato', checkPermission('falhascontatos', 'editar'), MotivoFalhaContatoController.store);
+router.put('/motivos-falha-contato/:id', checkPermission('falhascontatos', 'editar'), MotivoFalhaContatoController.update);
+router.delete('/motivos-falha-contato/:id', checkPermission('falhascontatos', 'excluir'), MotivoFalhaContatoController.delete);
 
 // ==========================================
 // ROTAS: Motivos de Pausa/Descontinuação de Tratamento
 // (compartilhado entre Necessidade de Navegação e Telemonitoramento)
 // ==========================================
 router.get('/motivos-pausa-tratamento', MotivoPausaTratamentoController.index);
-router.post('/motivos-pausa-tratamento', MotivoPausaTratamentoController.store);
-router.put('/motivos-pausa-tratamento/:id', MotivoPausaTratamentoController.update);
-router.delete('/motivos-pausa-tratamento/:id', MotivoPausaTratamentoController.delete);
+// a leitura fica livre para quem está logado: as telas de pausa usam a lista
+router.post('/motivos-pausa-tratamento', checkPermission('pausa_tratamento', 'editar'), MotivoPausaTratamentoController.store);
+router.put('/motivos-pausa-tratamento/:id', checkPermission('pausa_tratamento', 'editar'), MotivoPausaTratamentoController.update);
+router.delete('/motivos-pausa-tratamento/:id', checkPermission('pausa_tratamento', 'excluir'), MotivoPausaTratamentoController.delete);
 
 
 
 // ==========================================
 // ROTAS: Reserva de Edição de Monitoramento de Medicamentos
 // ==========================================
-router.post('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), ReservaEdicaoController.reservar);
-router.delete('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), ReservaEdicaoController.liberar);
+router.post('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), exigirPacienteDaOperadora('pacienteId'), ReservaEdicaoController.reservar);
+router.delete('/monitoramento-medicamentos/paciente/:pacienteId/reserva-edicao', checkPermission('telemonitoramento', 'editar'), exigirPacienteDaOperadora('pacienteId'), ReservaEdicaoController.liberar);
 
 // ==========================================
 // ROTAS: Assistente de Cálculo

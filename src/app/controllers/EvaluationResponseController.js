@@ -41,7 +41,8 @@ class EvaluationResponseController {
     let resultado = null;
 
     if (data_proxima_consulta) {
-      let [ano, mes, dia] = data_proxima_consulta.split('-').map(Number);
+      // aceita "AAAA-MM-DD" ou data com hora (antes, um valor que não fosse texto dava 500)
+      let [ano, mes, dia] = String(data_proxima_consulta).slice(0, 10).split('-').map(Number);
       let data = new Date(ano, mes - 1, dia);
       data.setDate(data.getDate() + 5);
       resultado = data.toLocaleDateString('sv-SE');
@@ -50,19 +51,29 @@ class EvaluationResponseController {
     // NOVA REGRA: Calcula a próxima avaliação para daqui a 6 meses
     const dateProximaAvaliacao = new Date();
     dateProximaAvaliacao.setMonth(dateProximaAvaliacao.getMonth() + 6);
-    const dataProximaAvaliacaoFormatada = dateProximaAvaliacao.toISOString().split('T')[0]; // Formato YYYY-MM-DD
+    // data LOCAL (toISOString gravava o dia seguinte quando o questionário era respondido após as 21h)
+    const dataProximaAvaliacaoFormatada = dateProximaAvaliacao.toLocaleDateString('sv-SE'); // Formato YYYY-MM-DD
 
     let totalScore = 0;
     const answersToCreate = [];
 
+    // Pergunta precisa ser deste questionário e a opção, desta pergunta: antes dava para
+    // mandar a opção de outra pergunta e manipular o score.
+    const perguntasDoTemplate = new Set((await EvaluationQuestion.findAll({ where: { template_id }, attributes: ['id'] })).map(q => Number(q.id)));
+
     for (const resp of respostas) {
       let currentScore = 0;
 
+      if (!perguntasDoTemplate.has(Number(resp.question_id))) {
+        return res.status(400).json({ error: `A pergunta ${resp.question_id} não pertence a este questionário.` });
+      }
+
       if (resp.option_selected_id) {
         const option = await EvaluationOption.findByPk(resp.option_selected_id);
-        if (option) {
-          currentScore = option.score;
+        if (!option || Number(option.question_id) !== Number(resp.question_id)) {
+          return res.status(400).json({ error: `Opção inválida para a pergunta ${resp.question_id}.` });
         }
+        currentScore = option.score;
       }
 
       totalScore += currentScore;
@@ -76,6 +87,8 @@ class EvaluationResponseController {
     }
 
     try {
+      // avaliação e respostas juntas: se uma falhar, nada fica gravado pela metade
+      const { evaluation, finalAnswers } = await PatientEvaluation.sequelize.transaction(async (transaction) => {
       const evaluation = await PatientEvaluation.create({
         paciente_id,
         template_id,
@@ -86,10 +99,12 @@ class EvaluationResponseController {
         observacoes,
         data_proximo_contato: resultado,
         data_proxima_avaliacao: dataProximaAvaliacaoFormatada
-      });
+      }, { transaction });
 
       const finalAnswers = answersToCreate.map(a => ({ ...a, evaluation_id: evaluation.id }));
-      await EvaluationAnswer.bulkCreate(finalAnswers);
+      await EvaluationAnswer.bulkCreate(finalAnswers, { transaction });
+      return { evaluation, finalAnswers };
+      });
 
       const paciente = await Pacientes.findByPk(paciente_id);
       const template = await EvaluationTemplate.findByPk(template_id);

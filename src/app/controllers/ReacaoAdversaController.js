@@ -8,6 +8,10 @@ class ReacaoAdversaController {
   // CREATE (Vincular perfil profissional a um usuario existente)
   async store(req, res) {
     const { name } = req.body;
+    // Sem nome a busca abaixo quebrava (500) e o create gravaria reação vazia.
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'Informe o nome da reação adversa.' });
+    }
     // Sugestão: Normalizar para evitar duplicados (Ex: "Náusea" e "nausea")
     const exists = await ReacaoAdversa.findOne({ where: { name } });
     if (exists) return res.status(400).json({ error: 'Reação já cadastrada.' });

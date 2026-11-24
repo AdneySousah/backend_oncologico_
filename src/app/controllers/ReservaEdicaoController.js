@@ -1,5 +1,6 @@
 import MonitoramentoEdicaoEmAndamento from '../models/MonitoramentoEdicaoEmAndamento.js';
 import User from '../models/User.js';
+import Pacientes from '../models/Pacientes.js';
 import { addMinutes } from 'date-fns';
 
 const TTL_MINUTOS = 20;
@@ -11,6 +12,10 @@ class ReservaEdicaoController {
   async reservar(req, res) {
     const { pacienteId } = req.params;
     try {
+      // Paciente inexistente virava 500 (chave estrangeira) com a mensagem do banco.
+      if (!(await Pacientes.findByPk(pacienteId, { attributes: ['id'] }))) {
+        return res.status(404).json({ error: 'Paciente não encontrado.' });
+      }
       const agora = new Date();
       const novaExpiracao = addMinutes(agora, TTL_MINUTOS);
 

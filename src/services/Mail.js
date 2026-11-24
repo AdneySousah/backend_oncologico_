@@ -8,9 +8,9 @@ const transporter = nodemailer.createTransport({
     user: process.env.MAIL_USER,
     pass: process.env.MAIL_PASS,
   },
-  tls: {
-    rejectUnauthorized: false
-  }
+  // Verificação do certificado do servidor SMTP ligada (padrão do nodemailer). Antes estava
+  // desligada (rejectUnauthorized: false), o que permitia interceptar os e-mails com código
+  // de senha e links de termo. Conferido em 16/11/2026: o certificado do servidor é válido.
 });
 
 class Mail {

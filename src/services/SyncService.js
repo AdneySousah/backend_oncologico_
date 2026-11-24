@@ -35,8 +35,67 @@ const extrairDataBrasil = (dataIso) => {
     }
 };
 
+const MARCA_DESMARCADO_APOS_CICLO = 'Desmarcado como recebido no sistema externo';
+
+// Compra que estava "recebida" aqui e, no sistema externo, foi desmarcada
+// (medicament_received deixou de ser 1 — ex.: a programação foi reaproveitada
+// para outra data). O filtro de eventos válidos só traz compras recebidas,
+// então sem este passo a cópia local ficava "recebida" para sempre e seguia
+// oferecida como compra nova no telemonitoramento.
+// - Não processada: volta a "não recebida" com as datas novas; sai das compras
+//   pendentes e volta sozinha quando o externo marcar recebido de novo.
+// - Já usada por um ciclo: não mexe (o ciclo continua e a regra de retomada usa
+//   esse evento como referência); só registra para alguém conferir.
+const desmarcarRecebimentosRetirados = async (paciente, extPatient, idsValidos, desmarcados, desmarcadosProcessados) => {
+    if (!Array.isArray(extPatient.events)) return;
+    const hoje = new Date().toISOString().split('T')[0];
+    for (const extEvent of extPatient.events) {
+        const externalId = parseInt(extEvent.id, 10);
+        if (isNaN(externalId) || idsValidos.has(externalId)) continue;
+        if (String(extEvent.medicament_received) === '1') continue;
+
+        const local = await EventosPaciente.findOne({ where: { external_id: externalId, paciente_id: paciente.id, recebido: true } });
+        if (!local) continue;
+
+        const dataNova = extrairDataBrasil(extEvent.administration_date_prev) || extrairDataBrasil(extEvent.date_delivery);
+        const dataNovaTexto = dataNova ? `, nova data: ${dataNova.split('-').reverse().join('/')}` : '';
+
+        if (local.processado) {
+            if ((local.processamento_observacao || '').includes(MARCA_DESMARCADO_APOS_CICLO)) continue;
+            const observacaoAnterior = local.processamento_observacao ? `${local.processamento_observacao} | ` : '';
+            await local.update({
+                processamento_observacao: `${observacaoAnterior}${MARCA_DESMARCADO_APOS_CICLO} depois de usado por um ciclo${dataNovaTexto} (sync de ${hoje}).`
+            });
+            desmarcadosProcessados.push(`#${externalId} (paciente ${paciente.id}${dataNovaTexto})`);
+            continue;
+        }
+
+        await local.update({
+            recebido: false,
+            data_entrega_prevista: extrairDataBrasil(extEvent.date_delivery),
+            data_entrega_real: extrairDataBrasil(extEvent.medicament_received_date),
+            data_administracao_prevista: extrairDataBrasil(extEvent.administration_date_prev),
+            qtd_caixas: extEvent.qtd_medicament ? parseInt(extEvent.qtd_medicament, 10) : local.qtd_caixas,
+            excluido_externo: false,
+            excluido_em: null
+        });
+        desmarcados.push(`#${externalId} (paciente ${paciente.id}${dataNovaTexto})`);
+    }
+};
+
+// Fila: uma sincronização por vez neste servidor. Antes dois operadores sincronizando
+// ao mesmo tempo criavam medicamentos/operadoras duplicados (as duas rodadas viam
+// "não existe" e criavam). A segunda chamada agora espera a primeira terminar.
+let filaSincronizacao = Promise.resolve();
+
 class PacienteSyncService {
-    async syncPacientes(pacientesExternos, userId) {
+    syncPacientes(pacientesExternos, userId) {
+        const execucao = filaSincronizacao.then(() => this.executarSincronizacao(pacientesExternos, userId));
+        filaSincronizacao = execucao.catch(() => {}); // erro de uma rodada não trava as próximas
+        return execucao;
+    }
+
+    async executarSincronizacao(pacientesExternos, userId) {
         const successes = [];
         const errors = [];
         // 👇 Em vez de 1 log de auditoria por paciente sincronizado (o que
@@ -56,6 +115,9 @@ class PacienteSyncService {
         // lista do paciente — então a regra é: tinha aqui, não veio mais em uma
         // resposta que trouxe os eventos do paciente => excluido_externo.
         const excluidosDetectados = [];
+        // 👇 NOVO: compras desmarcadas como recebidas no sistema externo.
+        const desmarcadosRecebido = [];
+        const desmarcadosAposCiclo = [];
 
         for (const extPatient of pacientesExternos) {
             try {
@@ -79,6 +141,20 @@ class PacienteSyncService {
                 const isFundacaoLibertas = extPatient.company &&
                     extPatient.company.name &&
                     String(extPatient.company.name).trim().toUpperCase() === 'FUNDAÇÃO LIBERTAS';
+
+                const idsValidos = new Set(eventosValidos.map(e => parseInt(e.id, 10)));
+
+                // 👇 NOVO: paciente já cadastrado cujas compras recebidas foram
+                // todas desmarcadas no externo — antes era ignorado aqui e a
+                // compra continuava "recebida" no sistema.
+                if (hasTreatmentType4 && !isFundacaoLibertas && eventosValidos.length === 0) {
+                    const cpfExistente = extPatient.cpf ? String(extPatient.cpf).replace(/\D/g, '') : null;
+                    let pacienteExistente = extPatient.id ? await Pacientes.findOne({ where: { external_id: extPatient.id } }) : null;
+                    if (!pacienteExistente && cpfExistente) pacienteExistente = await Pacientes.findOne({ where: { cpf: cpfExistente } });
+                    if (pacienteExistente) {
+                        await desmarcarRecebimentosRetirados(pacienteExistente, extPatient, idsValidos, desmarcadosRecebido, desmarcadosAposCiclo);
+                    }
+                }
 
                 if (!hasTreatmentType4 || eventosValidos.length === 0 || isFundacaoLibertas) {
                     console.log(`[SYNC] Ignorado: ${extPatient.name} (Motivo: Filtro não atendido ou operadora bloqueada)`);
@@ -313,6 +389,8 @@ class PacienteSyncService {
                     }
                 }
 
+                await desmarcarRecebimentosRetirados(paciente, extPatient, idsValidos, desmarcadosRecebido, desmarcadosAposCiclo);
+
                 // 👇 NOVO: eventos locais deste paciente que NÃO vieram na resposta
                 // (qualquer tipo/status) foram excluídos no externo. Só decide
                 // quando a resposta trouxe a lista de eventos do paciente — uma
@@ -360,7 +438,20 @@ class PacienteSyncService {
             );
         }
 
-        return { successes, errors, reprogramadosProcessados, excluidosDetectados };
+        if (desmarcadosRecebido.length > 0) {
+            await AuditService.log(
+                userId, 'Sincronização', 'Eventos', null,
+                `${desmarcadosRecebido.length} compra(s) foram desmarcadas como recebidas no sistema externo e saíram das compras pendentes (voltam quando forem marcadas como recebidas de novo): ${desmarcadosRecebido.join('; ')}.`
+            );
+        }
+        if (desmarcadosAposCiclo.length > 0) {
+            await AuditService.log(
+                userId, 'Sincronização', 'Eventos', null,
+                `Atenção: ${desmarcadosAposCiclo.length} compra(s) JÁ usada(s) por um ciclo do telemonitoramento foram desmarcadas como recebidas no sistema externo. O ciclo não foi alterado — confira com a equipe: ${desmarcadosAposCiclo.join('; ')}.`
+            );
+        }
+
+        return { successes, errors, reprogramadosProcessados, excluidosDetectados, desmarcadosRecebido, desmarcadosAposCiclo };
     }
 }
 

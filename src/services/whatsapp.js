@@ -4,6 +4,33 @@ import Conversation from '../app/models/Conversation.js';
 import Message from '../app/models/Message.js';
 // ✅ NOVO: Importando o model de Pacientes
 import Pacientes from '../app/models/Pacientes.js';
+import { chaveTelefoneBR, mesmoTelefoneBR } from '../utils/telefone.js';
+
+
+// Busca pelos 8 últimos dígitos (o WhatsApp às vezes omite o nono dígito) e confirma
+// o DDD — antes só o final era comparado e DDDs diferentes caíam no paciente errado.
+export async function buscarPacientePorTelefone(numero) {
+    const { final8 } = chaveTelefoneBR(numero);
+    if (!final8) return null;
+    const candidatos = await Pacientes.findAll({
+        where: {
+            [Op.or]: [
+                { celular: { [Op.like]: `%${final8}` } },
+                { contato_cuidador: { [Op.like]: `%${final8}` } }
+            ]
+        }
+    });
+    return candidatos.find(p => mesmoTelefoneBR(p.celular, numero) || mesmoTelefoneBR(p.contato_cuidador, numero)) || null;
+}
+
+export async function buscarConversaPorTelefone(numero) {
+    const { final8 } = chaveTelefoneBR(numero);
+    if (!final8) return null;
+    const candidatas = await Conversation.findAll({
+        where: { phone_number: { [Op.like]: `%${final8}` } }
+    });
+    return candidatas.find(c => mesmoTelefoneBR(c.phone_number, numero)) || null;
+}
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
@@ -31,18 +58,9 @@ export async function enviarMensagemWhatsApp(numeroDestino, pacienteNome, operad
         const ultimos8 = numeroLimpo.slice(-8);
 
         // ✅ NOVO: Busca o paciente no banco usando os últimos 8 dígitos do telefone
-        const paciente = await Pacientes.findOne({
-            where: {
-                [Op.or]: [
-                    { celular: { [Op.like]: `%${ultimos8}` } },
-                    { contato_cuidador: { [Op.like]: `%${ultimos8}` } }
-                ]
-            }
-        });
+        const paciente = await buscarPacientePorTelefone(numeroLimpo);
 
-        let conversation = await Conversation.findOne({
-            where: { phone_number: { [Op.like]: `%${ultimos8}` } }
-        });
+        let conversation = await buscarConversaPorTelefone(numeroLimpo);
 
         if (!conversation) {
             conversation = await Conversation.create({
@@ -100,18 +118,9 @@ export async function enviarLinkNPS(numeroDestino, pacienteNome, operadora, user
 
         const ultimos8 = numeroLimpo.slice(-8);
 
-        const paciente = await Pacientes.findOne({
-            where: {
-                [Op.or]: [
-                    { celular: { [Op.like]: `%${ultimos8}` } },
-                    { contato_cuidador: { [Op.like]: `%${ultimos8}` } }
-                ]
-            }
-        });
+        const paciente = await buscarPacientePorTelefone(numeroLimpo);
 
-        let conversation = await Conversation.findOne({
-            where: { phone_number: { [Op.like]: `%${ultimos8}` } }
-        });
+        let conversation = await buscarConversaPorTelefone(numeroLimpo);
 
         if (!conversation) {
             conversation = await Conversation.create({

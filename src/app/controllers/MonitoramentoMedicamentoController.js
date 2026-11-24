@@ -7,10 +7,13 @@ import EventosPaciente from '../models/EventosPaciente.js'; // NOVO IMPORT AQUI
 import HistoricoTrocaMedicamento from '../models/HistoricoTrocaMedicamento.js';
 import ReacaoAdversa from '../models/ReacaoAdversa.js';
 import MotivoPausaTratamento from '../models/MotivoPausaTratamento.js';
-import { addDays, subDays, parseISO } from 'date-fns';
+import MonitoramentoEdicaoEmAndamento from '../models/MonitoramentoEdicaoEmAndamento.js';
+import MonitoramentoAcumuloHistorico from '../models/MonitoramentoAcumuloHistorico.js';
+import User from '../models/User.js';
+import { addDays, parseISO, format } from 'date-fns';
 import { Op, fn, col, literal } from 'sequelize';
 import { getOperadoraFilter } from '../../utils/permissionUtils.js';
-import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa, calcularRestanteNaData } from '../../utils/calcularPosologia.js';
+import { calcularDataFimCaixa, gerarPreviewPosologia, extrairParametrosPosologia, obterPeriodosPausa, calcularRestanteNaData, paraDataLocal, calcularDataFimPorRestante } from '../../utils/calcularPosologia.js';
 import { chaveLinhaTratamento, mesmaLinha } from '../../utils/linhaTratamento.js';
 import * as Yup from 'yup';
 import AuditService from '../../services/AuditService.js';
@@ -218,7 +221,7 @@ const registrarProcessamentoCompra = async ({ compraRevalidada, monitoramentoAtu
   }, { transaction });
   await AuditService.log(
     userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
-    `Aplicou a compra ${descreverEvento(evento)} ao fechar o contato${cicloId ? ` → novo ciclo #${cicloId}` : ''}${novoCiclo?.data_administracao ? `, início ${formatarDataBR(novoCiclo.data_administracao)}` : ''}.${compraRevalidada.mudouApresentacao ? ' Apresentação diferente da anterior (mesmo princípio ativo): o ciclo adota o cadastro da compra.' : ''}`
+    `Aplicou a compra ${descreverEvento(evento)} ao fechar o contato${cicloId ? ` → novo ciclo #${cicloId}` : ''}${novoCiclo?.data_administracao ? `, início ${formatarDataBR(novoCiclo.data_administracao)}` : ''}.${compraRevalidada.mudouApresentacao ? ' Apresentação diferente da anterior (mesmo princípio ativo): o ciclo adota o cadastro da compra.' : ''}`, null, { transaction }
   );
   if (eventosAnteriores.length > 0) {
     for (const anterior of eventosAnteriores) {
@@ -231,7 +234,7 @@ const registrarProcessamentoCompra = async ({ compraRevalidada, monitoramentoAtu
     }
     await AuditService.log(
       userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
-      `Marcou como processadas (medicamento usado, sem ciclo próprio) as compras anteriores ${eventosAnteriores.map(e => descreverEvento(e)).join('; ')} ao aplicar a #${evento.external_id}.`
+      `Marcou como processadas (medicamento usado, sem ciclo próprio) as compras anteriores ${eventosAnteriores.map(e => descreverEvento(e)).join('; ')} ao aplicar a #${evento.external_id}.`, null, { transaction }
     );
   }
 };
@@ -248,7 +251,7 @@ const registrarCompraNaoAplicada = async ({ monitoramentoAtual, compraOferecidaI
   const rotulo = MOTIVOS_NAO_APLICAR_COMPRA[motivo] || motivo;
   await AuditService.log(
     userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
-    `Compra ${descricao} oferecida e NÃO aplicada neste contato. Motivo: ${rotulo}${texto ? ` — ${texto}` : ''}.`
+    `Compra ${descricao} oferecida e NÃO aplicada neste contato. Motivo: ${rotulo}${texto ? ` — ${texto}` : ''}.`, null, { transaction }
   );
 };
 
@@ -541,6 +544,76 @@ const calcularDataTelemonitoramento = (dataBase) => {
   return data;
 };
 
+// Registro de contato só vale para ciclo PENDENTE (ciclo concluído, pausado, descontinuado ou
+// cancelado não recebe contato). Chamar DEPOIS do lock (FOR UPDATE) dentro da transação.
+function garantirCicloPendente(monitoramento) {
+  if (monitoramento.status !== 'PENDENTE') {
+    const erro = new Error(`Este contato já foi registrado ou o ciclo não está mais pendente (situação: ${monitoramento.status}). Atualize a tela.`);
+    erro.status = 409;
+    throw erro;
+  }
+}
+
+// A reserva ("em atendimento por X") era só um aviso na tela: o registro de contato não a
+// conferia, e dois atendentes podiam registrar o mesmo paciente. Agora, se OUTRO usuário
+// tem reserva válida do paciente, o registro é recusado.
+async function garantirSemReservaDeOutro(pacienteId, userId, transaction) {
+  const reserva = await MonitoramentoEdicaoEmAndamento.findOne({
+    where: { paciente_id: pacienteId, expira_em: { [Op.gte]: new Date() } },
+    include: [{ model: User, as: 'usuario', attributes: ['id', 'name'] }],
+    transaction
+  });
+  if (reserva && Number(reserva.user_id) !== Number(userId)) {
+    const erro = new Error(`Paciente em atendimento por ${reserva.usuario?.name || 'outro usuário'}. Aguarde o atendimento terminar.`);
+    erro.status = 409;
+    throw erro;
+  }
+}
+
+// Compra sem data de entrega (nem real nem prevista) fazia o parseISO(null) lançar erro e o
+// contato inteiro falhar com 500. Sem data, usa hoje.
+function dataEntregaDaCompra(compra) {
+  if (!compra || !compra.dataEntrega) return new Date();
+  return compra.dataEntrega instanceof Date ? compra.dataEntrega : parseISO(String(compra.dataEntrega));
+}
+
+// ---- ACUMULAR SOBRAS ----
+// Regra padrão: a caixa nova SUBSTITUI o estoque (a sobra é desconsiderada). Em
+// esquemas cíclicos a caixa não fecha ciclos inteiros e o paciente acumula
+// comprimidos; com "acumula_sobras" marcado no medicamento do paciente, a sobra
+// confirmada no contato é somada à caixa nova. A marcação é uma decisão
+// deliberada (sobra do esquema, não esquecimento): sem ela, a sobra é recusada.
+function erroStatus(mensagem, status = 400) {
+  const erro = new Error(mensagem);
+  erro.status = status;
+  return erro;
+}
+
+function resolverSobraAnterior(monitoramentoAtual, compraRevalidada, qtdSobra) {
+  if (qtdSobra == null || qtdSobra === '') return null;
+  const sobra = Number(qtdSobra);
+  if (!Number.isInteger(sobra) || sobra < 0) throw erroStatus('Sobra da caixa anterior inválida.');
+  if (sobra === 0) return null;
+  if (!monitoramentoAtual.acumula_sobras) {
+    throw erroStatus('Este medicamento não está marcado para acumular sobras. Marque "Acumular sobras" antes de somar a sobra à caixa nova.');
+  }
+  if (!compraRevalidada || compraRevalidada.ehUsoConjunto || compraRevalidada.mudouMedicamento) {
+    throw erroStatus('A sobra só pode ser somada a uma reposição do mesmo medicamento.');
+  }
+  const limite = Number(monitoramentoAtual.qtd_total_capsulas) || 0;
+  if (limite > 0 && sobra > limite) {
+    throw erroStatus(`A sobra (${sobra}) não pode ser maior que o total do ciclo atual (${limite} comprimidos).`);
+  }
+  return sobra;
+}
+
+// A marcação acompanha o medicamento do paciente nos próximos ciclos; só cai
+// quando a compra troca o medicamento por outro princípio ativo (substituição).
+function herdaAcumulo(monitoramentoAtual, compraRevalidada) {
+  if (!monitoramentoAtual.acumula_sobras) return false;
+  return !(compraRevalidada && compraRevalidada.mudouMedicamento && !compraRevalidada.ehUsoConjunto);
+}
+
 class MonitoramentoMedicamentoController {
   async store(req, res) {
     const schema = Yup.object().shape({
@@ -672,6 +745,27 @@ class MonitoramentoMedicamentoController {
         || ((ciclosAtivos.length + medicamentos_confirmados.length) > 1 ? `grp-${paciente_id}-${Date.now()}` : null);
 
       const agendamentos = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
+        // Um "Iniciar tratamento" por paciente de cada vez: o segundo (duplo clique,
+        // outra aba, outro operador) espera aqui e, ao ver o ciclo criado pelo
+        // primeiro, é recusado — antes os dois criavam ciclos PENDENTES duplicados.
+        await MonitoramentoMedicamento.sequelize.query('SELECT pg_advisory_xact_lock(:chave)', {
+          replacements: { chave: 7100000000 + Number(paciente_id) }, transaction
+        });
+        const idsAtivosAntes = new Set(ciclosAtivos.map(c => c.id));
+        const ativosAgora = await MonitoramentoMedicamento.findAll({
+          where: { paciente_id, status: { [Op.in]: ['PENDENTE', 'PAUSADO'] } }, transaction
+        });
+        const novosAtivos = ativosAgora.filter(c => !idsAtivosAntes.has(c.id));
+        if (novosAtivos.length > 0) {
+          const chavesNovas = new Set(Object.values(await mapaChavesLinha(novosAtivos.map(c => c.medicamento_id))));
+          const conflito = medicamentosCarregados.find(m => chavesNovas.has(chaveLinhaTratamento(m.medicamento)));
+          if (conflito) {
+            const erro = new Error(`${conflito.medicamento.nome} acabou de entrar em acompanhamento para este paciente (outro registro ao mesmo tempo). Atualize a tela.`);
+            erro.status = 409;
+            throw erro;
+          }
+        }
+
         if (grupoMedicamentosId && ciclosAtivos.length > 0) {
           await MonitoramentoMedicamento.update(
             { grupo_medicamentos_id: grupoMedicamentosId },
@@ -725,7 +819,7 @@ class MonitoramentoMedicamentoController {
               observacao: `Usado como compra base ao iniciar o acompanhamento (monitoramento #${novoMonitoramento.id}).`
             }, { transaction });
             if (marcou) {
-              await AuditService.log(req.userId, 'Criação', 'Monitoramento', novoMonitoramento.id, `Iniciou o acompanhamento de ${medicamento.nome} a partir da compra ${descreverEvento(eventoBase)}.`);
+              await AuditService.log(req.userId, 'Criação', 'Monitoramento', novoMonitoramento.id, `Iniciou o acompanhamento de ${medicamento.nome} a partir da compra ${descreverEvento(eventoBase)}.`, null, { transaction });
             }
           }
           // 👇 SELETOR DE COMPRA-BASE: compras anteriores à escolhida, confirmadas
@@ -738,7 +832,7 @@ class MonitoramentoMedicamentoController {
               observacao: `Compra anterior à escolhida como base (#${eventoExternoIdBase}) ao iniciar o acompanhamento; o operador confirmou que já foi utilizada.`
             }, { transaction });
             if (marcou) {
-              await AuditService.log(req.userId, 'Edição', 'Monitoramento', novoMonitoramento.id, `Ao iniciar o acompanhamento de ${medicamento.nome} pela compra #${eventoExternoIdBase}, marcou a compra ${descreverEvento(anterior)} como já utilizada (sem ciclo).`);
+              await AuditService.log(req.userId, 'Edição', 'Monitoramento', novoMonitoramento.id, `Ao iniciar o acompanhamento de ${medicamento.nome} pela compra #${eventoExternoIdBase}, marcou a compra ${descreverEvento(anterior)} como já utilizada (sem ciclo).`, null, { transaction });
             }
           }
 
@@ -749,6 +843,7 @@ class MonitoramentoMedicamentoController {
 
       return res.status(201).json(agendamentos);
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
       return res.status(500).json({ error: 'Erro ao gerar monitoramento', details: error.message });
     }
   }
@@ -957,12 +1052,15 @@ class MonitoramentoMedicamentoController {
       confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
       compra_oferecida_evento_id: Yup.number().integer().nullable(),
       motivo_nao_aplicar_compra: Yup.string().oneOf(Object.keys(MOTIVOS_NAO_APLICAR_COMPRA)).nullable(),
-      motivo_nao_aplicar_compra_texto: Yup.string().nullable()
+      motivo_nao_aplicar_compra_texto: Yup.string().nullable(),
+      // 👇 ACUMULAR SOBRAS: comprimidos da caixa anterior somados à caixa nova
+      qtd_sobra_anterior: Yup.number().integer().min(0).nullable()
     });
     try { await schema.validate(req.body, { abortEarly: false }); }
     catch (err) { return res.status(400).json({ error: 'Falha na validação', messages: err.inner }); }
 
     const { id } = req.params;
+    const { qtd_sobra_anterior } = req.body;
     const {
       contato_efetivo, nivel_adesao, qtd_informada_caixa, data_abertura_nova_caixa,
       is_reacao, reacoes_adversas, observacao, aplicar_nova_compra, dados_nova_compra,
@@ -1004,6 +1102,12 @@ class MonitoramentoMedicamentoController {
       }
     }
 
+    // Sem a data do próximo contato o ciclo era concluído e nenhum outro era criado:
+    // o paciente sumia do telemonitoramento sem aviso.
+    if (contato_efetivo !== false && !descontinuar_medicamento && !data_abertura_nova_caixa) {
+      return res.status(400).json({ error: 'Informe a data do próximo contato.' });
+    }
+
     try {
       const resultado = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
         const monitoramentoAtual = await MonitoramentoMedicamento.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
@@ -1012,6 +1116,10 @@ class MonitoramentoMedicamentoController {
           erro.status = 404;
           throw erro;
         }
+        // Só registra contato em ciclo PENDENTE. Com o lock acima, um duplo clique ou
+        // uma segunda aba esperam o primeiro registro e caem aqui (antes criavam outro ciclo).
+        garantirCicloPendente(monitoramentoAtual);
+        await garantirSemReservaDeOutro(monitoramentoAtual.paciente_id, req.userId, transaction);
 
         // ---- Contato NÃO efetivado ----
         if (contato_efetivo === false) {
@@ -1040,7 +1148,10 @@ class MonitoramentoMedicamentoController {
             data_calculada_fim_caixa: monitoramentoAtual.data_calculada_fim_caixa, data_proximo_contato: proximaData,
             status: 'PENDENTE', qtd_caixas: monitoramentoAtual.qtd_caixas, qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas,
             evento_externo_id: monitoramentoAtual.evento_externo_id,
-            grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id
+            grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id,
+            pausas_historico: monitoramentoAtual.pausas_historico, // mesma caixa: mantém as pausas
+            acumula_sobras: monitoramentoAtual.acumula_sobras, // mesma caixa: mantém a marcação e a sobra somada
+            qtd_sobra_anterior: monitoramentoAtual.qtd_sobra_anterior
           }, { transaction });
 
           return { mensagem: 'Contato sem sucesso. Reagendado para o próximo dia útil.' };
@@ -1081,7 +1192,7 @@ class MonitoramentoMedicamentoController {
             const motivoRegistrado = await MotivoPausaTratamento.findByPk(motivo_encerramento_id, { transaction });
             if (motivoRegistrado) descricaoMotivo = motivoRegistrado.descricao;
           }
-          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}. Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`);
+          await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado. Motivo: ${descricaoMotivo}. Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`, null, { transaction });
           // 👇 NOVO: a compra oferecida fica registrada como não aplicada por descontinuação.
           if (compra_oferecida_evento_id && !aplicar_nova_compra) {
             await registrarCompraNaoAplicada({ monitoramentoAtual, compraOferecidaId: compra_oferecida_evento_id, motivo: 'MEDICAMENTO_DESCONTINUADO', texto: null, userId: req.userId, transaction });
@@ -1096,6 +1207,8 @@ class MonitoramentoMedicamentoController {
           compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction }, { confirmarConsumoAnteriores: !!confirmar_consumo_eventos_anteriores });
         }
         const ehUsoConjunto = !!(compraRevalidada && compraRevalidada.ehUsoConjunto);
+        // 👇 ACUMULAR SOBRAS: valida antes de gravar qualquer coisa
+        const sobraAnterior = resolverSobraAnterior(monitoramentoAtual, aplicar_nova_compra ? compraRevalidada : null, qtd_sobra_anterior);
 
         let grupoMedicamentosId = monitoramentoAtual.grupo_medicamentos_id;
         if (ehUsoConjunto && !grupoMedicamentosId) {
@@ -1169,17 +1282,20 @@ class MonitoramentoMedicamentoController {
         // pra classificar a adesão deste contato (comparando informado x
         // projetado), sem virar a nova base de cálculo dos próximos dias.
         if (qtd_informada_caixa != null && proximaPosologia > 0) {
-          proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
+          proximaDataFimCaixa = calcularDataFimPorRestante(
+            (mudou_posologia && data_mudanca_posologia) ? data_mudanca_posologia : (monitoramentoAtual.data_administracao || monitoramentoAtual.data_entrega),
+            qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
         }
 
         if (aplicar_nova_compra && compraRevalidada && !ehUsoConjunto) {
           proximoMedicamentoId = compraRevalidada.medicamentoNovoId;
           proximasCaixas = compraRevalidada.qtdCaixas;
-          proximaDataEntrega = parseISO(compraRevalidada.dataEntrega);
+          proximaDataEntrega = dataEntregaDaCompra(compraRevalidada);
           proximoEventoExternoId = compraRevalidada.eventoExternoId;
           proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
           proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
-          proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
+          // 👇 ACUMULAR SOBRAS: com a marcação, a sobra confirmada entra no total do ciclo novo
+          proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas + (sobraAnterior || 0);
           proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
 
           if (compraRevalidada.mudouMedicamento) {
@@ -1191,7 +1307,11 @@ class MonitoramentoMedicamentoController {
               monitoramento_id: monitoramentoAtual.id
             }, { transaction });
           }
+          if (sobraAnterior) {
+            await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Reposição com sobra acumulada: ${sobraAnterior} comprimido(s) da caixa anterior + ${compraRevalidada.totalCapsulasNovas} da compra #${compraRevalidada.eventoExternoId} = ${proximasCapsulasTotais} no novo ciclo.`, monitoramentoAtual.paciente_id, { transaction });
+          }
         }
+        const aplicouReposicao = !!(aplicar_nova_compra && compraRevalidada && !ehUsoConjunto);
         let proximoCicloAtual = null;
         if (data_abertura_nova_caixa) {
           const dataProximoContatoEnviada = parseISO(data_abertura_nova_caixa);
@@ -1202,7 +1322,12 @@ class MonitoramentoMedicamentoController {
             data_entrega: proximaDataEntrega,
             data_administracao: proximaDataAdministracao, data_calculada_fim_caixa: proximaDataFimCaixa, data_proximo_contato: dataProximoContatoEnviada,
             status: 'PENDENTE', qtd_caixas: proximasCaixas, qtd_total_capsulas: proximasCapsulasTotais, evento_externo_id: proximoEventoExternoId,
-            grupo_medicamentos_id: grupoMedicamentosId
+            grupo_medicamentos_id: grupoMedicamentosId,
+            // mesma caixa (sem compra nova aplicada): mantém as pausas; caixa nova começa sem
+            pausas_historico: String(proximoEventoExternoId) === String(monitoramentoAtual.evento_externo_id) ? monitoramentoAtual.pausas_historico : null,
+            // 👇 ACUMULAR SOBRAS: marcação segue o medicamento; sobra é a desta reposição (ou a da mesma caixa)
+            acumula_sobras: herdaAcumulo(monitoramentoAtual, aplicouReposicao ? compraRevalidada : null),
+            qtd_sobra_anterior: aplicouReposicao ? sobraAnterior : monitoramentoAtual.qtd_sobra_anterior
           }, { transaction });
         }
 
@@ -1230,7 +1355,7 @@ class MonitoramentoMedicamentoController {
             medicamento_id: compraRevalidada.medicamentoNovoId,
             posologia_diaria: posologia_nova_caixa,
             tipo_posologia: tipoPosologiaNovoMed, ...parametrosPosologiaNovoMed,
-            data_entrega: parseISO(compraRevalidada.dataEntrega),
+            data_entrega: dataEntregaDaCompra(compraRevalidada),
             data_administracao: dataAdministracaoNovoMed,
             data_calculada_fim_caixa: dataFimCaixaNovoMed,
             data_proximo_contato: dataProximoContatoNovoMed,
@@ -1256,7 +1381,7 @@ class MonitoramentoMedicamentoController {
         const descricaoPosologia = mudou_posologia
           ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})`
           : 'não';
-        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${descricaoPosologia}. Uso em conjunto: ${ehUsoConjunto}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}`);
+        await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Registrou contato. Mudou posologia: ${descricaoPosologia}. Uso em conjunto: ${ehUsoConjunto}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}`, null, { transaction });
 
         return {
           mensagem: 'Contato registrado e ciclo atualizado com sucesso!',
@@ -1297,6 +1422,12 @@ class MonitoramentoMedicamentoController {
 
   async vincularAvaliacaoSilencioso(req, res) {
     const { paciente_id, patient_evaluation_id } = req.body;
+    // Os dois ids são obrigatórios: sem patient_evaluation_id o UPDATE desvinculava a
+    // avaliação de todos os ciclos pendentes do paciente.
+    const inteiroPositivo = (v) => Number.isSafeInteger(Number(v)) && Number(v) > 0 && /^\d+$/.test(String(v));
+    if (!inteiroPositivo(paciente_id) || !inteiroPositivo(patient_evaluation_id)) {
+      return res.status(400).json({ error: 'Informe paciente_id e patient_evaluation_id válidos.' });
+    }
     try {
       const [updatedRows] = await MonitoramentoMedicamento.update({ patient_evaluation_id }, { where: { paciente_id, status: 'PENDENTE' } });
       return res.status(200).json({ message: 'Vinculado.', registros_atualizados: updatedRows });
@@ -1411,14 +1542,7 @@ class MonitoramentoMedicamentoController {
       // há, ele vai em "novas_linhas_pendentes" e, logo após o contato ser
       // registrado, a tela oferece iniciar o acompanhamento dele (endpoint
       // novasLinhasPendentes + store entrando no grupo).
-      let novoEvento = null;
-      let ehMedicamentoDiferente = false;
-      if (novoEventoMesmaLinha) {
-        novoEvento = novoEventoMesmaLinha;
-      } else if (novoEventoNovaLinha) {
-        novoEvento = novoEventoNovaLinha;
-        ehMedicamentoDiferente = true;
-      }
+      const novoEvento = novoEventoMesmaLinha || novoEventoNovaLinha || null;
       // compatibilidade com o bloco de resposta abaixo
       const candidatosMesmoMedicamento = candidatosMesmaLinha;
       const candidatosMedicamentoDiferente = candidatosNovaLinha;
@@ -1519,70 +1643,6 @@ class MonitoramentoMedicamentoController {
     }
   }
 
-  async sincronizarEventoAtual(req, res) {
-    const { id } = req.params;
-    try {
-      const monitoramento = await MonitoramentoMedicamento.findByPk(id, {
-        include: [
-          { model: Pacientes, as: 'paciente', attributes: ['id', 'external_id'] },
-          { model: Medicamentos, as: 'medicamento', attributes: ['id', 'external_id', 'qtd_capsula'] }
-        ]
-      });
-
-      if (!monitoramento || !monitoramento.evento_externo_id) return res.json({ atualizado: false });
-
-      const eventoLocal = await EventosPaciente.findOne({
-        where: { external_id: monitoramento.evento_externo_id },
-        include: [{ model: Medicamentos, as: 'medicamento' }]
-      });
-
-      if (!eventoLocal) return res.json({ atualizado: false });
-
-      let houveMudanca = false;
-      let novoMedicamentoId = monitoramento.medicamento_id;
-
-      // Verifica mudança de medicamento
-      if (eventoLocal.medicamento_id !== monitoramento.medicamento_id) {
-        houveMudanca = true;
-        novoMedicamentoId = eventoLocal.medicamento_id;
-      } else {
-        // Verifica mudança silenciosa na quantidade de capsulas do medicamento local
-        if (eventoLocal.medicamento.qtd_capsula !== monitoramento.medicamento.qtd_capsula) {
-          houveMudanca = true;
-        }
-      }
-
-      // Verifica se a quantidade de caixas mudou
-      if (eventoLocal.qtd_caixas !== monitoramento.qtd_caixas) houveMudanca = true;
-
-      if (!houveMudanca) return res.json({ atualizado: false });
-
-      const novaQtdTotalCapsulas = (eventoLocal.medicamento.qtd_capsula || 0) * eventoLocal.qtd_caixas;
-
-      let novaDataFimCaixa = monitoramento.data_calculada_fim_caixa;
-      if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
-        const baseDate = monitoramento.data_administracao || monitoramento.data_entrega || monitoramento.createdAt;
-        novaDataFimCaixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
-      }
-
-      await monitoramento.update({
-        medicamento_id: novoMedicamentoId,
-        qtd_caixas: eventoLocal.qtd_caixas,
-        qtd_total_capsulas: novaQtdTotalCapsulas,
-        data_calculada_fim_caixa: novaDataFimCaixa
-      });
-
-      const monitoramentoAtualizado = await MonitoramentoMedicamento.findByPk(id, {
-        include: [{ model: Pacientes, as: 'paciente' }, { model: Medicamentos, as: 'medicamento' }]
-      });
-
-      return res.json({ atualizado: true, monitoramento: monitoramentoAtualizado });
-    } catch (error) {
-      console.error("ERRO AO SINCRONIZAR EVENTO ATUAL:", error);
-      return res.status(500).json({ error: 'Erro ao sincronizar', details: error.message });
-    }
-  }
-
   async verificarSincronizacaoAtual(req, res) {
     const { id } = req.params;
     try {
@@ -1629,22 +1689,38 @@ class MonitoramentoMedicamentoController {
     const { id } = req.params;
     const { novo_medicamento_id, nova_qtd_caixas, nova_qtd_capsula_por_caixa, mudou_medicamento } = req.body;
 
+    // Antes, um campo faltando gravava qtd_total_capsulas = NaN e respondia 500.
+    const inteiroPositivo = (v) => Number.isInteger(Number(v)) && Number(v) > 0;
+    if (!inteiroPositivo(novo_medicamento_id) || !inteiroPositivo(nova_qtd_caixas) || !inteiroPositivo(nova_qtd_capsula_por_caixa)) {
+      return res.status(400).json({ error: 'Informe medicamento, quantidade de caixas e comprimidos por caixa (números maiores que zero).' });
+    }
+
     try {
       const monitoramento = await MonitoramentoMedicamento.findByPk(id);
       if (!monitoramento) return res.status(404).json({ error: 'Monitoramento não encontrado' });
+      if (monitoramento.status !== 'PENDENTE') {
+        return res.status(409).json({ error: 'Só é possível atualizar a compra de um ciclo pendente.' });
+      }
+      if (!(await Medicamentos.findByPk(Number(novo_medicamento_id), { attributes: ['id'] }))) {
+        return res.status(400).json({ error: 'Medicamento não encontrado.' });
+      }
 
-      const novaQtdTotalCapsulas = nova_qtd_capsula_por_caixa * nova_qtd_caixas;
+      // 👇 ACUMULAR SOBRAS: a sobra somada na reposição continua no total ao
+      // corrigir a quantidade da compra; trocando o medicamento, ela não vale mais.
+      const sobraMantida = mudou_medicamento ? 0 : (Number(monitoramento.qtd_sobra_anterior) || 0);
+      const novaQtdTotalCapsulas = Number(nova_qtd_capsula_por_caixa) * Number(nova_qtd_caixas) + sobraMantida;
       const updateData = {
-        medicamento_id: novo_medicamento_id,
-        qtd_caixas: nova_qtd_caixas,
+        medicamento_id: Number(novo_medicamento_id),
+        qtd_caixas: Number(nova_qtd_caixas),
         qtd_total_capsulas: novaQtdTotalCapsulas
       };
+      if (mudou_medicamento) updateData.qtd_sobra_anterior = null;
 
       if (mudou_medicamento) updateData.data_administracao = null;
 
       if (novaQtdTotalCapsulas > 0 && monitoramento.posologia_diaria > 0) {
         const baseDate = updateData.data_administracao === null ? monitoramento.data_entrega : (monitoramento.data_administracao || monitoramento.data_entrega);
-        updateData.data_calculada_fim_caixa = calcularDataFimCaixa(new Date(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
+        updateData.data_calculada_fim_caixa = calcularDataFimCaixa(paraDataLocal(baseDate), novaQtdTotalCapsulas, monitoramento.posologia_diaria, monitoramento.tipo_posologia, monitoramento, obterPeriodosPausa(monitoramento));
       }
 
       await monitoramento.update(updateData);
@@ -1809,7 +1885,9 @@ class MonitoramentoMedicamentoController {
           confirmar_consumo_eventos_anteriores: Yup.boolean().nullable(),
           compra_oferecida_evento_id: Yup.number().integer().nullable(),
           motivo_nao_aplicar_compra: Yup.string().oneOf(Object.keys(MOTIVOS_NAO_APLICAR_COMPRA)).nullable(),
-          motivo_nao_aplicar_compra_texto: Yup.string().nullable()
+          motivo_nao_aplicar_compra_texto: Yup.string().nullable(),
+          // 👇 ACUMULAR SOBRAS: comprimidos da caixa anterior somados à caixa nova
+          qtd_sobra_anterior: Yup.number().integer().min(0).nullable()
         })
       ).min(1).required()
     });
@@ -1830,7 +1908,7 @@ class MonitoramentoMedicamentoController {
       if (!alvo) return res.status(400).json({ error: `O medicamento substituído (monitoramento ${alvoId}) não está neste contato.` });
       if (alvo.aplicar_nova_compra) return res.status(400).json({ error: 'O medicamento substituído não pode receber uma reposição no mesmo contato em que é substituído.' });
       if (alvo.descontinuar_medicamento) return res.status(400).json({ error: 'O medicamento substituído não pode ser descontinuado e substituído no mesmo contato.' });
-      ['aplicar_nova_compra', 'dados_nova_compra', 'data_inicio_nova_caixa', 'posologia_nova_caixa', 'modo_novo_medicamento', 'confirmar_consumo_eventos_anteriores'].forEach(campo => {
+      ['aplicar_nova_compra', 'dados_nova_compra', 'data_inicio_nova_caixa', 'posologia_nova_caixa', 'modo_novo_medicamento', 'confirmar_consumo_eventos_anteriores', 'qtd_sobra_anterior'].forEach(campo => {
         alvo[campo] = registro[campo];
         registro[campo] = campo === 'aplicar_nova_compra' ? false : null;
       });
@@ -1856,9 +1934,35 @@ class MonitoramentoMedicamentoController {
       }
     }
 
+    // O mesmo ciclo não pode aparecer duas vezes no mesmo contato.
+    const idsRegistros = registros.map(r => Number(r.monitoramento_id));
+    if (new Set(idsRegistros).size !== idsRegistros.length) {
+      return res.status(400).json({ error: 'O mesmo medicamento apareceu duas vezes neste contato. Feche a janela e registre de novo.' });
+    }
+
     try {
       const resultado = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
         const agora = new Date();
+
+        // Trava todos os ciclos do contato e valida antes de gravar qualquer coisa:
+        // existem, estão PENDENTES e são todos do mesmo paciente.
+        const ciclosTravados = [];
+        for (const registro of registros) {
+          const ciclo = await MonitoramentoMedicamento.findByPk(registro.monitoramento_id, { transaction, lock: transaction.LOCK.UPDATE });
+          if (!ciclo) {
+            const erro = new Error(`Monitoramento ${registro.monitoramento_id} não encontrado.`);
+            erro.status = 404;
+            throw erro;
+          }
+          garantirCicloPendente(ciclo);
+          ciclosTravados.push(ciclo);
+        }
+        if (new Set(ciclosTravados.map(c => c.paciente_id)).size > 1) {
+          const erro = new Error('Os medicamentos deste contato pertencem a pacientes diferentes.');
+          erro.status = 400;
+          throw erro;
+        }
+        await garantirSemReservaDeOutro(ciclosTravados[0].paciente_id, req.userId, transaction);
 
         if (contato_efetivo === false) {
           for (const registro of registros) {
@@ -1888,7 +1992,10 @@ class MonitoramentoMedicamentoController {
               qtd_caixas: monitoramentoAtual.qtd_caixas,
               qtd_total_capsulas: monitoramentoAtual.qtd_total_capsulas,
               evento_externo_id: monitoramentoAtual.evento_externo_id,
-              grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id
+              grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id,
+              pausas_historico: monitoramentoAtual.pausas_historico, // mesma caixa: mantém as pausas
+              acumula_sobras: monitoramentoAtual.acumula_sobras, // mesma caixa: mantém a marcação e a sobra somada
+              qtd_sobra_anterior: monitoramentoAtual.qtd_sobra_anterior
             }, { transaction });
           }
           return { mensagem: 'Contato sem sucesso. Ambos os medicamentos foram reagendados para o próximo dia útil.', registros: [] };
@@ -1950,7 +2057,7 @@ class MonitoramentoMedicamentoController {
               qtd_restante_informada: parada.qtd_restante_informada,
               qtd_restante_confirmada: parada.qtd_restante_confirmada
             }, { transaction });
-            await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado (contato em conjunto). Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`);
+            await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Medicamento descontinuado (contato em conjunto). Parou de tomar em ${formatarDataBR(data_descontinuacao)}; sobra na caixa: ${parada.qtd_restante_informada} comprimido(s) (${parada.qtd_restante_confirmada ? 'confirmou a projeção' : `projeção era ${parada.projecao.qtd_restante_projetada}, paciente informou outra quantidade`}).`, null, { transaction });
 
             if (is_reacao && reacoes_adversas && reacoes_adversas.length > 0) {
               await monitoramentoAtual.setReacoesAdversas(reacoes_adversas, { transaction });
@@ -1966,6 +2073,9 @@ class MonitoramentoMedicamentoController {
             compraRevalidada = await revalidarDadosNovaCompra(monitoramentoAtual, dados_nova_compra, modo_novo_medicamento, { transaction }, { confirmarConsumoAnteriores: !!confirmar_consumo_eventos_anteriores });
           }
           const ehUsoConjunto = !!(compraRevalidada && compraRevalidada.ehUsoConjunto);
+          // 👇 ACUMULAR SOBRAS: valida antes de gravar este medicamento
+          const sobraAnterior = resolverSobraAnterior(monitoramentoAtual, aplicar_nova_compra ? compraRevalidada : null, registro.qtd_sobra_anterior);
+          const aplicouReposicao = !!(aplicar_nova_compra && compraRevalidada && !ehUsoConjunto);
 
           await monitoramentoAtual.update({
             contato_efetivo: true,
@@ -2021,18 +2131,24 @@ class MonitoramentoMedicamentoController {
           // 👇 Mesmo raciocínio da versão única — ver comentário lá.
           // qtd_total_capsulas e data_administracao são imutáveis.
           if (qtd_informada_caixa != null && proximaPosologia > 0) {
-            proximaDataFimCaixa = calcularDataFimCaixa(new Date(), qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
+            proximaDataFimCaixa = calcularDataFimPorRestante(
+            (mudou_posologia && data_mudanca_posologia) ? data_mudanca_posologia : (monitoramentoAtual.data_administracao || monitoramentoAtual.data_entrega),
+            qtd_informada_caixa, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
           }
 
           if (aplicar_nova_compra && compraRevalidada && !ehUsoConjunto) {
             proximoMedicamentoId = compraRevalidada.medicamentoNovoId;
             proximasCaixas = compraRevalidada.qtdCaixas;
-            proximaDataEntrega = parseISO(compraRevalidada.dataEntrega);
+            proximaDataEntrega = dataEntregaDaCompra(compraRevalidada);
             proximoEventoExternoId = compraRevalidada.eventoExternoId;
             proximaPosologia = posologia_nova_caixa || monitoramentoAtual.posologia_diaria;
             proximaDataAdministracao = data_inicio_nova_caixa ? parseISO(data_inicio_nova_caixa) : proximaDataAdministracao;
-            proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas;
+            // 👇 ACUMULAR SOBRAS: com a marcação, a sobra confirmada entra no total do ciclo novo
+            proximasCapsulasTotais = compraRevalidada.totalCapsulasNovas + (sobraAnterior || 0);
             proximaDataFimCaixa = calcularDataFimCaixa(proximaDataAdministracao, proximasCapsulasTotais, proximaPosologia, proximoPadraoPosologia.tipo_posologia, proximoPadraoPosologia, obterPeriodosPausa(monitoramentoAtual));
+            if (sobraAnterior) {
+              await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id, `Reposição com sobra acumulada (contato em conjunto): ${sobraAnterior} comprimido(s) da caixa anterior + ${compraRevalidada.totalCapsulasNovas} da compra #${compraRevalidada.eventoExternoId} = ${proximasCapsulasTotais} no novo ciclo.`, monitoramentoAtual.paciente_id, { transaction });
+            }
 
             if (compraRevalidada.mudouMedicamento) {
               await HistoricoTrocaMedicamento.create({
@@ -2060,7 +2176,12 @@ class MonitoramentoMedicamentoController {
             qtd_caixas: proximasCaixas,
             qtd_total_capsulas: proximasCapsulasTotais,
             evento_externo_id: proximoEventoExternoId,
-            grupo_medicamentos_id: grupoMedicamentosId
+            grupo_medicamentos_id: grupoMedicamentosId,
+            // mesma caixa (sem compra nova aplicada): mantém as pausas; caixa nova começa sem
+            pausas_historico: String(proximoEventoExternoId) === String(monitoramentoAtual.evento_externo_id) ? monitoramentoAtual.pausas_historico : null,
+            // 👇 ACUMULAR SOBRAS: marcação segue o medicamento; sobra é a desta reposição (ou a da mesma caixa)
+            acumula_sobras: herdaAcumulo(monitoramentoAtual, aplicouReposicao ? compraRevalidada : null),
+            qtd_sobra_anterior: aplicouReposicao ? sobraAnterior : monitoramentoAtual.qtd_sobra_anterior
           }, { transaction });
 
           let novoRegistroAdicional = null;
@@ -2082,7 +2203,7 @@ class MonitoramentoMedicamentoController {
               medicamento_id: compraRevalidada.medicamentoNovoId,
               posologia_diaria: posologia_nova_caixa,
               tipo_posologia: tipoPosologiaNovoMed, ...parametrosPosologiaNovoMed,
-              data_entrega: parseISO(compraRevalidada.dataEntrega),
+              data_entrega: dataEntregaDaCompra(compraRevalidada),
               data_administracao: dataAdministracaoNovoMed,
               data_calculada_fim_caixa: dataFimCaixaNovoMed,
               data_proximo_contato: calcularDataTelemonitoramento(dataAdministracaoNovoMed),
@@ -2107,7 +2228,7 @@ class MonitoramentoMedicamentoController {
           // 👇 AUDITORIA: um log por medicamento do contato em conjunto (antes só
           // existia o log do grupo, sem dizer o que mudou em cada medicamento)
           await AuditService.log(req.userId, 'Edição', 'Monitoramento', monitoramentoAtual.id,
-            `Registrou contato (em conjunto, grupo ${grupoMedicamentosId}). Mudou posologia: ${mudou_posologia ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})` : 'não'}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}.`);
+            `Registrou contato (em conjunto, grupo ${grupoMedicamentosId}). Mudou posologia: ${mudou_posologia ? `sim (${monitoramentoAtual.posologia_diaria} → ${nova_posologia} por dose a partir de ${formatarDataBR(data_mudanca_posologia)}${tipo_posologia_nova ? `, padrão ${tipo_posologia_nova}` : ''})` : 'não'}. Nova compra aplicada: ${compraRevalidada ? `#${compraRevalidada.eventoExternoId}` : 'não'}.`, null, { transaction });
 
           novoRegistro.setDataValue('origem_monitoramento_id', monitoramentoAtual.id); // 👈 pro front localizar o ciclo novo (pausa com compra)
           resultados.push(novoRegistro);
@@ -2116,7 +2237,7 @@ class MonitoramentoMedicamentoController {
         await AuditService.log(
           req.userId, 'Edição', 'Monitoramento', null,
           `Registrou contato em conjunto para o grupo ${grupoMedicamentosId}. Data do próximo contato: ${data_proximo_contato || 'N/A (medicamentos descontinuados)'}`,
-          pacienteIdDoContato
+          pacienteIdDoContato, { transaction }
         );
 
         return { mensagem: `Contato registrado para os ${resultados.length} medicamentos com sucesso!`, registros: resultados };
@@ -2261,12 +2382,13 @@ class MonitoramentoMedicamentoController {
           qtd_total_capsulas: qtdTotalCapsulas,
           evento_externo_id: monitoramentoAtual.evento_externo_id,
           eh_reembolso: true,
-          grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id
+          grupo_medicamentos_id: monitoramentoAtual.grupo_medicamentos_id,
+          acumula_sobras: monitoramentoAtual.acumula_sobras // 👈 ACUMULAR SOBRAS: mesmo medicamento, mantém a marcação
         }, { transaction });
 
         await AuditService.log(
           req.userId, 'Criação', 'Monitoramento', novoMonitoramentoReembolso.id,
-          `Evento de reembolso criado para ${medicamento?.nome} (paciente ${monitoramentoAtual.paciente_id}). Caixas reembolsadas: ${qtd_caixas_reembolsadas}. Posologia: ${posologiaVigente}/dia. Início: ${data_inicio_medicamento}. Substitui o monitoramento #${monitoramentoAtual.id} (cancelado).`
+          `Evento de reembolso criado para ${medicamento?.nome} (paciente ${monitoramentoAtual.paciente_id}). Caixas reembolsadas: ${qtd_caixas_reembolsadas}. Posologia: ${posologiaVigente}/dia. Início: ${data_inicio_medicamento}. Substitui o monitoramento #${monitoramentoAtual.id} (cancelado).`, null, { transaction }
         );
 
         return novoMonitoramentoReembolso;
@@ -2462,6 +2584,84 @@ async atualizarDataProximoContato(req, res) {
   // Tratamento", que pausa o paciente inteiro sem prazo). O registro sai da
   // fila normal (status PAUSADO) até alguém destravar, e a data prevista
   // de retomada alimenta o alerta de "pausa terminando em breve".
+  // 👇 ACUMULAR SOBRAS: marca/desmarca no ciclo pendente do medicamento e guarda
+  // quem, quando e por quê. A marcação passa para os próximos ciclos.
+  async definirAcumuloSobras(req, res) {
+    const schema = Yup.object().shape({
+      ativo: Yup.boolean().required(),
+      motivo: Yup.string().max(500).nullable()
+    });
+    try { await schema.validate(req.body, { abortEarly: false }); }
+    catch (err) { return res.status(400).json({ error: 'Informe se o medicamento acumula sobras (motivo com até 500 caracteres).', messages: err.inner }); }
+
+    const { id } = req.params;
+    const ativo = !!req.body.ativo;
+    const motivo = (req.body.motivo || '').trim() || null;
+    try {
+      const resultado = await MonitoramentoMedicamento.sequelize.transaction(async (transaction) => {
+        const ciclo = await MonitoramentoMedicamento.findByPk(id, {
+          include: [{ model: Medicamentos, as: 'medicamento', attributes: ['id', 'nome'] }],
+          transaction, lock: { level: transaction.LOCK.UPDATE, of: MonitoramentoMedicamento }
+        });
+        if (!ciclo) throw erroStatus('Monitoramento não encontrado.', 404);
+        garantirCicloPendente(ciclo);
+        await garantirSemReservaDeOutro(ciclo.paciente_id, req.userId, transaction);
+        if (!!ciclo.acumula_sobras === ativo) return { ciclo, mudou: false };
+
+        await ciclo.update({ acumula_sobras: ativo }, { transaction });
+        await MonitoramentoAcumuloHistorico.create({
+          paciente_id: ciclo.paciente_id,
+          monitoramento_id: ciclo.id,
+          medicamento_id: ciclo.medicamento_id,
+          user_id: req.userId,
+          ativado: ativo,
+          motivo
+        }, { transaction });
+        await AuditService.log(req.userId, 'Edição', 'Monitoramento', ciclo.id,
+          `Acumular sobras ${ativo ? 'ATIVADO' : 'DESATIVADO'} para ${ciclo.medicamento?.nome || 'o medicamento'}.${motivo ? ` Motivo: ${motivo}` : ''}`,
+          ciclo.paciente_id, { transaction });
+        return { ciclo, mudou: true };
+      });
+      return res.json({ acumula_sobras: !!resultado.ciclo.acumula_sobras, mudou: resultado.mudou });
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      console.error('ERRO AO DEFINIR ACUMULO DE SOBRAS:', error);
+      return res.status(500).json({ error: 'Erro ao salvar a opção de acumular sobras.' });
+    }
+  }
+
+  // Histórico de marcações do medicamento (mesma linha de tratamento) deste paciente.
+  async historicoAcumuloSobras(req, res) {
+    try {
+      const ciclo = await MonitoramentoMedicamento.findByPk(req.params.id, {
+        attributes: ['id', 'paciente_id', 'medicamento_id'],
+        include: [{ model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }]
+      });
+      if (!ciclo) return res.status(404).json({ error: 'Monitoramento não encontrado.' });
+      const registros = await MonitoramentoAcumuloHistorico.findAll({
+        where: { paciente_id: ciclo.paciente_id },
+        include: [
+          { model: User, as: 'usuario', attributes: ['id', 'name'] },
+          { model: Medicamentos, as: 'medicamento', attributes: ATRIBUTOS_MEDICAMENTO_LINHA }
+        ],
+        order: [['createdAt', 'DESC']]
+      });
+      const linha = ciclo.medicamento ? chaveLinhaTratamento(ciclo.medicamento) : null;
+      const daLinha = registros.filter(r => !linha || !r.medicamento || chaveLinhaTratamento(r.medicamento) === linha);
+      return res.json(daLinha.map(r => ({
+        id: r.id,
+        ativado: r.ativado,
+        motivo: r.motivo,
+        data: r.createdAt,
+        usuario: r.usuario?.name || 'Usuário removido',
+        medicamento: r.medicamento?.nome || null
+      })));
+    } catch (error) {
+      console.error('ERRO AO BUSCAR HISTORICO DE ACUMULO:', error);
+      return res.status(500).json({ error: 'Erro ao buscar o histórico de acumular sobras.' });
+    }
+  }
+
   async pausarMedicamento(req, res) {
     const { id } = req.params;
     // 👇 NOVO: compra_oferecida_evento_id — quando a tela estava oferecendo
@@ -2575,12 +2775,13 @@ async atualizarDataProximoContato(req, res) {
       let totalParaRecalculo = monitoramento.qtd_total_capsulas;
       let notaRestante = '';
       if (monitoramento.qtd_restante_informada !== null && monitoramento.qtd_restante_informada !== undefined && monitoramento.data_pausa_inicio) {
-        const projecao = projetarRestanteNaParada(monitoramento, new Date(monitoramento.data_pausa_inicio).toISOString().split('T')[0]);
+        // data local (toISOString dava o dia seguinte para pausas iniciadas depois das 21h)
+        const projecao = projetarRestanteNaParada(monitoramento, format(new Date(monitoramento.data_pausa_inicio), 'yyyy-MM-dd'));
         totalParaRecalculo = monitoramento.qtd_restante_informada + projecao.consumidos;
         notaRestante = ` Comprimidos na pausa: ${monitoramento.qtd_restante_informada} (projeção ${projecao.qtd_restante_projetada}).`;
       }
       const novaDataFimCaixa = calcularDataFimCaixa(
-        new Date(dataInicioCiclo), totalParaRecalculo, monitoramento.posologia_diaria,
+        paraDataLocal(dataInicioCiclo), totalParaRecalculo, monitoramento.posologia_diaria,
         monitoramento.tipo_posologia, monitoramento, historicoAtualizado
       );
 
@@ -2710,9 +2911,13 @@ async atualizarDataProximoContato(req, res) {
     if (!data_inicio) {
       return res.status(400).json({ error: 'Informe a data de início.' });
     }
+    // Limite de dias da prévia (antes num_dias sem limite podia travar o servidor).
+    if (num_dias !== undefined && num_dias !== null && !(Number.isInteger(Number(num_dias)) && Number(num_dias) >= 1 && Number(num_dias) <= 400)) {
+      return res.status(400).json({ error: 'A prévia aceita de 1 a 400 dias.' });
+    }
     try {
       const parametros = extrairParametrosPosologia(req.body);
-      const dias = gerarPreviewPosologia(parseISO(data_inicio), tipo_posologia || 'diaria', parametros, num_dias || 35);
+      const dias = gerarPreviewPosologia(parseISO(data_inicio), tipo_posologia || 'diaria', parametros, Number(num_dias) || 35);
       return res.json({ dias });
     } catch (error) {
       return res.status(500).json({ error: 'Erro ao gerar prévia da posologia.', details: error.message });

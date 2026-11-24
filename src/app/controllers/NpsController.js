@@ -3,6 +3,18 @@ import NpsResponse from '../models/NpsResponse.js';
 import AuditService from '../../services/AuditService.js';
 import { enviarLinkNPS } from '../../services/whatsapp.js';
 import Mail from '../../services/Mail.js';
+import MonitoramentoMedicamento from '../models/MonitoramentoMedicamento.js';
+
+// O link público do NPS é /paciente/nps/<paciente>/<atendimento>: só vale se o atendimento
+// (ciclo de monitoramento) for mesmo daquele paciente.
+async function atendimentoDoPaciente(pacienteId, monitoramentoId) {
+    if (!/^\d+$/.test(String(pacienteId)) || !/^\d+$/.test(String(monitoramentoId))) return false;
+    const ciclo = await MonitoramentoMedicamento.findOne({
+        where: { id: Number(monitoramentoId), paciente_id: Number(pacienteId) },
+        attributes: ['id']
+    });
+    return !!ciclo;
+}
 
 class NpsController {
     /**
@@ -22,6 +34,11 @@ class NpsController {
 
             if (paciente.tratamento_pausado) {
                 return res.status(400).json({ error: 'Este paciente está com o tratamento pausado. Retome o tratamento antes de enviar a pesquisa de NPS.' });
+            }
+
+            // Sem o atendimento o link saía ".../undefined" e a pesquisa nunca abria.
+            if (!(await atendimentoDoPaciente(paciente.id, monitoramento_id))) {
+                return res.status(400).json({ error: 'Informe o atendimento (monitoramento) deste paciente para gerar a pesquisa.' });
             }
 
             // Geração do Link Front-end
@@ -106,7 +123,7 @@ class NpsController {
             const enviado = await enviarLinkNPS(
                 numeroDestino,
                 paciente.nome,
-                paciente.operadoras.nome,
+                paciente.operadoras?.nome || 'sua operadora', // paciente sem operadora não derruba mais o envio
                 req.userId,
                 linkNps // Passando a URL construída
             );
@@ -211,23 +228,26 @@ class NpsController {
         const { nota } = req.body;
 
         try {
-            // ✅ CORRIGIDO: Usando paciente_id no lugar de id
-            const paciente = await Pacientes.findByPk(paciente_id);
-
-            if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
+            const notaFinal = Number(nota);
+            if (!Number.isInteger(notaFinal) || notaFinal < 0 || notaFinal > 10) {
+                return res.status(400).json({ error: 'Nota inválida fornecida' });
             }
 
-            const notaFinal = parseInt(nota);
+            // O atendimento precisa ser deste paciente (antes qualquer par de ids era aceito).
+            if (!(await atendimentoDoPaciente(paciente_id, monitoramento_id))) {
+                return res.status(404).json({ error: 'Pesquisa não encontrada' });
+            }
 
-            if (isNaN(notaFinal) || notaFinal < 0 || notaFinal > 10) {
-                return res.status(400).json({ error: 'Nota inválida fornecida' });
+            // Uma nota por atendimento (antes dava para enviar várias e distorcer o NPS).
+            const jaRespondeu = await NpsResponse.findOne({ where: { paciente_id, monitoramento_id } });
+            if (jaRespondeu) {
+                return res.status(409).json({ error: 'Esta pesquisa já foi respondida.' });
             }
 
             await NpsResponse.create({
                 paciente_id: paciente_id,
                 monitoramento_id: monitoramento_id,
-                nota: notaFinal // ✅ CORRIGIDO: Reaproveitando a variável já convertida
+                nota: notaFinal
             });
 
             return res.json({ message: 'Agradecemos o seu feedback! Sua nota foi registrada com sucesso.' });
@@ -245,11 +265,10 @@ class NpsController {
         const { paciente_id, monitoramento_id } = req.params;
 
         try {
-            const paciente = await Pacientes.findByPk(paciente_id, {
-                attributes: ['id', 'nome', 'sobrenome']
-            });
-
-            if (!paciente) return res.status(404).json({ error: 'Paciente não encontrado' });
+            // Não devolve mais nome do paciente (dava para descobrir nomes trocando os números).
+            if (!(await atendimentoDoPaciente(paciente_id, monitoramento_id))) {
+                return res.status(404).json({ error: 'Pesquisa não encontrada' });
+            }
 
             // Verifica se JÁ EXISTE uma nota para ESTE monitoramento específico
             const npsExistente = await NpsResponse.findOne({
@@ -260,7 +279,6 @@ class NpsController {
             });
 
             return res.json({
-                paciente,
                 ja_respondeu: !!npsExistente // Bloqueia apenas se este atendimento já foi avaliado
             });
         } catch (error) {
@@ -281,10 +299,16 @@ class NpsController {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
 
-            const notaFinal = parseInt(nota);
-
-            if (isNaN(notaFinal) || notaFinal < 0 || notaFinal > 10) {
+            const notaFinal = Number(nota);
+            if (!Number.isInteger(notaFinal) || notaFinal < 0 || notaFinal > 10) {
                 return res.status(400).json({ error: 'Nota inválida fornecida' });
+            }
+
+            if (monitoramento_id && !(await atendimentoDoPaciente(paciente_id, monitoramento_id))) {
+                return res.status(400).json({ error: 'Este atendimento não pertence ao paciente.' });
+            }
+            if (monitoramento_id && await NpsResponse.findOne({ where: { paciente_id, monitoramento_id } })) {
+                return res.status(409).json({ error: 'Este atendimento já tem nota de NPS registrada.' });
             }
 
             // Registra a nota no banco

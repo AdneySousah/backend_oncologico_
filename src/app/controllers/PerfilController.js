@@ -1,6 +1,7 @@
 import * as Yup from 'yup';
 import Perfil from '../models/Perfil.js';
 import AuditService from '../../services/AuditService.js';
+import { verificarConcessaoPerfil } from '../../utils/concessaoAcesso.js';
 
 class PerfilController {
     // Lista todos os perfis (Para preencher a tabela no frontend)
@@ -48,6 +49,10 @@ class PerfilController {
         }
 
         try {
+            // Quem não é administrador só cria perfil com permissões contidas nas suas.
+            const negado = await verificarConcessaoPerfil(req.userId, null, req.body.permissoes || {});
+            if (negado) return res.status(negado.status).json({ error: negado.error });
+
             // Verifica se o nome já existe
             const perfilExists = await Perfil.findOne({ where: { nome: req.body.nome } });
             if (perfilExists) {
@@ -83,6 +88,11 @@ class PerfilController {
             if (!perfil) {
                 return res.status(404).json({ error: 'Perfil não encontrado' });
             }
+
+            // Antes qualquer um com "usuarios > editar" reescrevia as permissões de qualquer
+            // perfil (inclusive o próprio e o dos administradores). Ver utils/concessaoAcesso.js.
+            const negado = await verificarConcessaoPerfil(req.userId, perfil, req.body.permissoes);
+            if (negado) return res.status(negado.status).json({ error: negado.error });
 
             // Se estiver tentando mudar o nome, verifica se não vai dar conflito com outro perfil
             if (req.body.nome && req.body.nome !== perfil.nome) {

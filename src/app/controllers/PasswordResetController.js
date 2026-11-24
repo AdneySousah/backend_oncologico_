@@ -2,21 +2,29 @@ import User from '../models/User.js';
 import bcrypt from 'bcrypt';
 import Mail from '../../services/Mail.js';
 import AuditService from '../../services/AuditService.js';
+import crypto from 'node:crypto';
+
+// Resposta igual para e-mail cadastrado ou não: antes o 404 revelava quais e-mails existem.
+const MENSAGEM_ENVIO = 'Se o e-mail estiver cadastrado e ativo, enviamos um código de recuperação.';
+const texto = (v) => (typeof v === 'string' ? v.trim() : '');
 
 class PasswordResetController {
 
     // Passo 1: Solicita o código
     async forgotPassword(req, res) {
-        const { email } = req.body;
+        const email = texto(req.body?.email);
+        if (!email) {
+            return res.status(400).json({ error: 'Informe o e-mail.' });
+        }
 
         const user = await User.findOne({ where: { email, active: true } });
 
         if (!user) {
-            return res.status(404).json({ error: 'Usuário não encontrado ou inativo.' });
+            return res.json({ message: MENSAGEM_ENVIO });
         }
 
-        // Gera um código numérico de 6 dígitos
-        const resetToken = Math.floor(100000 + Math.random() * 900000).toString();
+        // Código de 6 dígitos com gerador criptográfico (Math.random é previsível)
+        const resetToken = String(crypto.randomInt(100000, 1000000));
 
         // Expira em 1 hora
         const now = new Date();
@@ -67,7 +75,7 @@ class PasswordResetController {
         `,
             });
 
-            return res.json({ message: 'Código enviado com sucesso para o e-mail cadastrado.' });
+            return res.json({ message: MENSAGEM_ENVIO });
         } catch (err) {
             console.error('Erro ao enviar e-mail:', err);
             return res.status(500).json({ error: 'Erro ao enviar e-mail de recuperação.' });
@@ -76,7 +84,11 @@ class PasswordResetController {
 
     // Passo 2: Valida o código digitado
     async verifyCode(req, res) {
-        const { email, code } = req.body;
+        const email = texto(req.body?.email);
+        const code = texto(req.body?.code);
+        if (!email || !/^\d{6}$/.test(code)) {
+            return res.status(400).json({ error: 'Código inválido.' });
+        }
 
         const user = await User.findOne({
             where: {
@@ -99,7 +111,15 @@ class PasswordResetController {
 
     // Passo 3: Reseta a senha
     async resetPassword(req, res) {
-        const { email, code, newPassword } = req.body;
+        const email = texto(req.body?.email);
+        const code = texto(req.body?.code);
+        const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+        if (!email || !/^\d{6}$/.test(code)) {
+            return res.status(400).json({ error: 'Código inválido.' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+        }
 
         const user = await User.findOne({
             where: {

@@ -73,7 +73,13 @@ class MonitoramentoMedicamento extends Model {
       data_descontinuacao: Sequelize.DATEONLY,
       qtd_restante_projetada: Sequelize.INTEGER,
       qtd_restante_informada: Sequelize.INTEGER,
-      qtd_restante_confirmada: Sequelize.BOOLEAN
+      qtd_restante_confirmada: Sequelize.BOOLEAN,
+
+      // 👇 ACUMULAR SOBRAS (migration add-acumulo-sobras-ao-monitoramento):
+      // marcado = na reposição a sobra confirmada é somada à caixa nova.
+      // qtd_sobra_anterior já está incluída em qtd_total_capsulas (só exibição).
+      acumula_sobras: { type: Sequelize.BOOLEAN, defaultValue: false },
+      qtd_sobra_anterior: Sequelize.INTEGER
 
     }, {
       sequelize,

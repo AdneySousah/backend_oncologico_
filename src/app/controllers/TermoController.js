@@ -7,6 +7,63 @@ import AuditService from '../../services/AuditService.js';
 import { gerarPdfTermoNavegacao } from '../../utils/gerarTermoPdf.js';
 import TermosHistorico from '../models/TermosHistorico.js';
 import Mail from '../../services/Mail.js';
+import { prepararTokenTermo, montarLinkTermo, buscarPacientePorLinkTermo } from '../../utils/termoLink.js';
+
+// Aceita true/false (boolean) ou "true"/"false" (string). Qualquer outra coisa = inválido.
+// Antes, aceite: "false" (string) era tratado como aceite.
+function lerAceite(valor) {
+    if (valor === true || valor === 'true') return true;
+    if (valor === false || valor === 'false') return false;
+    return null;
+}
+
+// Grava a resposta do termo (paciente pelo link ou operador por telefone).
+async function registrarRespostaTermo(paciente, aceite, req) {
+    paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
+
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+
+    if (aceite) {
+        // O termo não é salvo como arquivo: é reconstruído ao vivo quando alguém precisa
+        // visualizar. Guarda a VERSÃO vigente do texto para manter o que o paciente aceitou.
+        const versaoAtiva = await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
+        paciente.termo_data_aceite = new Date();
+        paciente.termo_ip = ip;
+        paciente.termo_user_agent = userAgent;
+        paciente.termo_versao_id = versaoAtiva ? versaoAtiva.id : null;
+    } else {
+        paciente.termo_data_aceite = null;
+        paciente.termo_ip = null;
+        paciente.termo_user_agent = null;
+        paciente.termo_versao_id = null;
+    }
+
+    await paciente.save();
+
+    // Registro imutável de quando/como a resposta aconteceu.
+    await TermosHistorico.create({
+        paciente_id: paciente.id,
+        status: paciente.status_termo,
+        arquivo_path: null,
+        ip,
+        user_agent: userAgent
+    });
+
+    return { status_termo: paciente.status_termo, termo_data_aceite: paciente.termo_data_aceite };
+}
+
+async function enviarPdfTermo(paciente, res) {
+    const operadoraNome = paciente.operadoras?.nome || 'sua operadora';
+    // Se já aceitou, mostra a versão que ELE viu; senão, a vigente.
+    const versao = paciente.versaoTermo || await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
+    if (!versao) {
+        return res.status(500).json({ error: 'Nenhuma versão do termo está cadastrada no sistema.' });
+    }
+    // A função gera o PDF e envia direto na resposta
+    return gerarPdfTermoNavegacao(paciente, res, operadoraNome, versao);
+}
+
 
 class TermoController {
 
@@ -28,8 +85,10 @@ class TermoController {
                 return res.status(400).json({ error: 'Este paciente está com o tratamento pausado. Retome o tratamento antes de enviar o termo.' });
             }
 
-            const frontUrl = process.env.FRONT_URL || 'http://localhost:3000';
-            const linkAcompanhamento = `${frontUrl}/paciente/termo/${paciente.id}`;
+            // Link com token aleatório (o id do paciente não abre mais o termo).
+            // O token é gravado junto com o status no paciente.save() de cada fluxo abaixo.
+            prepararTokenTermo(paciente);
+            const linkAcompanhamento = montarLinkTermo(paciente);
 
             // ==========================================
             // FLUXO DE DISPARO POR E-MAIL
@@ -43,10 +102,9 @@ class TermoController {
                 if (paciente.email !== email_destino) {
                     paciente.email = email_destino;
                 }
-                
-                paciente.status_termo = 'Pendente';
-                await paciente.save();
 
+                // O status "Pendente" (e o token do link) só é gravado DEPOIS que o e-mail
+                // sai — antes, um envio que falhava deixava o paciente contado como enviado.
                 const operadoraNome = paciente.operadoras?.nome || 'nossa equipe de saúde';
                 
                 const htmlContent = `
@@ -71,6 +129,9 @@ class TermoController {
                     subject: 'Termos de Acompanhamento',
                     html: htmlContent
                 });
+
+                paciente.status_termo = 'Pendente';
+                await paciente.save();
 
                 await AuditService.log(
                     req.userId,
@@ -126,9 +187,6 @@ class TermoController {
                 });
             }
 
-            paciente.status_termo = 'Pendente';
-            await paciente.save();
-
             const enviado = await enviarMensagemWhatsApp(
                 numeroDestino,
                 paciente.nome,
@@ -141,6 +199,10 @@ class TermoController {
             if (!enviado) {
                 return res.status(500).json({ error: 'Falha ao enviar mensagem via WhatsApp' });
             }
+
+            // Só depois do envio confirmado (antes ficava "Pendente" mesmo se a Twilio falhasse)
+            paciente.status_termo = 'Pendente';
+            await paciente.save();
 
             let nomeDestinoFinal = paciente.nome;
             let papelDestino = 'Paciente';
@@ -171,69 +233,64 @@ class TermoController {
         }
     }
 
-    // Acessado publicamente pelo paciente clicando no link
-
+    // Acessado publicamente pelo paciente clicando no link (/paciente/termo/<token>).
+    // Só aceita resposta enquanto o termo está Pendente — link de termo cancelado,
+    // já respondido ou com id antigo fora da transição não responde nada.
     async answerTerm(req, res) {
-    const { id } = req.params;
-    const { aceite } = req.body; // boolean
-
-    try {
-        const paciente = await Pacientes.findByPk(id);
-
-        if (!paciente) {
-            return res.status(404).json({ error: 'Paciente não encontrado' });
+        const aceite = lerAceite(req.body?.aceite);
+        if (aceite === null) {
+            return res.status(400).json({ error: 'Resposta inválida: informe aceite true ou false.' });
         }
 
-        // Atualiza os dados principais
-        paciente.status_termo = aceite ? 'Aceito' : 'Recusado';
+        try {
+            const paciente = await buscarPacientePorLinkTermo(req.params.id);
+            if (!paciente) {
+                return res.status(404).json({ error: 'Link inválido ou expirado.' });
+            }
 
-        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-        const userAgent = req.headers['user-agent'];
+            if (paciente.status_termo !== 'Pendente') {
+                return res.status(409).json({
+                    error: 'Este termo não está mais aguardando resposta.',
+                    status_termo: paciente.status_termo,
+                    termo_data_aceite: paciente.termo_data_aceite
+                });
+            }
 
-        if (aceite) {
-            // 👇 Não gera nem salva PDF nenhum aqui — o termo é padrão (só
-            // muda nome/CPF/operadora do paciente), então é reconstruído ao
-            // vivo sempre que alguém precisar visualizar (rota /preview-pdf),
-            // em vez de guardar uma cópia física ocupando espaço.
-            // Vincula a VERSÃO do texto vigente agora — se o texto for
-            // editado no futuro (nova versão), esse paciente continua
-            // vinculado ao que ele realmente aceitou.
-            const versaoAtiva = await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
-
-            paciente.termo_data_aceite = new Date();
-            paciente.termo_ip = ip;
-            paciente.termo_user_agent = userAgent;
-            paciente.termo_versao_id = versaoAtiva ? versaoAtiva.id : null;
-        } else {
-            paciente.termo_data_aceite = null;
-            paciente.termo_ip = null;
-            paciente.termo_user_agent = null;
-            paciente.termo_versao_id = null;
+            const resultado = await registrarRespostaTermo(paciente, aceite, req);
+            return res.json({ message: 'Resposta registrada com sucesso', ...resultado });
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ error: 'Erro ao processar resposta' });
         }
-
-        await paciente.save();
-
-        // Salva o registro imutável na tabela de histórico (auditoria de
-        // quando/como o aceite aconteceu — sem referência a arquivo, já que
-        // não existe mais arquivo físico).
-        await TermosHistorico.create({
-            paciente_id: paciente.id,
-            status: paciente.status_termo,
-            arquivo_path: null,
-            ip: ip,
-            user_agent: userAgent
-        });
-
-        return res.json({ 
-            message: 'Resposta registrada com sucesso', 
-            status_termo: paciente.status_termo,
-            termo_data_aceite: paciente.termo_data_aceite
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ error: 'Erro ao processar resposta' });
     }
-}
+
+    // Operador registra a resposta que o paciente deu por telefone (tela Necessidade de
+    // Navegação → Termo → "não recebeu o link"). Rota autenticada, por id.
+    async registrarRespostaOperador(req, res) {
+        const aceite = lerAceite(req.body?.aceite);
+        if (aceite === null) {
+            return res.status(400).json({ error: 'Resposta inválida: informe aceite true ou false.' });
+        }
+
+        try {
+            const paciente = await Pacientes.findByPk(req.params.id);
+            if (!paciente) {
+                return res.status(404).json({ error: 'Paciente não encontrado' });
+            }
+
+            const resultado = await registrarRespostaTermo(paciente, aceite, req);
+
+            await AuditService.log(
+                req.userId, 'Edição', 'Termo', paciente.id,
+                `Registrou manualmente que ${paciente.nome} ${paciente.sobrenome || ''} ${aceite ? 'ACEITOU' : 'RECUSOU'} o termo (resposta por telefone).`
+            );
+
+            return res.json({ message: 'Resposta registrada com sucesso', ...resultado });
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ error: 'Erro ao processar resposta' });
+        }
+    }
 
     // Método para o frontend consultar o status em tempo real (Polling)
     async checkStatus(req, res) {
@@ -250,30 +307,33 @@ class TermoController {
     }
 
     // Usado pela tela pública de aceite, pra saber o status atual e (se já
-    // aceito) a data do aceite.
+    // aceito) a data do aceite. Devolve só o necessário para a tela.
     async verifyResponse(req, res) {
-        const { id } = req.params;
         try {
-            const paciente = await Pacientes.findByPk(id, {
-                include: ['operadoras'],
-                attributes: ['id', 'status_termo', 'termo_data_aceite']
+            const paciente = await buscarPacientePorLinkTermo(req.params.id, {
+                attributes: ['id', 'status_termo', 'termo_data_aceite'],
+                include: [{ model: Operadora, as: 'operadoras', attributes: ['nome'] }]
             });
 
             if (!paciente) {
-                return res.status(404).json({ error: 'Paciente não encontrado' });
+                return res.status(404).json({ error: 'Link inválido ou expirado.' });
             }
 
-            return res.json({ paciente });
-        } catch (error) {
+            return res.json({
+                paciente: {
+                    status_termo: paciente.status_termo,
+                    termo_data_aceite: paciente.termo_data_aceite,
+                    operadoras: paciente.operadoras ? { nome: paciente.operadoras.nome } : null
+                }
+            });
+        } catch {
             return res.status(500).json({ error: 'Erro ao checar status' });
         }
     }
 
     // 👇 NOVO: cancela/invalida um termo já enviado — antes de responder
     // (ex: enviado pro número errado) ou mesmo depois de já aceito/recusado.
-    // O link em si (/paciente/termo/:id) não tem token próprio, então
-    // "invalidar" significa: a tela pública passa a mostrar "link não
-    // disponível" pra esse paciente até que um novo termo seja enviado.
+    // Apaga o token do link: o link enviado deixa de abrir até um novo envio.
     async cancelarTermo(req, res) {
         const { id } = req.params;
         try {
@@ -287,6 +347,7 @@ class TermoController {
 
             await paciente.update({
                 status_termo: 'Cancelado',
+                termo_token: null, // invalida o link enviado
                 termo_data_aceite: null,
                 termo_ip: null,
                 termo_user_agent: null,
@@ -305,27 +366,28 @@ class TermoController {
         }
     }
 
+    // PDF do termo para o PACIENTE (link público com token).
     async previewPdf(req, res) {
-        const { id } = req.params;
         try {
-            const paciente = await Pacientes.findByPk(id, { include: ['operadoras', 'versaoTermo'] });
+            const paciente = await buscarPacientePorLinkTermo(req.params.id, { include: ['operadoras', 'versaoTermo'] });
+            if (!paciente) {
+                return res.status(404).json({ error: 'Link inválido ou expirado.' });
+            }
+            return enviarPdfTermo(paciente, res);
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ error: 'Erro ao gerar visualização do termo' });
+        }
+    }
+
+    // PDF do termo para a EQUIPE (tela Termos Assinados) — rota autenticada, por id.
+    async pdfAdmin(req, res) {
+        try {
+            const paciente = await Pacientes.findByPk(req.params.id, { include: ['operadoras', 'versaoTermo'] });
             if (!paciente) {
                 return res.status(404).json({ error: 'Paciente não encontrado' });
             }
-
-            const operadoraNome = paciente.operadoras?.nome || 'sua operadora';
-
-            // Se o paciente já aceitou antes, mostra a versão que ELE viu
-            // (fidelidade histórica). Se ainda não aceitou (preview antes de
-            // decidir), mostra a versão vigente agora.
-            const versao = paciente.versaoTermo || await VersaoTermo.findOne({ where: { ativo: true }, order: [['id', 'DESC']] });
-
-            if (!versao) {
-                return res.status(500).json({ error: 'Nenhuma versão do termo está cadastrada no sistema.' });
-            }
-
-            // Passa o "res" para a função. Ela vai gerar e enviar direto para o navegador
-            await gerarPdfTermoNavegacao(paciente, res, operadoraNome, versao);
+            return enviarPdfTermo(paciente, res);
         } catch (error) {
             console.error(error);
             return res.status(500).json({ error: 'Erro ao gerar visualização do termo' });

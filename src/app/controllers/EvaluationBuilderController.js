@@ -163,13 +163,21 @@ class EvaluationBuilderController {
       ]
     });
 
-    const templatesFormatados = [];
-    for (const t of templates) {
+    // Uma consulta só para saber quais questionários já têm respostas (antes era um
+    // COUNT por questionário).
+    const comRespostas = await PatientEvaluation.findAll({
+      attributes: ['template_id'],
+      where: { template_id: { [Op.in]: templates.map(t => t.id) } },
+      group: ['template_id'],
+      raw: true
+    });
+    const idsComRespostas = new Set(comRespostas.map(r => Number(r.template_id)));
+
+    const templatesFormatados = templates.map(t => {
       const data = t.toJSON();
-      const countRespostas = await PatientEvaluation.count({ where: { template_id: t.id }});
-      data.is_editable = countRespostas === 0;
-      templatesFormatados.push(data);
-    }
+      data.is_editable = !idsComRespostas.has(Number(t.id));
+      return data;
+    });
 
     return res.json(templatesFormatados);
   }

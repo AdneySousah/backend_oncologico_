@@ -43,7 +43,7 @@ class SessionController {
             // 3. SINCRONIZAR A OPERADORA
             // ==========================================
             let operadora = null;
-            const operadora_external = externalCompany.name === 'CLÍNICA DE INFUSÃO COMPARTILHADA' ? 'CICFARMA' : externalCompany.name;
+            const operadora_external = externalCompany?.name === 'CLÍNICA DE INFUSÃO COMPARTILHADA' ? 'CICFARMA' : (externalCompany?.name || null); // usuário externo sem empresa não quebra mais o login
 
             if (externalCompany && externalCompany.id) {
                 operadora = await Operadora.findOne({
@@ -92,7 +92,10 @@ class SessionController {
                     external_id: externalUser.id,
                     username: externalUser.username,
                     name: externalUser.name,
-                    active: externalUser.status === 0 ? true : false,
+                    // Fica ativo só se estiver ativo no sistema externo E não tiver sido
+                    // desativado aqui (tela Usuários). Antes o login reativava quem o
+                    // administrador tinha desativado.
+                    active: user.active !== false && externalUser.status === 0,
                     external_token: response.data.token.token
                 });
             }
@@ -110,6 +113,10 @@ class SessionController {
                     password_hash: 'EXTERNAL_AUTH_' + Date.now(),
                     external_token: response.data.token.token
                 });
+            }
+
+            if (!user.active) {
+                return res.status(403).json({ error: 'Usuário inativo. Fale com o administrador do sistema.' });
             }
 
             // ==========================================

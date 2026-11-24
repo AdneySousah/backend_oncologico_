@@ -3,8 +3,10 @@ import Operadora from '../models/Operadora.js';
 import Perfil from '../models/Perfil.js';
 import * as Yup from 'yup';
 import bcrypt from 'bcrypt';
-import { Op, fn, col } from 'sequelize';
+import { fn, col } from 'sequelize';
 import AuditService from '../../services/AuditService.js';
+import { limparCacheUsuario } from '../../middlewares/auth.js';
+import { verificarConcessaoUsuario } from '../../utils/concessaoAcesso.js';
 class UserController {
   // CREATE
   async store(req, res) {
@@ -28,6 +30,10 @@ class UserController {
 
     // Normalização: Transformamos o email em minúsculo antes de qualquer checagem ou inserção
     const { name, password, is_admin, operadoras, perfil_id } = req.body;
+
+    // Só administrador cria administrador; quem não é só concede o que tem (utils/concessaoAcesso.js).
+    const negadoCriacao = await verificarConcessaoUsuario(req.userId, null, { is_admin, perfil_id, operadoras });
+    if (negadoCriacao) return res.status(negadoCriacao.status).json({ error: negadoCriacao.error });
     const email = req.body.email.toLowerCase();
 
     // Busca insensível a maiúsculas/minúsculas
@@ -105,6 +111,11 @@ class UserController {
       return res.status(400).json({ error: 'Usuario não encontrado' });
     }
 
+    // Antes quem tinha "usuarios > editar" podia se dar is_admin, trocar o próprio perfil
+    // e ligar-se a qualquer operadora. Ver utils/concessaoAcesso.js.
+    const negadoEdicao = await verificarConcessaoUsuario(req.userId, user, { is_admin: req.body.is_admin, perfil_id, operadoras });
+    if (negadoEdicao) return res.status(negadoEdicao.status).json({ error: negadoEdicao.error });
+
     if (email && email !== user.email) {
       const userExists = await User.findOne({ where: { email } });
       if (userExists) {
@@ -147,9 +158,16 @@ class UserController {
     const user = await User.findByPk(req.params.id);
     if (!user) return res.status(400).json({ error: 'User not found' });
 
+    // Quem não é administrador não ativa/desativa administrador.
+    if (user.is_admin) {
+      const negado = await verificarConcessaoUsuario(req.userId, user, {});
+      if (negado) return res.status(negado.status).json({ error: negado.error });
+    }
+
     // Inverte o status atual: se true vira false, se false vira true
     const newStatus = !user.active;
     await user.update({ active: newStatus });
+    limparCacheUsuario(user.id); // desativação vale na hora para quem já está logado
 
     await AuditService.log(req.userId, 'Edição', 'Usuário', user.id, `Usuário ${user.name} ${newStatus ? 'ativado' : 'desativado'}.`);
 

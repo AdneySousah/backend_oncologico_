@@ -21,7 +21,7 @@ class Pacientes extends Model {
             estado: Sequelize.STRING,
             cpf: Sequelize.STRING,
             fez_entrevista: Sequelize.BOOLEAN,
-            status_termo: Sequelize.ENUM('aceito', 'recusado', 'pendente', 'nao_enviado'),
+            status_termo: Sequelize.ENUM('Pendente', 'Aceito', 'Recusado', 'Nao Enviado', 'Cancelado'), // mesmos valores do banco
             is_active: Sequelize.BOOLEAN,
             is_new_user: Sequelize.BOOLEAN,
             tratamento_pausado: Sequelize.BOOLEAN,
@@ -38,11 +38,21 @@ class Pacientes extends Model {
             termo_ip: Sequelize.STRING,
             termo_user_agent: Sequelize.STRING,
             termo_versao_id: Sequelize.INTEGER,
+            termo_token: Sequelize.STRING, // link público do termo (ver utils/termoLink.js)
         },{
             sequelize,
             tableName: 'pacientes',
         })
         return this;
+    }
+
+    // O token do link público do termo não sai nas respostas da API: quem tem a ficha
+    // do paciente não deve conseguir responder o termo por ele. O link só é montado no
+    // backend (TermoController.sendLink / ChatController.reopenWindow).
+    toJSON() {
+        const dados = { ...this.get({ plain: true }) };
+        delete dados.termo_token;
+        return dados;
     }
 
     static associate(models) {
